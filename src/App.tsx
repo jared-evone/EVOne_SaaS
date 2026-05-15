@@ -11,6 +11,8 @@ import { ScreenSales } from './screens/Sales';
 import { ScreenPurchaseOrders } from './screens/PurchaseOrders';
 import { ScreenInventory } from './screens/Inventory';
 import { ScreenSuppliers } from './screens/Suppliers';
+import { ScreenCorporateCRM } from './screens/CorporateCRM';
+import { ScreenChargingRecords } from './screens/ChargingRecords';
 import { Login, ROLE_LABELS, type Role } from './screens/Login';
 import { TSDWorkspace } from './screens/tsd/TSDWorkspace';
 
@@ -23,9 +25,11 @@ type ScreenId =
   | 'sales'
   | 'purchaseorders'
   | 'inventory'
-  | 'suppliers';
+  | 'suppliers'
+  | 'corporatecrm'
+  | 'charging';
 
-const NAV: { id: ScreenId; icon: string; label: string }[] = [
+const NAV_ALL: { id: ScreenId; icon: string; label: string; roles?: Role[] }[] = [
   { id: 'overview',       icon: '⊞', label: 'Overview' },
   { id: 'orders',         icon: '◈', label: 'Invoices' },
   { id: 'installations',  icon: '◎', label: 'Installations' },
@@ -35,6 +39,8 @@ const NAV: { id: ScreenId; icon: string; label: string }[] = [
   { id: 'purchaseorders', icon: '◧', label: 'Purchase Orders' },
   { id: 'inventory',      icon: '▦', label: 'Inventory & Products' },
   { id: 'suppliers',      icon: '◑', label: 'Suppliers' },
+  { id: 'corporatecrm',   icon: '◉', label: 'Corporate CRM',          roles: ['cpo'] },
+  { id: 'charging',       icon: '⚡', label: 'Charging Records',        roles: ['cpo'] },
 ];
 
 const SCREEN_TITLES: Record<ScreenId, string> = {
@@ -47,6 +53,8 @@ const SCREEN_TITLES: Record<ScreenId, string> = {
   purchaseorders: 'Purchase Orders',
   inventory:      'Inventory & Products',
   suppliers:      'Suppliers',
+  corporatecrm:   'Corporate CRM',
+  charging:       'Charging Records',
 };
 
 const screens: Record<ScreenId, JSX.Element> = {
@@ -59,6 +67,8 @@ const screens: Record<ScreenId, JSX.Element> = {
   purchaseorders: <ScreenPurchaseOrders />,
   inventory:      <ScreenInventory />,
   suppliers:      <ScreenSuppliers />,
+  corporatecrm:   <ScreenCorporateCRM />,
+  charging:       <ScreenChargingRecords />,
 };
 
 interface DashboardProps {
@@ -67,7 +77,10 @@ interface DashboardProps {
 }
 
 function Dashboard({ role, onSignOut }: DashboardProps) {
-  const [screen, setScreen] = useState<ScreenId>('overview');
+  const NAV = NAV_ALL.filter((n) =>
+    n.roles ? n.roles.includes(role) : role !== 'cpo',
+  );
+  const [screen, setScreen] = useState<ScreenId>(NAV[0].id);
   const contentPad = 28;
 
   return (
