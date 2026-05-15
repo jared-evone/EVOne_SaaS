@@ -13,6 +13,7 @@ import { ScreenInventory } from './screens/Inventory';
 import { ScreenSuppliers } from './screens/Suppliers';
 import { ScreenCorporateCRM } from './screens/CorporateCRM';
 import { ScreenChargingRecords } from './screens/ChargingRecords';
+import { ScreenCorporateInvoicing } from './screens/CorporateInvoicing';
 import { Login, ROLE_LABELS, type Role } from './screens/Login';
 import { TSDWorkspace } from './screens/tsd/TSDWorkspace';
 
@@ -27,7 +28,8 @@ type ScreenId =
   | 'inventory'
   | 'suppliers'
   | 'corporatecrm'
-  | 'charging';
+  | 'charging'
+  | 'corporateinvoicing';
 
 const NAV_ALL: { id: ScreenId; icon: string; label: string; roles?: Role[] }[] = [
   { id: 'overview',       icon: '⊞', label: 'Overview' },
@@ -39,8 +41,9 @@ const NAV_ALL: { id: ScreenId; icon: string; label: string; roles?: Role[] }[] =
   { id: 'purchaseorders', icon: '◧', label: 'Purchase Orders' },
   { id: 'inventory',      icon: '▦', label: 'Inventory & Products' },
   { id: 'suppliers',      icon: '◑', label: 'Suppliers' },
-  { id: 'corporatecrm',   icon: '◉', label: 'Corporate CRM',          roles: ['cpo'] },
-  { id: 'charging',       icon: '⚡', label: 'Charging Records',        roles: ['cpo'] },
+  { id: 'corporatecrm',        icon: '◉', label: 'Corporate CRM',          roles: ['cpo'] },
+  { id: 'charging',            icon: '⚡', label: 'Charging Records',        roles: ['cpo'] },
+  { id: 'corporateinvoicing',  icon: '◈', label: 'Corporate Invoicing',      roles: ['cpo'] },
 ];
 
 const SCREEN_TITLES: Record<ScreenId, string> = {
@@ -53,8 +56,9 @@ const SCREEN_TITLES: Record<ScreenId, string> = {
   purchaseorders: 'Purchase Orders',
   inventory:      'Inventory & Products',
   suppliers:      'Suppliers',
-  corporatecrm:   'Corporate CRM',
-  charging:       'Charging Records',
+  corporatecrm:        'Corporate CRM',
+  charging:            'Charging Records',
+  corporateinvoicing:  'Corporate Invoicing',
 };
 
 const screens: Record<ScreenId, JSX.Element> = {
@@ -67,8 +71,9 @@ const screens: Record<ScreenId, JSX.Element> = {
   purchaseorders: <ScreenPurchaseOrders />,
   inventory:      <ScreenInventory />,
   suppliers:      <ScreenSuppliers />,
-  corporatecrm:   <ScreenCorporateCRM />,
-  charging:       <ScreenChargingRecords />,
+  corporatecrm:        <ScreenCorporateCRM />,
+  charging:            <ScreenChargingRecords />,
+  corporateinvoicing:  <ScreenCorporateInvoicing />,
 };
 
 interface DashboardProps {

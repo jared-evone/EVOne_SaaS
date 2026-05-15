@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
@@ -45,6 +45,99 @@ function FieldLabel({ children }: { children: string }) {
     <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>
       {children}
     </label>
+  );
+}
+
+// ── Company Select ────────────────────────────────────────────────
+
+interface CompanySelectProps {
+  value: string;
+  companies: CRMCompany[];
+  onChange: (id: string) => void;
+}
+
+export function CompanySelect({ value, companies, onChange }: CompanySelectProps) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const selected = companies.find((c) => c.id === value);
+  const filtered = [{ id: '', name: '— Unassigned —' }, ...companies].filter((c) =>
+    c.name.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        onClick={() => { setOpen((o) => !o); setSearch(''); }}
+        style={{
+          width: '100%', padding: '10px 14px', borderRadius: 10, border: `1px solid ${open ? C.green : '#EBEBEB'}`,
+          fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white,
+          cursor: 'pointer', textAlign: 'left', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          color: selected ? '#1a1a1a' : C.slate, boxSizing: 'border-box',
+        }}>
+        <span>{selected?.name ?? '— Unassigned —'}</span>
+        <span style={{ fontSize: 10, color: C.slate, marginLeft: 8 }}>{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0,
+          background: C.white, borderRadius: 12, border: '1px solid #EBEBEB',
+          boxShadow: '0 8px 32px rgba(0,0,0,.12)', zIndex: 2000,
+          display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        }}>
+          <div style={{ padding: '10px 10px 6px', borderBottom: '1px solid #F3F3F3' }}>
+            <div style={{ position: 'relative' }}>
+              <input
+                autoFocus
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search company…"
+                style={{
+                  width: '100%', padding: '7px 12px 7px 30px', borderRadius: 8, border: '1px solid #EBEBEB',
+                  fontFamily: 'Figtree', fontSize: 12, outline: 'none', background: C.seasalt, boxSizing: 'border-box',
+                }}
+              />
+              <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 14 }}>⌕</span>
+            </div>
+          </div>
+          <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+            {filtered.length === 0 && (
+              <div style={{ padding: '12px 14px', fontSize: 12, color: C.slate, textAlign: 'center' }}>No results</div>
+            )}
+            {filtered.map((c) => {
+              const isActive = c.id === value;
+              return (
+                <div
+                  key={c.id}
+                  onClick={() => { onChange(c.id); setOpen(false); }}
+                  style={{
+                    padding: '9px 14px', fontSize: 13, cursor: 'pointer',
+                    background: isActive ? C.honeydew : 'transparent',
+                    color: isActive ? C.green : c.id === '' ? C.slate : '#1a1a1a',
+                    fontWeight: isActive ? 700 : 400,
+                  }}
+                  onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = C.seasalt; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = isActive ? C.honeydew : 'transparent'; }}>
+                  {c.name}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -193,13 +286,7 @@ function VehicleModal({ initial, title, companies, onSave, onDelete, onClose }: 
         </div>
         <div>
           <FieldLabel>Company</FieldLabel>
-          <select value={companyId} onChange={(e) => setCompanyId(e.target.value)}
-            style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, cursor: 'pointer' }}>
-            <option value="">— Unassigned —</option>
-            {companies.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
+          <CompanySelect value={companyId} companies={companies} onChange={setCompanyId} />
         </div>
 
         {confirmDelete && (
@@ -694,11 +781,7 @@ function DriverModal({ initial, title, companies, onSave, onDelete, onClose }: D
         </div>
         <div>
           <FieldLabel>Company</FieldLabel>
-          <select value={companyId} onChange={(e) => setCompanyId(e.target.value)}
-            style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, cursor: 'pointer' }}>
-            <option value="">— Unassigned —</option>
-            {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
+          <CompanySelect value={companyId} companies={companies} onChange={setCompanyId} />
         </div>
 
         {confirmDelete && (
