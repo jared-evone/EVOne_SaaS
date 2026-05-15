@@ -8,3 +8,8 @@ dist
 *.tsbuildinfo
 vite.config.d.ts
 vite.config.js
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
