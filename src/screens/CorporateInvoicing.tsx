@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import * as XLSX from 'xlsx';
 import { PDFDownloadLink, Document, Page, View, Text, Image as PdfImage, pdf } from '@react-pdf/renderer';
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
@@ -9,8 +10,7 @@ import {
   fmtMonthLabel, fmtDateTime, fmtKwh, fmtAmt, fmtRate,
 } from './portal/pdfShared';
 import { CustomerPortal } from './portal/CustomerPortal';
-import { InvoicePDF } from './portal/InvoicePDF';
-import { upsertDocument, blobToBase64, nextInvoiceSeq, makeInvoiceNumber } from './portal/portalDb';
+import { upsertDocument, blobToBase64 } from './portal/portalDb';
 import { supabase } from '../lib/supabase';
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -49,14 +49,6 @@ export interface SpCorpRecord {
   startDateTime: string;
   endDateTime: string;
   energyKwh: number;
-}
-
-interface ColMapping {
-  email: string;
-  location: string;
-  start: string;
-  end: string;
-  energy: string;
 }
 
 export interface CompanyStatement {
@@ -101,23 +93,68 @@ function downloadCSV(filename: string, rows: (string | number)[][]) {
   URL.revokeObjectURL(url);
 }
 
-function parseCSVLine(line: string): string[] {
-  const result: string[] = [];
-  let cur = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      inQuotes = !inQuotes;
-    } else if (ch === ',' && !inQuotes) {
-      result.push(cur.trim());
-      cur = '';
-    } else {
-      cur += ch;
-    }
+// Format a JS Date (from XLSX cellDates) as wall-clock "YYYY-MM-DD HH:MM:SS".
+// XLSX stores naïve datetimes (no timezone) — read via getUTC* to avoid TZ shift.
+function fmtExcelDate(d: Date): string {
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const min = String(d.getUTCMinutes()).padStart(2, '0');
+  const ss = String(d.getUTCSeconds()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}:${ss}`;
+}
+
+// Normalise an SP corporate cell to "YYYY-MM-DD HH:MM:SS".
+// Accepts: a JS Date (from XLSX cellDates), DD/MM/YYYY (with optional :SS, AM/PM,
+// 2-digit year), ISO `YYYY-MM-DD[T ]HH:MM[:SS]`, or an Excel date serial number.
+function parseSpCorpDate(raw: unknown): string {
+  if (raw == null || raw === '') return '';
+
+  if (raw instanceof Date && !isNaN(raw.getTime())) return fmtExcelDate(raw);
+
+  // Excel serial number (days since 1899-12-30, with fractional time-of-day)
+  if (typeof raw === 'number' && isFinite(raw)) {
+    const ms = Math.round((raw - 25569) * 86400 * 1000); // 25569 = 1970-01-01
+    return fmtExcelDate(new Date(ms));
   }
-  result.push(cur.trim());
-  return result;
+
+  const s = String(raw).trim();
+  if (!s) return '';
+
+  // DD/MM/YYYY HH:MM[:SS] [AM|PM] — also tolerates D/M/YY single-digits
+  const m1 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i);
+  if (m1) {
+    const [, dd, mm, yRaw, hRaw, min, sec, ampm] = m1;
+    let hh = parseInt(hRaw, 10);
+    if (ampm) {
+      const up = ampm.toUpperCase();
+      if (up === 'PM' && hh < 12) hh += 12;
+      if (up === 'AM' && hh === 12) hh = 0;
+    }
+    const yyyy = yRaw.length === 2 ? 2000 + parseInt(yRaw, 10) : parseInt(yRaw, 10);
+    return `${yyyy}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')} ${String(hh).padStart(2, '0')}:${min}:${(sec ?? '00').padStart(2, '0')}`;
+  }
+
+  // ISO: YYYY-MM-DD[T ]HH:MM[:SS]
+  const m2 = s.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (m2) {
+    const [, y, mo, d, h, min, sec] = m2;
+    return `${y}-${mo}-${d} ${h}:${min}:${sec ?? '00'}`;
+  }
+
+  return '';
+}
+
+// Find a column header in `row` by trimmed, case-insensitive match against any candidate
+function findKey(row: Record<string, unknown>, candidates: string[]): string | undefined {
+  const keys = Object.keys(row);
+  for (const c of candidates) {
+    const target = c.trim().toLowerCase();
+    const hit = keys.find((k) => k.trim().toLowerCase() === target);
+    if (hit) return hit;
+  }
+  return undefined;
 }
 
 export function buildStatement(
@@ -136,14 +173,6 @@ export function buildStatement(
   return { company, goparkinRows, spRows, totalKwh, appliedRate, totalAmount };
 }
 
-function guessCol(headers: string[], keywords: string[]): string {
-  for (const kw of keywords) {
-    const found = headers.find((h) => h.toLowerCase().includes(kw.toLowerCase()));
-    if (found) return found;
-  }
-  return headers[0] ?? '';
-}
-
 // ── FieldLabel ────────────────────────────────────────────────────
 
 function FieldLabel({ children }: { children: string }) {
@@ -151,67 +180,6 @@ function FieldLabel({ children }: { children: string }) {
     <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>
       {children}
     </label>
-  );
-}
-
-// ── Column Mapping Modal ──────────────────────────────────────────
-
-interface ColMappingModalProps {
-  headers: string[];
-  onConfirm: (mapping: ColMapping) => void;
-  onClose: () => void;
-}
-
-function ColMappingModal({ headers, onConfirm, onClose }: ColMappingModalProps) {
-  const [mapping, setMapping] = useState<ColMapping>({
-    email:    guessCol(headers, ['email', 'account', 'driver']),
-    location: guessCol(headers, ['location', 'carpark', 'site', 'place']),
-    start:    guessCol(headers, ['start', 'begin', 'from']),
-    end:      guessCol(headers, ['end', 'stop', 'to']),
-    energy:   guessCol(headers, ['energy', 'kwh', 'kw']),
-  });
-
-  const sel = (field: keyof ColMapping) => (
-    <select
-      value={mapping[field]}
-      onChange={(e) => setMapping((m) => ({ ...m, [field]: e.target.value }))}
-      style={{ width: '100%', padding: '9px 12px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, cursor: 'pointer' }}>
-      {headers.map((h) => <option key={h} value={h}>{h}</option>)}
-    </select>
-  );
-
-  return (
-    <div onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 500, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 20 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>Map CSV Columns</div>
-          <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
-        </div>
-        <div style={{ fontSize: 13, color: C.slate }}>
-          Tell us which columns in your SP corporate CSV correspond to each field.
-        </div>
-        <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-            <div><FieldLabel>Driver Email</FieldLabel>{sel('email')}</div>
-            <div><FieldLabel>Location</FieldLabel>{sel('location')}</div>
-            <div><FieldLabel>Start Date/Time</FieldLabel>{sel('start')}</div>
-            <div><FieldLabel>End Date/Time</FieldLabel>{sel('end')}</div>
-            <div><FieldLabel>Energy (kWh)</FieldLabel>{sel('energy')}</div>
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-          <button onClick={onClose}
-            style={{ padding: '9px 20px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-            Cancel
-          </button>
-          <button onClick={() => onConfirm(mapping)}
-            style={{ padding: '9px 24px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-            Import Records
-          </button>
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -603,14 +571,12 @@ export function ScreenCorporateInvoicing() {
   const [spDrivers, setSpDrivers] = useState<CRMDriver[]>([]);
   const [goparkinRecords, setGoparkinRecords] = useState<GoParkinRow[]>([]);
   const [spCorpRecords, setSpCorpRecords] = useState<SpCorpRecord[]>([]);
-  const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
-  const [pendingRows, setPendingRows] = useState<string[][]>([]);
-  const [mappingModal, setMappingModal] = useState(false);
   const [pulling, setPulling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedStatement, setSelectedStatement] = useState<CompanyStatement | null>(null);
   const [publishing, setPublishing] = useState<{ done: number; total: number } | null>(null);
   const [publishResult, setPublishResult] = useState<string | null>(null);
+  const [rowBusyId, setRowBusyId] = useState<string | null>(null); // company id currently downloading/publishing
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -666,35 +632,79 @@ export function ScreenCorporateInvoicing() {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = '';
-    const text = await file.text();
-    const lines = text.split(/\r?\n/).filter((l) => l.trim());
-    if (lines.length < 2) { setError('CSV has no data rows.'); return; }
-    const headers = parseCSVLine(lines[0]);
-    const dataRows = lines.slice(1).map(parseCSVLine);
-    setCsvHeaders(headers);
-    setPendingRows(dataRows);
-    setMappingModal(true);
-  };
+    setError(null);
+    try {
+      const buffer = await file.arrayBuffer();
+      // cellDates: true → dates come through as JS Date objects (avoids relying on
+      // the workbook's display format string).
+      const wb = XLSX.read(new Uint8Array(buffer), { type: 'array', cellDates: true });
+      const SHEET = 'EVOne Corporate fleet';
+      const sheet = wb.Sheets[SHEET];
+      if (!sheet) {
+        setError(`Sheet "${SHEET}" not found. Available sheets: ${wb.SheetNames.join(', ')}`);
+        return;
+      }
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '', raw: true });
+      if (rows.length === 0) {
+        setError(`Sheet "${SHEET}" is empty.`);
+        return;
+      }
 
-  const applyMapping = (mapping: ColMapping) => {
-    const idxOf = (col: string) => csvHeaders.indexOf(col);
-    const ei = idxOf(mapping.email);
-    const li = idxOf(mapping.location);
-    const si = idxOf(mapping.start);
-    const ni = idxOf(mapping.end);
-    const ki = idxOf(mapping.energy);
-    const parsed: SpCorpRecord[] = pendingRows
-      .filter((row) => row.length > Math.max(ei, li, si, ni, ki))
-      .map((row) => ({
-        driverEmail: (row[ei] ?? '').toLowerCase().trim(),
-        location: row[li] ?? '',
-        startDateTime: row[si] ?? '',
-        endDateTime: row[ni] ?? '',
-        energyKwh: parseFloat(row[ki] ?? '0') || 0,
-      }))
-      .filter((r) => r.driverEmail && r.energyKwh > 0);
-    setSpCorpRecords(parsed);
-    setMappingModal(false);
+      // Resolve column headers once, tolerant of whitespace and case differences
+      const sample = rows[0];
+      const kDate   = findKey(sample, ['Date', 'Charging Date', 'Start Date']);
+      const kLoc    = findKey(sample, ['Location Name', 'Location']);
+      const kEnergy = findKey(sample, ['CDR Total Energy', 'Total Energy', 'Energy (kWh)', 'Energy']);
+      const kEmail  = findKey(sample, ['Driver Email', 'Email', 'Account Email']);
+
+      const missing: string[] = [];
+      if (!kDate)   missing.push('Date');
+      if (!kEnergy) missing.push('CDR Total Energy');
+      if (!kEmail)  missing.push('Driver Email');
+      if (missing.length > 0) {
+        setError(`Could not find required columns: ${missing.join(', ')}. Headers in sheet: ${Object.keys(sample).join(', ')}`);
+        return;
+      }
+
+      const parsed: SpCorpRecord[] = [];
+      let skippedNoEmail = 0;
+      let skippedNoEnergy = 0;
+      let skippedBadDate = 0;
+
+      for (const r of rows) {
+        const email = String(r[kEmail!] ?? '').toLowerCase().trim();
+        const energyRaw = r[kEnergy!];
+        // parseFloat('') is NaN — empty cells get skipped; 0 kWh sessions are kept.
+        const energy = typeof energyRaw === 'number'
+          ? energyRaw
+          : parseFloat(String(energyRaw ?? '').replace(/,/g, ''));
+        const dt = parseSpCorpDate(r[kDate!]);
+
+        if (!email)         { skippedNoEmail++; continue; }
+        if (isNaN(energy))  { skippedNoEnergy++; continue; }
+        if (!dt)            { skippedBadDate++; continue; }
+
+        parsed.push({
+          driverEmail: email,
+          location: kLoc ? String(r[kLoc] ?? '').trim() : '',
+          startDateTime: dt,
+          endDateTime: dt, // SP corporate sheet only carries a single timestamp per session
+          energyKwh: energy,
+        });
+      }
+
+      setSpCorpRecords(parsed);
+
+      const skippedTotal = skippedNoEmail + skippedNoEnergy + skippedBadDate;
+      if (parsed.length === 0) {
+        const sampleDateVal = rows[0][kDate!];
+        setError(`No usable rows in "${SHEET}". Skipped: ${skippedNoEmail} no email, ${skippedNoEnergy} empty energy cell, ${skippedBadDate} unparseable date. Sample Date cell: ${JSON.stringify(sampleDateVal)}`);
+      } else if (skippedTotal > 0) {
+        setError(`Imported ${parsed.length} rows; skipped ${skippedTotal} (${skippedNoEmail} no email, ${skippedNoEnergy} empty energy cell, ${skippedBadDate} unparseable date).`);
+      }
+    } catch (err) {
+      setError(`Failed to read XLSX: ${(err as Error).message ?? 'unknown error'}`);
+    }
   };
 
   const publishAll = async (toPublish: CompanyStatement[]) => {
@@ -702,41 +712,77 @@ export function ScreenCorporateInvoicing() {
     setPublishResult(null);
     setPublishing({ done: 0, total: toPublish.length });
     try {
-      const startSeq = await nextInvoiceSeq(billingMonth);
-      let seq = startSeq;
       for (let i = 0; i < toPublish.length; i++) {
         const stmt = toPublish[i];
-        const issuedAt = new Date();
-        const invoiceNumber = makeInvoiceNumber(billingMonth, seq);
-        seq += 1;
-
-        // Render both PDFs to base64
         const stmtBlob = await pdf(<CorporateStatementPDF stmt={stmt} billingMonth={billingMonth} />).toBlob();
         const stmtB64 = await blobToBase64(stmtBlob);
 
-        const invBlob = await pdf(<InvoicePDF stmt={stmt} billingMonth={billingMonth} invoiceNumber={invoiceNumber} issuedAt={issuedAt} />).toBlob();
-        const invB64 = await blobToBase64(invBlob);
-
-        const baseDoc = {
+        await upsertDocument({
           company_id: stmt.company.id,
           billing_month: billingMonth,
+          doc_type: 'statement',
+          invoice_number: null,
           statement_data: stmt,
+          pdf_base64: stmtB64,
           total_kwh: stmt.totalKwh,
           total_amount: stmt.totalAmount,
           applied_rate: stmt.appliedRate,
           issued_by: 'admin',
-        };
-
-        await upsertDocument({ ...baseDoc, doc_type: 'statement', invoice_number: null, pdf_base64: stmtB64 });
-        await upsertDocument({ ...baseDoc, doc_type: 'invoice',   invoice_number: invoiceNumber, pdf_base64: invB64 });
+        });
 
         setPublishing({ done: i + 1, total: toPublish.length });
       }
-      setPublishResult(`Published ${toPublish.length} statement${toPublish.length !== 1 ? 's' : ''} + invoice${toPublish.length !== 1 ? 's' : ''} for ${fmtMonthLabel(billingMonth)}.`);
+      setPublishResult(`Published ${toPublish.length} statement${toPublish.length !== 1 ? 's' : ''} for ${fmtMonthLabel(billingMonth)}. Upload the matching invoices from your accounting software in the Master View.`);
     } catch (e) {
       setError(`Publish failed: ${(e as Error).message ?? 'unknown error'}`);
     } finally {
       setPublishing(null);
+    }
+  };
+
+  const downloadStatementPdf = async (stmt: CompanyStatement) => {
+    setRowBusyId(stmt.company.id);
+    try {
+      const blob = await pdf(<CorporateStatementPDF stmt={stmt} billingMonth={billingMonth} />).toBlob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${stmt.company.name}_${billingMonth}_statement.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(`Download failed: ${(e as Error).message ?? 'unknown error'}`);
+    } finally {
+      setRowBusyId(null);
+    }
+  };
+
+  const publishOne = async (stmt: CompanyStatement) => {
+    setError(null);
+    setPublishResult(null);
+    setRowBusyId(stmt.company.id);
+    try {
+      const blob = await pdf(<CorporateStatementPDF stmt={stmt} billingMonth={billingMonth} />).toBlob();
+      const b64 = await blobToBase64(blob);
+      await upsertDocument({
+        company_id: stmt.company.id,
+        billing_month: billingMonth,
+        doc_type: 'statement',
+        invoice_number: null,
+        statement_data: stmt,
+        pdf_base64: b64,
+        total_kwh: stmt.totalKwh,
+        total_amount: stmt.totalAmount,
+        applied_rate: stmt.appliedRate,
+        issued_by: 'admin',
+      });
+      setPublishResult(`Published statement for ${stmt.company.name} (${fmtMonthLabel(billingMonth)}).`);
+    } catch (e) {
+      setError(`Publish failed: ${(e as Error).message ?? 'unknown error'}`);
+    } finally {
+      setRowBusyId(null);
     }
   };
 
@@ -817,9 +863,9 @@ export function ScreenCorporateInvoicing() {
           <button
             onClick={() => fileRef.current?.click()}
             style={{ padding: '9px 20px', borderRadius: 10, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-            ↑ Upload SP Corporate CSV
+            ⬆ Upload SP Corporate (.xlsx)
           </button>
-          <input ref={fileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={handleFileSelect} />
+          <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleFileSelect} />
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {goparkinRecords.length > 0 && (
               <span style={{ background: C.honeydew, color: C.green, fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 99, letterSpacing: '0.04em' }}>
@@ -896,7 +942,7 @@ export function ScreenCorporateInvoicing() {
         <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '60px 24px', textAlign: 'center', color: C.slate }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>◈</div>
           <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6, color: '#1a1a1a' }}>No data loaded</div>
-          <div style={{ fontSize: 13 }}>Pull GoParkin data and/or upload an SP Corporate CSV to generate statements.</div>
+          <div style={{ fontSize: 13 }}>Pull GoParkin data and/or upload an SP Corporate xlsx to generate statements.</div>
         </div>
       )}
 
@@ -929,7 +975,7 @@ export function ScreenCorporateInvoicing() {
               <div style={{ flex: 1, minWidth: 200 }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>Ready to publish for {fmtMonthLabel(billingMonth)}</div>
                 <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
-                  {statements.length} statement{statements.length !== 1 ? 's' : ''} + {statements.length} invoice{statements.length !== 1 ? 's' : ''} will be saved to the customer portals.
+                  {statements.length} statement{statements.length !== 1 ? 's' : ''} will be saved to the customer portals. Invoices are uploaded separately in the Master View.
                 </div>
               </div>
               <button onClick={() => publishAll(statements)} disabled={!!publishing}
@@ -968,12 +1014,31 @@ export function ScreenCorporateInvoicing() {
                         </span>
                       </td>
                       <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 700, color: C.green }}>{fmtAmt(stmt.totalAmount)}</td>
-                      <td style={{ padding: '12px 16px' }}>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setSelectedStatement(stmt); }}
-                          style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-                          View Statement
-                        </button>
+                      <td style={{ padding: '12px 16px', whiteSpace: 'nowrap' }} onClick={(e) => e.stopPropagation()}>
+                        {(() => {
+                          const busy = rowBusyId === stmt.company.id;
+                          return (
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              <button
+                                onClick={() => setSelectedStatement(stmt)}
+                                style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                                View
+                              </button>
+                              <button
+                                onClick={() => downloadStatementPdf(stmt)}
+                                disabled={busy}
+                                style={{ padding: '6px 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1 }}>
+                                ⬇ PDF
+                              </button>
+                              <button
+                                onClick={() => publishOne(stmt)}
+                                disabled={busy}
+                                style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: busy ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: busy ? 'default' : 'pointer' }}>
+                                {busy ? '…' : '↑ Publish'}
+                              </button>
+                            </div>
+                          );
+                        })()}
                       </td>
                     </tr>
                   );
@@ -985,14 +1050,6 @@ export function ScreenCorporateInvoicing() {
             </table>
           </div>
         </div>
-      )}
-
-      {mappingModal && (
-        <ColMappingModal
-          headers={csvHeaders}
-          onConfirm={applyMapping}
-          onClose={() => setMappingModal(false)}
-        />
       )}
 
       {selectedStatement && (

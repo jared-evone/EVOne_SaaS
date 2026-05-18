@@ -55,6 +55,42 @@ export async function deleteAccount(id: string): Promise<void> {
   if (error) throw error;
 }
 
+// Pre-create empty (credentials-less) accounts for every company that doesn't yet
+// have one. Returns how many were created.
+export async function seedAccountsForAllCompanies(): Promise<number> {
+  const [coRes, exRes] = await Promise.all([
+    supabase.from('crm_companies').select('id'),
+    supabase.from('customer_portal_accounts').select('company_id'),
+  ]);
+  if (coRes.error) throw coRes.error;
+  if (exRes.error) throw exRes.error;
+  const have = new Set((exRes.data ?? []).map((r) => (r as { company_id: string }).company_id));
+  const toCreate = (coRes.data ?? [])
+    .map((c) => (c as { id: string }).id)
+    .filter((id) => !have.has(id));
+  if (toCreate.length === 0) return 0;
+  const { error } = await supabase
+    .from('customer_portal_accounts')
+    .insert(toCreate.map((company_id) => ({ company_id, email: null, password_hash: null, password_salt: null })));
+  if (error) throw error;
+  return toCreate.length;
+}
+
+// Fill in email + freshly hashed password on an existing precreated row.
+export async function configureAccount(id: string, email: string, salt: string, password: string): Promise<void> {
+  const password_hash = await hashPassword(salt, password);
+  const { error } = await supabase
+    .from('customer_portal_accounts')
+    .update({
+      email: email.trim().toLowerCase(),
+      password_hash,
+      password_salt: salt,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id);
+  if (error) throw error;
+}
+
 export async function findAccountByEmail(email: string): Promise<PortalAccount | null> {
   const { data, error } = await supabase
     .from('customer_portal_accounts')
@@ -83,6 +119,16 @@ export async function listDocumentsForCompany(companyId: string): Promise<Portal
     .order('doc_type');
   if (error) throw error;
   return (data as PortalDocument[]) ?? [];
+}
+
+export async function countFleetForCompany(companyId: string): Promise<{ vehicles: number; spDrivers: number }> {
+  const [v, d] = await Promise.all([
+    supabase.from('crm_vehicles').select('id', { count: 'exact', head: true }).eq('company_id', companyId),
+    supabase.from('crm_sp_drivers').select('id', { count: 'exact', head: true }).eq('company_id', companyId),
+  ]);
+  if (v.error) throw v.error;
+  if (d.error) throw d.error;
+  return { vehicles: v.count ?? 0, spDrivers: d.count ?? 0 };
 }
 
 export async function countDocsByCompany(): Promise<Record<string, number>> {
@@ -116,6 +162,93 @@ export async function nextInvoiceSeq(billingMonth: string): Promise<number> {
 
 export function makeInvoiceNumber(billingMonth: string, seq: number): string {
   return `INV-${billingMonth}-${String(seq).padStart(4, '0')}`;
+}
+
+export async function deleteDocument(id: string): Promise<void> {
+  const { error } = await supabase.from('customer_portal_documents').delete().eq('id', id);
+  if (error) throw error;
+}
+
+// Manually upload a statement PDF for a (company, billing_month). Used when the
+// admin wants to override or backfill outside the Generate flow. statement_data
+// is a minimal placeholder — the in-app StatementView modal will render empty
+// breakdowns but the PDF download still works.
+export async function uploadStatementForCompany(args: {
+  company_id: string;
+  billing_month: string;
+  pdf_base64: string;
+  total_amount_override?: number;
+  total_kwh_override?: number;
+}): Promise<void> {
+  const total_kwh    = args.total_kwh_override    ?? 0;
+  const total_amount = args.total_amount_override ?? 0;
+  const placeholder: PortalStatementData = {
+    company: { id: args.company_id, name: '', base_rate: 0, threshold_kwh: 0, discounted_rate: 0 },
+    goparkinRows: [],
+    spRows: [],
+    totalKwh: total_kwh,
+    appliedRate: 0,
+    totalAmount: total_amount,
+  };
+  await upsertDocument({
+    company_id: args.company_id,
+    billing_month: args.billing_month,
+    doc_type: 'statement',
+    invoice_number: null,
+    statement_data: placeholder,
+    pdf_base64: args.pdf_base64,
+    total_kwh,
+    total_amount,
+    applied_rate: 0,
+    issued_by: 'admin',
+  });
+}
+
+// Upload an externally-generated invoice PDF for a (company, billing_month).
+// If a published statement exists for the same key, inherits its totals so the
+// invoices table displays consistent numbers. Otherwise falls back to whatever
+// the admin entered, then 0.
+export async function uploadInvoiceForCompany(args: {
+  company_id: string;
+  billing_month: string;
+  invoice_number: string;
+  pdf_base64: string;
+  total_amount_override?: number;
+  total_kwh_override?: number;
+}): Promise<void> {
+  const { data: stmt, error: stmtErr } = await supabase
+    .from('customer_portal_documents')
+    .select('statement_data, total_kwh, total_amount, applied_rate')
+    .eq('company_id', args.company_id)
+    .eq('billing_month', args.billing_month)
+    .eq('doc_type', 'statement')
+    .maybeSingle();
+  if (stmtErr) throw stmtErr;
+
+  const total_kwh    = args.total_kwh_override    ?? (stmt as { total_kwh?: number } | null)?.total_kwh    ?? 0;
+  const total_amount = args.total_amount_override ?? (stmt as { total_amount?: number } | null)?.total_amount ?? 0;
+  const applied_rate = (stmt as { applied_rate?: number } | null)?.applied_rate ?? 0;
+  const statement_data = (stmt as { statement_data?: unknown } | null)?.statement_data ?? {
+    company: { id: args.company_id, name: '', base_rate: 0, threshold_kwh: 0, discounted_rate: 0 },
+    goparkinRows: [],
+    spRows: [],
+    totalKwh: total_kwh,
+    appliedRate: applied_rate,
+    totalAmount: total_amount,
+  };
+
+  await upsertDocument({
+    company_id: args.company_id,
+    billing_month: args.billing_month,
+    doc_type: 'invoice',
+    invoice_number: args.invoice_number.trim() || null,
+    statement_data: statement_data as PortalStatementData,
+    pdf_base64: args.pdf_base64,
+    total_kwh,
+    total_amount,
+    applied_rate,
+    issued_by: 'admin',
+  });
 }
 
 export async function upsertDocument(args: {

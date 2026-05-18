@@ -1,9 +1,10 @@
 export interface PortalAccount {
   id: string;
   company_id: string;
-  email: string;
-  password_hash: string;
-  password_salt: string;
+  // null = account precreated for the company but credentials not yet set up
+  email: string | null;
+  password_hash: string | null;
+  password_salt: string | null;
   last_login_at: string | null;
   created_at: string;
   updated_at: string;

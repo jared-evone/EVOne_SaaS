@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { C } from '../../theme';
 import { Logo } from '../../components/Logo';
+import { KPICard } from '../../components/KPICard';
 import { StatementView } from '../CorporateInvoicing';
-import { findAccountByEmail, recordLogin, listDocumentsForCompany, downloadPdfFromBase64 } from './portalDb';
+import { findAccountByEmail, recordLogin, listDocumentsForCompany, downloadPdfFromBase64, countFleetForCompany } from './portalDb';
 import { verifyPassword } from './portalAuth';
 import type { PortalAccount, PortalDocument, DocType } from './types';
 
@@ -46,6 +47,7 @@ export function CustomerLogin({ onLoginChange }: Props) {
     try {
       const found = await findAccountByEmail(email);
       if (!found) { setErr('No account found for that email.'); return; }
+      if (!found.password_hash || !found.password_salt) { setErr('This account has not been set up yet. Please contact your administrator.'); return; }
       const ok = await verifyPassword(found.password_salt, found.password_hash, password);
       if (!ok) { setErr('Incorrect password.'); return; }
       await recordLogin(found.id);
@@ -100,14 +102,16 @@ export function CustomerLogin({ onLoginChange }: Props) {
 
 function CustomerDashboard({ account, onLogout }: { account: PortalAccount; onLogout: () => void }) {
   const [docs, setDocs] = useState<PortalDocument[]>([]);
+  const [fleet, setFleet] = useState<{ vehicles: number; spDrivers: number }>({ vehicles: 0, spDrivers: 0 });
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<DocType>('statement');
   const [viewing, setViewing] = useState<PortalDocument | null>(null);
 
   useEffect(() => {
-    listDocumentsForCompany(account.company_id)
-      .then(setDocs)
-      .finally(() => setLoading(false));
+    Promise.all([
+      listDocumentsForCompany(account.company_id).then(setDocs),
+      countFleetForCompany(account.company_id).then(setFleet),
+    ]).finally(() => setLoading(false));
   }, [account.company_id]);
 
   const visible = docs.filter((d) => d.doc_type === activeTab);
@@ -128,6 +132,12 @@ function CustomerDashboard({ account, onLogout }: { account: PortalAccount; onLo
           style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.4)', background: 'transparent', color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
           Sign Out
         </button>
+      </div>
+
+      {/* Registered fleet */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 14 }}>
+        <KPICard label="Registered GoParkin Vehicles" value={String(fleet.vehicles)} sub="vehicle plates on file" />
+        <KPICard label="Registered SP Drivers"       value={String(fleet.spDrivers)} sub="driver emails on file" />
       </div>
 
       {/* Tabs */}
