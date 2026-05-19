@@ -14,36 +14,42 @@ import { ScreenSuppliers } from './screens/Suppliers';
 import { ScreenCorporateCRM } from './screens/CorporateCRM';
 import { ScreenChargingRecords } from './screens/ChargingRecords';
 import { ScreenCorporateInvoicing } from './screens/CorporateInvoicing';
-import { Login, ROLE_LABELS, type Role } from './screens/Login';
+import { ScreenCPOChargers } from './screens/CPOChargers';
+import { ScreenSettings } from './screens/Settings';
+import { ScreenDBHealth } from './screens/DBHealth';
+import { Login } from './screens/Login';
 import { TSDWorkspace } from './screens/tsd/TSDWorkspace';
+import { PublicApplication } from './screens/crm/PublicApplication';
+import {
+  PermissionsProvider, usePermissions,
+  DEPARTMENT_LABELS, DEPARTMENT_SCREENS,
+  type ScreenKey, type SignedInUser,
+} from './permissions';
 
-type ScreenId =
-  | 'overview'
-  | 'orders'
-  | 'installations'
-  | 'customers'
-  | 'social'
-  | 'sales'
-  | 'purchaseorders'
-  | 'inventory'
-  | 'suppliers'
-  | 'corporatecrm'
-  | 'charging'
-  | 'corporateinvoicing';
+type ScreenId = ScreenKey;
 
-const NAV_ALL: { id: ScreenId; icon: string; label: string; roles?: Role[] }[] = [
-  { id: 'overview',       icon: '⊞', label: 'Overview' },
-  { id: 'orders',         icon: '◈', label: 'Invoices' },
-  { id: 'installations',  icon: '◎', label: 'Installations' },
-  { id: 'customers',      icon: '◉', label: 'Customers' },
-  { id: 'social',         icon: '◫', label: 'Social Media Planner' },
-  { id: 'sales',          icon: '◐', label: 'Sales' },
-  { id: 'purchaseorders', icon: '◧', label: 'Purchase Orders' },
-  { id: 'inventory',      icon: '▦', label: 'Inventory & Products' },
-  { id: 'suppliers',      icon: '◑', label: 'Suppliers' },
-  { id: 'corporatecrm',        icon: '◉', label: 'Corporate CRM',          roles: ['cpo'] },
-  { id: 'charging',            icon: '⚡', label: 'Charging Records',        roles: ['cpo'] },
-  { id: 'corporateinvoicing',  icon: '◈', label: 'Corporate Invoicing',      roles: ['cpo'] },
+type NavLeaf  = { kind: 'leaf';  id: ScreenId; icon: string; label: string };
+type NavGroup = { kind: 'group'; key: string;  icon: string; label: string; children: NavLeaf[] };
+type NavEntry = NavLeaf | NavGroup;
+
+const NAV_ALL: NavEntry[] = [
+  { kind: 'leaf', id: 'overview',          icon: '⊞', label: 'Overview' },
+  { kind: 'leaf', id: 'orders',            icon: '◈', label: 'Invoices' },
+  { kind: 'leaf', id: 'installations',     icon: '◎', label: 'Installations' },
+  { kind: 'leaf', id: 'customers',         icon: '◉', label: 'Customers' },
+  { kind: 'leaf', id: 'social',            icon: '◫', label: 'Social Media Planner' },
+  { kind: 'leaf', id: 'sales',             icon: '◐', label: 'Sales' },
+  { kind: 'leaf', id: 'purchaseorders',    icon: '◧', label: 'Purchase Orders' },
+  { kind: 'leaf', id: 'inventory',         icon: '▦', label: 'Inventory & Products' },
+  { kind: 'leaf', id: 'suppliers',         icon: '◑', label: 'Suppliers' },
+  { kind: 'leaf', id: 'corporatecrm',      icon: '◉', label: 'Corporate CRM' },
+  { kind: 'leaf', id: 'cpochargers',       icon: '▣', label: 'CPO Chargers' },
+  { kind: 'leaf', id: 'charging',          icon: '⚡', label: 'Charging Records' },
+  { kind: 'leaf', id: 'corporateinvoicing',icon: '◈', label: 'Corporate Invoicing' },
+  { kind: 'group', key: 'settings_group', icon: '◆', label: 'Settings', children: [
+    { kind: 'leaf', id: 'settings', icon: '◉', label: 'Users & Permissions' },
+    { kind: 'leaf', id: 'dbhealth', icon: '◫', label: 'DB Health' },
+  ]},
 ];
 
 const SCREEN_TITLES: Record<ScreenId, string> = {
@@ -57,8 +63,11 @@ const SCREEN_TITLES: Record<ScreenId, string> = {
   inventory:      'Inventory & Products',
   suppliers:      'Suppliers',
   corporatecrm:        'Corporate CRM',
+  cpochargers:         'CPO Chargers',
   charging:            'Charging Records',
   corporateinvoicing:  'Corporate Invoicing',
+  settings:            'Users & Permissions',
+  dbhealth:            'DB Health',
 };
 
 const screens: Record<ScreenId, JSX.Element> = {
@@ -72,21 +81,45 @@ const screens: Record<ScreenId, JSX.Element> = {
   inventory:      <ScreenInventory />,
   suppliers:      <ScreenSuppliers />,
   corporatecrm:        <ScreenCorporateCRM />,
+  cpochargers:         <ScreenCPOChargers />,
   charging:            <ScreenChargingRecords />,
   corporateinvoicing:  <ScreenCorporateInvoicing />,
+  settings:            <ScreenSettings />,
+  dbhealth:            <ScreenDBHealth />,
 };
 
 interface DashboardProps {
-  role: Role;
   onSignOut: () => void;
 }
 
-function Dashboard({ role, onSignOut }: DashboardProps) {
-  const NAV = NAV_ALL.filter((n) =>
-    n.roles ? n.roles.includes(role) : role !== 'cpo',
-  );
-  const [screen, setScreen] = useState<ScreenId>(NAV[0].id);
+function Dashboard({ onSignOut }: DashboardProps) {
+  const { can, user } = usePermissions();
+  const departmentScreens = DEPARTMENT_SCREENS[user.department];
+  const isLeafVisible = (id: ScreenId) => departmentScreens.includes(id) && can(id, 'can_view');
+
+  const NAV: NavEntry[] = NAV_ALL.flatMap((n): NavEntry[] => {
+    if (n.kind === 'leaf') return isLeafVisible(n.id) ? [n] : [];
+    const visibleChildren = n.children.filter((c) => isLeafVisible(c.id));
+    return visibleChildren.length > 0 ? [{ ...n, children: visibleChildren }] : [];
+  });
+
+  const allVisibleLeafIds: ScreenId[] = NAV.flatMap((n) => n.kind === 'leaf' ? [n.id] : n.children.map((c) => c.id));
+  const fallbackScreen: ScreenId = allVisibleLeafIds[0] ?? 'settings';
+  const [screen, setScreen] = useState<ScreenId>(fallbackScreen);
+  const activeScreen = allVisibleLeafIds.includes(screen) ? screen : fallbackScreen;
+
+  // Settings group expands automatically when one of its children is active
+  const initialOpen: Record<string, boolean> = {};
+  for (const n of NAV) {
+    if (n.kind === 'group') {
+      initialOpen[n.key] = n.children.some((c) => c.id === activeScreen);
+    }
+  }
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(initialOpen);
+  const toggleGroup = (key: string) => setOpenGroups((s) => ({ ...s, [key]: !s[key] }));
+
   const contentPad = 28;
+  const userInitial = (user.full_name || user.email).trim().charAt(0).toUpperCase();
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: C.seasalt }}>
@@ -120,15 +153,52 @@ function Dashboard({ role, onSignOut }: DashboardProps) {
           >
             Main
           </div>
-          {NAV.map((n) => (
-            <NavItem
-              key={n.id}
-              icon={n.icon}
-              label={n.label}
-              active={screen === n.id}
-              onClick={() => setScreen(n.id)}
-            />
-          ))}
+          {NAV.map((n) => {
+            if (n.kind === 'leaf') {
+              return (
+                <NavItem
+                  key={n.id}
+                  icon={n.icon}
+                  label={n.label}
+                  active={activeScreen === n.id}
+                  onClick={() => setScreen(n.id)}
+                />
+              );
+            }
+            const open = !!openGroups[n.key];
+            return (
+              <div key={n.key} style={{ display: 'flex', flexDirection: 'column', marginTop: 10 }}>
+                <button
+                  onClick={() => toggleGroup(n.key)}
+                  style={{
+                    display: 'flex', alignItems: 'center',
+                    padding: '10px 16px 4px',
+                    border: 'none', background: 'transparent', cursor: 'pointer',
+                    fontFamily: 'Figtree',
+                    fontSize: 10, fontWeight: 700,
+                    color: C.slate,
+                    letterSpacing: '0.08em', textTransform: 'uppercase',
+                    width: '100%', textAlign: 'left',
+                  }}>
+                  <span>{n.label}</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 8, transition: 'transform .15s', transform: open ? 'rotate(0deg)' : 'rotate(-90deg)' }}>▼</span>
+                </button>
+                {open && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    {n.children.map((c) => (
+                      <NavItem
+                        key={c.id}
+                        icon={c.icon}
+                        label={c.label}
+                        active={activeScreen === c.id}
+                        onClick={() => setScreen(c.id)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </nav>
 
         {/* User block */}
@@ -148,14 +218,14 @@ function Dashboard({ role, onSignOut }: DashboardProps) {
               flexShrink: 0,
             }}
           >
-            A
+            {userInitial}
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              Admin User
+              {user.full_name}
             </div>
             <div style={{ fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {ROLE_LABELS[role]}
+              {user.role_label}
             </div>
           </div>
           <button
@@ -206,7 +276,7 @@ function Dashboard({ role, onSignOut }: DashboardProps) {
         >
           <div>
             <div style={{ fontSize: 18, fontWeight: 700, color: C.green, letterSpacing: '-0.02em' }}>
-              {SCREEN_TITLES[screen]}
+              {SCREEN_TITLES[activeScreen]}
             </div>
             <div style={{ fontSize: 11, color: C.slate }}>May 4, 2026 · Kuala Lumpur</div>
           </div>
@@ -223,28 +293,38 @@ function Dashboard({ role, onSignOut }: DashboardProps) {
                 textTransform: 'uppercase',
               }}
             >
-              {ROLE_LABELS[role]}
+              {DEPARTMENT_LABELS[user.department]} · {user.role_label}
             </span>
           </div>
         </header>
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: contentPad }}>{screens[screen]}</div>
+        <div style={{ flex: 1, overflowY: 'auto', padding: contentPad }}>{screens[activeScreen]}</div>
       </main>
     </div>
   );
 }
 
 export default function App() {
-  const [role, setRole] = useState<Role | null>(null);
+  const [user, setUser] = useState<SignedInUser | null>(null);
 
-  if (!role) {
-    return <Login onLogin={setRole} />;
+  // Public account-opening invite: bypass login entirely.
+  const applyToken = new URLSearchParams(window.location.search).get('apply');
+  if (applyToken) {
+    return <PublicApplication token={applyToken} />;
   }
 
-  // TSD role drops into the Work Order workspace, not the global dashboard
-  if (role === 'tech') {
-    return <TSDWorkspace onSignOut={() => setRole(null)} />;
+  if (!user) {
+    return <Login onLogin={setUser} />;
   }
 
-  return <Dashboard role={role} onSignOut={() => setRole(null)} />;
+  // Technical Service still routes to its dedicated workspace (no dashboard nav)
+  if (user.department === 'tech') {
+    return <TSDWorkspace onSignOut={() => setUser(null)} />;
+  }
+
+  return (
+    <PermissionsProvider user={user}>
+      <Dashboard onSignOut={() => setUser(null)} />
+    </PermissionsProvider>
+  );
 }

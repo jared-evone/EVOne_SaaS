@@ -3,6 +3,10 @@ import * as XLSX from 'xlsx';
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
+import { CarparksTab, type ManagedCarpark, type CpoLocationLite, type CarparkAgg } from './charging/CarparksTab';
+import { CsvImportTab } from './charging/CsvImportTab';
+
+const PREVIEW_LIMIT = 1000;
 
 const PER_PAGE = 15;
 const BATCH_SIZE = 500;
@@ -723,13 +727,35 @@ function UploadModal({ source, fileName, rows, warnings, dupeCount, onConfirm, o
 
 // ── Screen ────────────────────────────────────────────────────────
 
+interface SummaryRow {
+  total_count: number;
+  goparkin_count: number;
+  sp_count: number;
+  total_energy: number;
+  total_revenue: number;
+}
+
+interface CarparkAggRow {
+  carpark_name: string;
+  has_goparkin: boolean;
+  has_sp: boolean;
+  record_count: number;
+  total_kwh: number;
+  total_revenue: number;
+}
+
 export function ScreenChargingRecords() {
-  const [tab, setTab] = useState<'records' | 'sp_price'>('records');
+  const [tab, setTab] = useState<'records' | 'sp_price' | 'carparks' | 'csv_import'>('records');
   const [records, setRecords] = useState<ChargingRecord[]>([]);
+  const [summary, setSummary] = useState<SummaryRow | null>(null);
+  const [carparkAgg, setCarparkAgg] = useState<CarparkAgg[]>([]);
   const [carparkPrices, setCarparkPrices] = useState<SpCarparkPrice[]>([]);
+  const [managedCarparks, setManagedCarparks] = useState<ManagedCarpark[]>([]);
+  const [cpoLocations, setCpoLocations] = useState<CpoLocationLite[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [sourceFilter, setSourceFilter] = useState<'all' | 'goparkin' | 'sp'>('all');
+  const [cpoOnly, setCpoOnly] = useState(false);
   const [page, setPage] = useState(1);
 
   const [uploadModal, setUploadModal] = useState<{
@@ -754,22 +780,45 @@ export function ScreenChargingRecords() {
   const spRef = useRef<HTMLInputElement>(null);
 
   const fetchRecords = async () => {
-    const all: ChargingRecord[] = [];
-    const FETCH_BATCH = 1000;
-    let from = 0;
-    while (true) {
-      const { data, error } = await supabase
-        .from('crm_charging_records')
-        .select('*')
-        .order('start_date_time', { ascending: false })
-        .range(from, from + FETCH_BATCH - 1);
-      if (error || !data || data.length === 0) break;
-      all.push(...(data as ChargingRecord[]));
-      if (data.length < FETCH_BATCH) break;
-      from += FETCH_BATCH;
-    }
-    setRecords(all);
+    const { data } = await supabase
+      .from('crm_charging_records')
+      .select('*')
+      .order('start_date_time', { ascending: false })
+      .range(0, PREVIEW_LIMIT - 1);
+    setRecords((data as ChargingRecord[]) ?? []);
     setLoading(false);
+  };
+
+  const fetchSummary = async () => {
+    const { data, error } = await supabase.rpc('charging_records_summary');
+    if (error || !data) { setSummary(null); return; }
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row) { setSummary(null); return; }
+    setSummary({
+      total_count:    Number(row.total_count) || 0,
+      goparkin_count: Number(row.goparkin_count) || 0,
+      sp_count:       Number(row.sp_count) || 0,
+      total_energy:   Number(row.total_energy) || 0,
+      total_revenue:  Number(row.total_revenue) || 0,
+    });
+  };
+
+  const fetchCarparkAgg = async () => {
+    const { data, error } = await supabase.rpc('charging_records_by_carpark');
+    if (error || !data) { setCarparkAgg([]); return; }
+    const rows = (data as CarparkAggRow[]).map((r) => {
+      const sources = new Set<'goparkin' | 'sp'>();
+      if (r.has_goparkin) sources.add('goparkin');
+      if (r.has_sp)       sources.add('sp');
+      return {
+        carpark_name: r.carpark_name,
+        sources,
+        records: Number(r.record_count) || 0,
+        kwh:     Number(r.total_kwh) || 0,
+        revenue: Number(r.total_revenue) || 0,
+      };
+    });
+    setCarparkAgg(rows);
   };
 
   const fetchCarparkPrices = async () => {
@@ -780,15 +829,31 @@ export function ScreenChargingRecords() {
     setCarparkPrices((data as SpCarparkPrice[]) ?? []);
   };
 
+  const fetchManagedCarparks = async () => {
+    const { data } = await supabase.from('cpo_managed_carparks').select('*');
+    setManagedCarparks((data as ManagedCarpark[]) ?? []);
+  };
+
+  const fetchCpoLocations = async () => {
+    const { data } = await supabase.from('cpo_locations').select('id, name').order('name');
+    setCpoLocations((data as CpoLocationLite[]) ?? []);
+  };
+
+  const refreshAll = async () => {
+    await Promise.all([fetchRecords(), fetchSummary(), fetchCarparkAgg()]);
+  };
+
   useEffect(() => {
-    fetchRecords();
+    refreshAll();
     fetchCarparkPrices();
+    fetchManagedCarparks();
+    fetchCpoLocations();
   }, []);
 
   const clearTable = async () => {
     setClearDeleting(true);
     await supabase.from('crm_charging_records').delete().not('id', 'is', null);
-    await fetchRecords();
+    await refreshAll();
     setClearDeleting(false);
     setClearConfirm(false);
   };
@@ -856,19 +921,22 @@ export function ScreenChargingRecords() {
     }
   };
 
-  const gpCount = records.filter((r) => r.source === 'goparkin').length;
-  const spCount = records.filter((r) => r.source === 'sp').length;
-  const totalEnergy = records.reduce((s, r) => s + (r.total_energy_supplied_kwh ?? 0), 0);
-  const totalRevenue = records.reduce((s, r) => s + (r.payment_amount ?? 0), 0);
+  const totalCount   = summary?.total_count    ?? records.length;
+  const gpCount      = summary?.goparkin_count ?? records.filter((r) => r.source === 'goparkin').length;
+  const spCount      = summary?.sp_count       ?? records.filter((r) => r.source === 'sp').length;
+  const totalEnergy  = summary?.total_energy   ?? records.reduce((s, r) => s + Number(r.total_energy_supplied_kwh ?? 0), 0);
+  const totalRevenue = summary?.total_revenue  ?? records.reduce((s, r) => s + Number(r.payment_amount ?? 0), 0);
 
+  const managedSet = new Set(managedCarparks.map((m) => m.carpark_name));
   const visible = records.filter((r) => {
     const q = search.toLowerCase();
     const matchSource = sourceFilter === 'all' || r.source === sourceFilter;
+    const matchCpo = !cpoOnly || (r.carpark_code !== null && managedSet.has(r.carpark_code));
     const matchSearch = !q
       || (r.vehicle_plate_number ?? '').toLowerCase().includes(q)
       || (r.charger_id ?? '').toLowerCase().includes(q)
       || (r.carpark_code ?? '').toLowerCase().includes(q);
-    return matchSource && matchSearch;
+    return matchSource && matchCpo && matchSearch;
   });
 
   const totalPages = Math.max(1, Math.ceil(visible.length / PER_PAGE));
@@ -885,9 +953,11 @@ export function ScreenChargingRecords() {
     return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '60vh', color: C.slate, fontSize: 13 }}>Loading…</div>;
   }
 
-  const tabs: { id: 'records' | 'sp_price'; label: string }[] = [
-    { id: 'records',  label: 'Charging Records' },
-    { id: 'sp_price', label: '⚡ SP Price' },
+  const tabs: { id: 'records' | 'sp_price' | 'carparks' | 'csv_import'; label: string }[] = [
+    { id: 'records',    label: 'Charging Records' },
+    { id: 'carparks',   label: '◉ CPO Carparks' },
+    { id: 'sp_price',   label: '⚡ SP Price' },
+    { id: 'csv_import', label: '📋 CSV Import (Preview)' },
   ];
 
   return (
@@ -895,10 +965,10 @@ export function ScreenChargingRecords() {
 
       {/* KPI row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
-        <KPICard label="Total Records"  value={String(records.length)}          sub="charging transactions" accent />
+        <KPICard label="Total Records"  value={totalCount.toLocaleString()}     sub="charging transactions" accent />
         <KPICard label="Total Energy"   value={`${totalEnergy.toFixed(1)} kWh`} sub="energy supplied" />
         <KPICard label="Total Revenue"  value={`$${totalRevenue.toFixed(2)}`}   sub="payment collected" />
-        <KPICard label="CSMS Sources"   value={`${gpCount} / ${spCount}`}       sub="GoParkin / SP records" />
+        <KPICard label="CSMS Sources"   value={`${gpCount.toLocaleString()} / ${spCount.toLocaleString()}`} sub="GoParkin / SP records" />
       </div>
 
       {/* Tab bar */}
@@ -922,6 +992,21 @@ export function ScreenChargingRecords() {
         <SpPriceTab prices={carparkPrices} onRefresh={fetchCarparkPrices} />
       )}
 
+      {/* CPO Carparks tab */}
+      {tab === 'carparks' && (
+        <CarparksTab
+          agg={carparkAgg}
+          managed={managedCarparks}
+          locations={cpoLocations}
+          onRefresh={fetchManagedCarparks}
+        />
+      )}
+
+      {/* CSV Import preview tab (temporary) */}
+      {tab === 'csv_import' && (
+        <CsvImportTab onUploaded={refreshAll} />
+      )}
+
       {/* Records tab */}
       {tab === 'records' && (
         <>
@@ -937,6 +1022,17 @@ export function ScreenChargingRecords() {
                 </button>
               ))}
             </div>
+
+            {/* CPO-only toggle */}
+            <button onClick={() => { setCpoOnly((v) => !v); setPage(1); }}
+              title={managedCarparks.length === 0 ? 'No carparks marked as CPO yet — go to the CPO Carparks tab to tag them.' : ''}
+              style={{ padding: '7px 14px', borderRadius: 99,
+                border: `1px solid ${cpoOnly ? C.green : '#EBEBEB'}`,
+                background: cpoOnly ? C.honeydew : C.white,
+                color: cpoOnly ? C.green : C.slate,
+                fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+              {cpoOnly ? '✓ ' : ''}CPO Only <span style={{ opacity: 0.6, fontWeight: 600 }}>· {managedCarparks.length}</span>
+            </button>
 
             {/* Search */}
             <div style={{ position: 'relative', width: 260 }}>
@@ -957,7 +1053,7 @@ export function ScreenChargingRecords() {
                   color: SOURCE_COLORS.sp.color, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
                 ⬆ SP (.csv)
               </button>
-              <button onClick={fetchRecords}
+              <button onClick={refreshAll}
                 style={{ padding: '9px 14px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
                 ↻
               </button>
@@ -988,6 +1084,12 @@ export function ScreenChargingRecords() {
             <input ref={spRef} type="file" accept=".csv" style={{ display: 'none' }}
               onChange={(e) => handleFileSelect(e, 'sp')} />
           </div>
+
+          {summary && summary.total_count > records.length && (
+            <div style={{ background: C.honeydew, color: C.green, borderRadius: 10, padding: '8px 14px', fontSize: 12, fontWeight: 600 }}>
+              Preview showing the most recent {records.length.toLocaleString()} of {summary.total_count.toLocaleString()} records. KPI totals above reflect the full table.
+            </div>
+          )}
 
           <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
             <div style={{ overflowX: 'auto' }}>
@@ -1061,7 +1163,7 @@ export function ScreenChargingRecords() {
           rows={uploadModal.rows}
           warnings={uploadModal.warnings}
           dupeCount={uploadModal.dupeCount}
-          onConfirm={fetchRecords}
+          onConfirm={refreshAll}
           onClose={() => setUploadModal(null)}
         />
       )}

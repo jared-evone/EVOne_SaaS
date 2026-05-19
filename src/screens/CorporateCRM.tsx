@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
+import { AccountOpening } from './crm/AccountOpening';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -20,7 +21,7 @@ interface CRMVehicle {
   crm_companies: { name: string } | null;
 }
 
-type CRMTab = 'companies' | 'vehicles' | 'sp';
+type CRMTab = 'companies' | 'vehicles' | 'sp' | 'opening';
 
 interface CRMDriver {
   id: string;
@@ -127,6 +128,110 @@ export function CompanySelect({ value, companies, onChange }: CompanySelectProps
                     background: isActive ? C.honeydew : 'transparent',
                     color: isActive ? C.green : c.id === '' ? C.slate : '#1a1a1a',
                     fontWeight: isActive ? 700 : 400,
+                  }}
+                  onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = C.seasalt; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = isActive ? C.honeydew : 'transparent'; }}>
+                  {c.name}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Company Filter (pill-styled dropdown for list views) ──────────
+
+interface CompanyFilterProps {
+  value: string; // '' = All, 'unassigned' = no company, otherwise company.id
+  companies: CRMCompany[];
+  onChange: (v: string) => void;
+}
+
+export function CompanyFilter({ value, companies, onChange }: CompanyFilterProps) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const SENTINELS = [
+    { id: '',           name: 'All Companies' },
+    { id: 'unassigned', name: '— Unassigned —' },
+  ];
+  const all = [...SENTINELS, ...companies];
+  const filtered = all.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()));
+  const current = all.find((c) => c.id === value) ?? SENTINELS[0];
+  const isFiltering = value !== '';
+
+  return (
+    <div ref={ref} style={{ position: 'relative', width: 240 }}>
+      <button
+        type="button"
+        onClick={() => { setOpen((o) => !o); setSearch(''); }}
+        style={{
+          width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99,
+          border: `1px solid ${isFiltering ? C.green : '#EBEBEB'}`,
+          background: isFiltering ? C.honeydew : C.white,
+          color: isFiltering ? C.green : C.slate,
+          fontFamily: 'Figtree', fontSize: 13, fontWeight: isFiltering ? 700 : 500,
+          outline: 'none', cursor: 'pointer', textAlign: 'left',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          boxSizing: 'border-box', position: 'relative',
+        }}>
+        <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 13, color: isFiltering ? C.green : C.slate }}>◉</span>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{current.name}</span>
+        <span style={{ fontSize: 10, marginLeft: 8, color: isFiltering ? C.green : C.slate }}>{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0,
+          background: C.white, borderRadius: 12, border: '1px solid #EBEBEB',
+          boxShadow: '0 8px 32px rgba(0,0,0,.12)', zIndex: 2000,
+          display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 280,
+        }}>
+          <div style={{ padding: '10px 10px 6px', borderBottom: '1px solid #F3F3F3' }}>
+            <div style={{ position: 'relative' }}>
+              <input
+                autoFocus
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search company…"
+                style={{
+                  width: '100%', padding: '7px 12px 7px 30px', borderRadius: 8, border: '1px solid #EBEBEB',
+                  fontFamily: 'Figtree', fontSize: 12, outline: 'none', background: C.seasalt, boxSizing: 'border-box',
+                }}
+              />
+              <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 14 }}>⌕</span>
+            </div>
+          </div>
+          <div style={{ maxHeight: 280, overflowY: 'auto' }}>
+            {filtered.length === 0 && (
+              <div style={{ padding: '12px 14px', fontSize: 12, color: C.slate, textAlign: 'center' }}>No results</div>
+            )}
+            {filtered.map((c) => {
+              const isActive = c.id === value;
+              const isSentinel = c.id === '' || c.id === 'unassigned';
+              return (
+                <div
+                  key={c.id || c.name}
+                  onClick={() => { onChange(c.id); setOpen(false); }}
+                  style={{
+                    padding: '9px 14px', fontSize: 13, cursor: 'pointer',
+                    background: isActive ? C.honeydew : 'transparent',
+                    color: isActive ? C.green : isSentinel ? C.slate : '#1a1a1a',
+                    fontWeight: isActive ? 700 : isSentinel ? 600 : 400,
+                    borderBottom: c.id === 'unassigned' ? '1px solid #F3F3F3' : undefined,
                   }}
                   onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = C.seasalt; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = isActive ? C.honeydew : 'transparent'; }}>
@@ -563,6 +668,7 @@ function VehiclesTab({ companies, error }: VehiclesTabProps) {
   const [vehicles, setVehicles] = useState<CRMVehicle[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [companyFilter, setCompanyFilter] = useState(''); // '' = all, 'unassigned' = no company, otherwise company.id
   const [page, setPage] = useState(1);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<CRMVehicle | null>(null);
@@ -610,7 +716,10 @@ function VehiclesTab({ companies, error }: VehiclesTabProps) {
   const avgPerCompany = companiesCovered ? (vehicles.length / companiesCovered).toFixed(1) : '—';
 
   const visible = vehicles.filter((v) => {
+    if (companyFilter === 'unassigned' && v.company_id) return false;
+    if (companyFilter && companyFilter !== 'unassigned' && v.company_id !== companyFilter) return false;
     const q = search.toLowerCase();
+    if (!q) return true;
     return v.vehicle_plate.toLowerCase().includes(q) || (v.crm_companies?.name ?? '').toLowerCase().includes(q);
   });
   const totalPages = Math.max(1, Math.ceil(visible.length / PER_PAGE));
@@ -648,6 +757,8 @@ function VehiclesTab({ companies, error }: VehiclesTabProps) {
             style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
           <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}>⌕</span>
         </div>
+        <CompanyFilter value={companyFilter} companies={companies}
+          onChange={(v) => { setCompanyFilter(v); setPage(1); setSelected(new Set()); }} />
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
           {selected.size > 0 && !batchConfirm && (
             <>
@@ -1018,6 +1129,7 @@ export function ScreenCorporateCRM() {
     { id: 'companies', label: 'Companies' },
     { id: 'vehicles',  label: 'GoParkin Vehicles' },
     { id: 'sp',        label: 'SP Vehicles' },
+    { id: 'opening',   label: 'Account Opening' },
   ];
 
   if (loading) {
@@ -1041,6 +1153,7 @@ export function ScreenCorporateCRM() {
       {tab === 'companies' && <CompaniesTab companies={companies} onRefresh={fetchCompanies} error={error} />}
       {tab === 'vehicles'  && <VehiclesTab  companies={companies} error={error} />}
       {tab === 'sp'        && <SPDriversTab companies={companies} error={error} />}
+      {tab === 'opening'   && <AccountOpening />}
     </div>
   );
 }

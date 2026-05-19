@@ -571,6 +571,8 @@ export function ScreenCorporateInvoicing() {
   const [spDrivers, setSpDrivers] = useState<CRMDriver[]>([]);
   const [goparkinRecords, setGoparkinRecords] = useState<GoParkinRow[]>([]);
   const [spCorpRecords, setSpCorpRecords] = useState<SpCorpRecord[]>([]);
+  const [managedCarparks, setManagedCarparks] = useState<string[]>([]);
+  const [cpoOnly, setCpoOnly] = useState(true);
   const [pulling, setPulling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedStatement, setSelectedStatement] = useState<CompanyStatement | null>(null);
@@ -581,14 +583,16 @@ export function ScreenCorporateInvoicing() {
 
   useEffect(() => {
     const load = async () => {
-      const [{ data: co }, { data: ve }, { data: dr }] = await Promise.all([
+      const [{ data: co }, { data: ve }, { data: dr }, { data: cp }] = await Promise.all([
         supabase.from('crm_companies').select('*').order('name'),
         supabase.from('crm_vehicles').select('id, vehicle_plate, company_id'),
         supabase.from('crm_sp_drivers').select('id, driver_email, company_id'),
+        supabase.from('cpo_managed_carparks').select('carpark_name'),
       ]);
       setCompanies((co as CRMCompany[]) ?? []);
       setVehicles((ve as CRMVehicle[]) ?? []);
       setSpDrivers((dr as CRMDriver[]) ?? []);
+      setManagedCarparks(((cp as { carpark_name: string }[]) ?? []).map((r) => r.carpark_name));
     };
     load();
   }, []);
@@ -602,14 +606,18 @@ export function ScreenCorporateInvoicing() {
     const all: GoParkinRow[] = [];
     let from = 0;
     while (true) {
-      const { data, error: err } = await supabase
+      let q = supabase
         .from('crm_charging_records')
         .select('vehicle_plate_number, carpark_code, start_date_time, end_date_time, total_energy_supplied_kwh')
         .eq('source', 'goparkin')
         .eq('transaction_type', 'Corporate')
-        .gte('start_date_time', start)
-        .lt('start_date_time', end)
-        .range(from, from + PAGE - 1);
+        .eq('payment_status', 'Success')
+        .gte('end_date_time', start)
+        .lt('end_date_time', end);
+      if (cpoOnly && managedCarparks.length > 0) {
+        q = q.in('carpark_code', managedCarparks);
+      }
+      const { data, error: err } = await q.range(from, from + PAGE - 1);
       if (err) { setError(err.message); break; }
       if (!data || data.length === 0) break;
       for (const r of data) {
@@ -860,6 +868,16 @@ export function ScreenCorporateInvoicing() {
             style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: pulling ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: pulling ? 'default' : 'pointer' }}>
             {pulling ? 'Pulling…' : '⬇ Pull GoParkin Data'}
           </button>
+          <label title={managedCarparks.length === 0 ? 'No carparks marked CPO yet — go to Charging Records → CPO Carparks to tag them.' : ''}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', borderRadius: 10,
+              border: `1px solid ${cpoOnly ? C.green : '#EBEBEB'}`,
+              background: cpoOnly ? C.honeydew : C.white,
+              color: cpoOnly ? C.green : C.slate,
+              fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            <input type="checkbox" checked={cpoOnly} onChange={(e) => setCpoOnly(e.target.checked)}
+              style={{ width: 14, height: 14, accentColor: C.green, cursor: 'pointer' }} />
+            CPO carparks only <span style={{ opacity: 0.6, fontWeight: 600 }}>· {managedCarparks.length}</span>
+          </label>
           <button
             onClick={() => fileRef.current?.click()}
             style={{ padding: '9px 20px', borderRadius: 10, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
@@ -978,6 +996,52 @@ export function ScreenCorporateInvoicing() {
                   {statements.length} statement{statements.length !== 1 ? 's' : ''} will be saved to the customer portals. Invoices are uploaded separately in the Master View.
                 </div>
               </div>
+              <button
+                onClick={() => {
+                  const header = [
+                    'Company',
+                    'Threshold (kWh)',
+                    'Base Rate (SGD/kWh)',
+                    'Discounted Rate (SGD/kWh)',
+                    'GoParkin kWh',
+                    'SP kWh',
+                    'Total kWh',
+                    'Applied Rate (SGD/kWh)',
+                    'Rate Tier',
+                    'Total Amount (SGD)',
+                  ];
+                  const rows: (string | number)[][] = [header];
+                  for (const stmt of statements) {
+                    const gpKwh = Math.round(stmt.goparkinRows.reduce((s, r) => s + r.kwh, 0) * 100) / 100;
+                    const spKwh = Math.round(stmt.spRows.reduce((s, r) => s + r.energyKwh, 0) * 100) / 100;
+                    const tier = stmt.totalKwh >= Number(stmt.company.threshold_kwh) ? 'Discounted' : 'Base';
+                    rows.push([
+                      stmt.company.name,
+                      Number(stmt.company.threshold_kwh),
+                      Number(stmt.company.base_rate).toFixed(4),
+                      Number(stmt.company.discounted_rate).toFixed(4),
+                      gpKwh.toFixed(2),
+                      spKwh.toFixed(2),
+                      stmt.totalKwh.toFixed(2),
+                      Number(stmt.appliedRate).toFixed(4),
+                      tier,
+                      stmt.totalAmount.toFixed(2),
+                    ]);
+                  }
+                  rows.push([
+                    'TOTAL',
+                    '', '', '',
+                    statements.reduce((s, st) => s + st.goparkinRows.reduce((a, r) => a + r.kwh, 0), 0).toFixed(2),
+                    statements.reduce((s, st) => s + st.spRows.reduce((a, r) => a + r.energyKwh, 0), 0).toFixed(2),
+                    totalBillingKwh.toFixed(2),
+                    '', '',
+                    totalBillingAmt.toFixed(2),
+                  ]);
+                  downloadCSV(`corporate_invoicing_master_${billingMonth}.csv`, rows);
+                }}
+                style={{ padding: '9px 18px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                ⬇ Download Master CSV
+              </button>
               <button onClick={() => publishAll(statements)} disabled={!!publishing}
                 style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: publishing ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: publishing ? 'default' : 'pointer' }}>
                 {publishing ? 'Publishing…' : `↑ Publish All (${statements.length})`}
