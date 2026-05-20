@@ -35,6 +35,7 @@ interface Charger {
   num_connectors: number | null;
   brand_model: string | null;
   type_approval_id: string | null;
+  registration_code: string | null;
   next_maintenance_date: string | null;
   form_a_next_date: string | null;
   form_d_next_date: string | null;
@@ -358,6 +359,7 @@ function makeBlankCharger(locationId: string | null): ChargerForm {
     num_connectors: 1,
     brand_model: '',
     type_approval_id: '',
+    registration_code: '',
     next_maintenance_date: null,
     form_a_next_date: null,
     form_d_next_date: null,
@@ -446,6 +448,12 @@ function ChargerModal({ initial, title, locations, lockLocation, onSave, onDelet
             <input value={form.type_approval_id ?? ''} onChange={(e) => set('type_approval_id', e.target.value)}
               placeholder="e.g. TA-2024-0123" style={inputStyle()} />
           </div>
+        </div>
+
+        <div>
+          <FieldLabel>Registration Code</FieldLabel>
+          <input value={form.registration_code ?? ''} onChange={(e) => set('registration_code', e.target.value)}
+            placeholder="e.g. REG-2024-001" style={inputStyle()} />
         </div>
 
         {/* Hardware */}
@@ -826,6 +834,7 @@ function DetailModal({ charger, location, onEdit, onClose, onChanged }: DetailMo
             <InfoRow label="Type"              value={`${charger.charger_type ?? '—'}${charger.num_connectors ? ` · ${charger.num_connectors} connector${charger.num_connectors > 1 ? 's' : ''}` : ''}`} />
             <InfoRow label="Brand & Model"     value={charger.brand_model ?? '—'} />
             <InfoRow label="Type-Approval ID"  value={charger.type_approval_id ?? '—'} />
+            <InfoRow label="Registration Code" value={charger.registration_code ?? '—'} />
             <InfoRow label="Bay"               value={charger.bay_label ?? '—'} />
             <InfoRow label="Coordinates"       value={charger.latitude != null && charger.longitude != null ? `${charger.latitude}, ${charger.longitude}` : '—'} />
             <InfoRow label="Latest Reading"    value={latestKwh !== null ? `${Number(latestKwh).toLocaleString()} kWh` : '—'} />
@@ -1505,6 +1514,7 @@ export function ScreenCPOChargers() {
             num_connectors: editingCharger.num_connectors,
             brand_model: editingCharger.brand_model,
             type_approval_id: editingCharger.type_approval_id,
+            registration_code: editingCharger.registration_code,
             next_maintenance_date: editingCharger.next_maintenance_date,
             form_a_next_date: editingCharger.form_a_next_date,
             form_d_next_date: editingCharger.form_d_next_date,
