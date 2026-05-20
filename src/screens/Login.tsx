@@ -23,8 +23,8 @@ interface LoginProps {
 
 export function Login({ onLogin }: LoginProps) {
   const [department, setDepartment] = useState<Department>('cpo');
-  const [email, setEmail] = useState('admin@evone.com.my');
-  const [password, setPassword] = useState('1234');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -131,7 +131,7 @@ export function Login({ onLogin }: LoginProps) {
         </form>
 
         <div style={{ fontSize: 11, color: C.slate, textAlign: 'center', background: C.seasalt, border: '1px dashed #EBEBEB', borderRadius: 10, padding: '10px 14px', lineHeight: 1.5 }}>
-          Default credentials seeded: <strong>admin@evone.com.my</strong> / <strong>1234</strong> in each department.
+          Contact your department admin for access.
         </div>
       </div>
     </div>
