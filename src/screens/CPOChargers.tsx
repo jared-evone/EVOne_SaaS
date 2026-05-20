@@ -4,6 +4,7 @@ import { KPICard } from '../components/KPICard';
 import { BrandLogo, type Brand } from '../components/BrandLogo';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
+import { OneMapAutocomplete } from '../components/OneMapAutocomplete';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -220,8 +221,17 @@ function LocationModal({ initial, title, onSave, onDelete, onClose, chargerCount
         </div>
         <div>
           <FieldLabel>Address</FieldLabel>
-          <input value={form.address ?? ''} onChange={(e) => set('address', e.target.value)}
-            placeholder="10 Bayfront Avenue, Singapore 018956" style={inputStyle()} />
+          <OneMapAutocomplete
+            value={form.address ?? ''}
+            onChange={(t) => set('address', t)}
+            onPick={(r) => setForm((f) => ({
+              ...f, address: r.address, latitude: r.latitude, longitude: r.longitude,
+            }))}
+            placeholder="Start typing — pick a Singapore address to auto-fill lat/lng"
+          />
+          <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.4 }}>
+            Powered by <a href="https://www.onemap.gov.sg" target="_blank" rel="noreferrer" style={{ color: C.green, textDecoration: 'none', fontWeight: 600 }}>OneMap</a> (data.gov.sg). Selecting a suggestion auto-fills latitude &amp; longitude.
+          </div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <div>
