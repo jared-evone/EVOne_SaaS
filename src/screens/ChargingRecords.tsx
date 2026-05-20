@@ -3,6 +3,7 @@ import * as XLSX from 'xlsx';
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
+import { usePermissions } from '../permissions';
 import { CarparksTab, type ManagedCarpark, type CpoLocationLite, type CarparkAgg } from './charging/CarparksTab';
 import { CsvImportTab } from './charging/CsvImportTab';
 
@@ -435,7 +436,7 @@ function NewCarparkPricesModal({ carparks, onSave, onClose }: NewCarparkPricesMo
 
   return (
     <div
-      onClick={(e) => { if (!saving && e.target === e.currentTarget) onClose(); }}
+     
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
     >
       <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 500, maxHeight: '80vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -686,7 +687,7 @@ function UploadModal({ source, fileName, rows, warnings, dupeCount, onConfirm, o
   const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
 
   return (
-    <div onClick={(e) => { if (!uploading && e.target === e.currentTarget) onClose(); }}
+    <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 500, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -794,6 +795,10 @@ interface CarparkAggRow {
 }
 
 export function ScreenChargingRecords() {
+  const { can } = usePermissions();
+  const canEdit   = can('charging', 'can_edit');
+  const canDelete = can('charging', 'can_delete');
+
   const [tab, setTab] = useState<'records' | 'sp_price' | 'carparks' | 'csv_import'>('records');
   const [records, setRecords] = useState<ChargingRecord[]>([]);
   const [summary, setSummary] = useState<SummaryRow | null>(null);
@@ -1120,22 +1125,26 @@ export function ScreenChargingRecords() {
 
             {/* Import + Refresh */}
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-              <button onClick={() => gpRef.current?.click()}
-                style={{ padding: '9px 18px', borderRadius: 10, border: `1px solid ${SOURCE_COLORS.goparkin.color}`, background: SOURCE_COLORS.goparkin.bg,
-                  color: SOURCE_COLORS.goparkin.color, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-                ⬆ GoParkin (.xlsx)
-              </button>
-              <button onClick={() => spRef.current?.click()}
-                title="Select one or more SP CSVs to upload in bulk"
-                style={{ padding: '9px 18px', borderRadius: 10, border: `1px solid ${SOURCE_COLORS.sp.color}`, background: SOURCE_COLORS.sp.bg,
-                  color: SOURCE_COLORS.sp.color, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-                ⬆ SP (.csv · bulk)
-              </button>
+              {canEdit && (
+                <button onClick={() => gpRef.current?.click()}
+                  style={{ padding: '9px 18px', borderRadius: 10, border: `1px solid ${SOURCE_COLORS.goparkin.color}`, background: SOURCE_COLORS.goparkin.bg,
+                    color: SOURCE_COLORS.goparkin.color, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                  ⬆ GoParkin (.xlsx)
+                </button>
+              )}
+              {canEdit && (
+                <button onClick={() => spRef.current?.click()}
+                  title="Select one or more SP CSVs to upload in bulk"
+                  style={{ padding: '9px 18px', borderRadius: 10, border: `1px solid ${SOURCE_COLORS.sp.color}`, background: SOURCE_COLORS.sp.bg,
+                    color: SOURCE_COLORS.sp.color, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                  ⬆ SP (.csv · bulk)
+                </button>
+              )}
               <button onClick={refreshAll}
                 style={{ padding: '9px 14px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
                 ↻
               </button>
-              {!clearConfirm
+              {canDelete && (!clearConfirm
                 ? (
                   <button onClick={() => setClearConfirm(true)} disabled={records.length === 0}
                     style={{ padding: '9px 16px', borderRadius: 10, border: '1px solid #FDEAEA', background: '#FDEAEA', color: '#C0321A', fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: records.length > 0 ? 'pointer' : 'default', opacity: records.length === 0 ? 0.5 : 1 }}>
@@ -1153,7 +1162,7 @@ export function ScreenChargingRecords() {
                       {clearDeleting ? 'Deleting…' : 'Yes, Delete All'}
                     </button>
                   </div>
-                )}
+                ))}
             </div>
 
             {/* Hidden file inputs */}

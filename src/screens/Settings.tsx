@@ -233,7 +233,7 @@ function UserModal({ initial, title, roles, onSave, onDelete, onClose }: UserMod
   const canSave = !!form.email.trim() && !!form.full_name.trim() && !!form.role_id && !!form.password && !saving;
 
   return (
-    <div onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 480, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -622,7 +622,7 @@ function RoleModal({ initial, title, onSave, onClose }: RoleModalProps) {
   const canSave = form.name.trim() && form.label.trim() && !saving;
 
   return (
-    <div onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 480, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

@@ -3,6 +3,7 @@ import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { AccountOpening } from './crm/AccountOpening';
+import { usePermissions } from '../permissions';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -290,7 +291,7 @@ function CompanyModal({ initial, title, onSave, onDelete, onClose }: CompanyModa
   };
 
   return (
-    <div onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 480, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -377,7 +378,7 @@ function VehicleModal({ initial, title, companies, onSave, onDelete, onClose }: 
   };
 
   return (
-    <div onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 440, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -502,6 +503,10 @@ interface CompaniesTabProps {
 }
 
 function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
+  const { can } = usePermissions();
+  const canEdit   = can('corporatecrm', 'can_edit');
+  const canDelete = can('corporatecrm', 'can_delete');
+
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [adding, setAdding] = useState(false);
@@ -566,7 +571,7 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
           <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}>⌕</span>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-          {selected.size > 0 && !batchConfirm && (
+          {canDelete && selected.size > 0 && !batchConfirm && (
             <>
               <span style={{ fontSize: 12, color: C.slate, fontWeight: 600 }}>{selected.size} selected</span>
               <button onClick={() => setBatchConfirm(true)}
@@ -579,14 +584,16 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
               </button>
             </>
           )}
-          <button onClick={() => setAdding(true)}
-            style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-            + Add Company
-          </button>
+          {canEdit && (
+            <button onClick={() => setAdding(true)}
+              style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              + Add Company
+            </button>
+          )}
         </div>
       </div>
 
-      {batchConfirm && (
+      {canDelete && batchConfirm && (
         <BatchConfirmBar count={selected.size} noun="company" deleting={batchDeleting}
           onConfirm={batchDelete} onCancel={() => setBatchConfirm(false)} />
       )}
@@ -596,10 +603,12 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
-                <th style={{ padding: '12px 16px', borderBottom: '1px solid #EBEBEB', width: 40 }}>
-                  <input type="checkbox" checked={allVisibleSelected} onChange={toggleAll}
-                    style={{ cursor: 'pointer', width: 15, height: 15, accentColor: C.green }} />
-                </th>
+                {canDelete && (
+                  <th style={{ padding: '12px 16px', borderBottom: '1px solid #EBEBEB', width: 40 }}>
+                    <input type="checkbox" checked={allVisibleSelected} onChange={toggleAll}
+                      style={{ cursor: 'pointer', width: 15, height: 15, accentColor: C.green }} />
+                  </th>
+                )}
                 {['#', 'Company Name', 'Base Rate', 'Threshold', 'Discounted Rate', 'Saving'].map((h) => (
                   <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
@@ -610,20 +619,24 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
                 const base = Number(c.base_rate), disc = Number(c.discounted_rate);
                 const hasSaving = base > 0 && disc < base;
                 const isSelected = selected.has(c.id);
+                const cellCursor = canEdit ? 'pointer' : 'default';
+                const openEdit = () => { if (canEdit) setEditing(c); };
                 return (
                   <tr key={c.id} style={{ borderBottom: '1px solid #F3F3F3', background: isSelected ? '#FFF8F8' : 'transparent' }}
                     onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = '#FAFAFA'; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = isSelected ? '#FFF8F8' : 'transparent'; }}>
-                    <td style={{ padding: '12px 16px' }} onClick={(e) => { e.stopPropagation(); toggleOne(c.id); }}>
-                      <input type="checkbox" checked={isSelected} onChange={() => toggleOne(c.id)}
-                        style={{ cursor: 'pointer', width: 15, height: 15, accentColor: C.green }} />
-                    </td>
-                    <td style={{ padding: '12px 16px', fontSize: 12, color: C.slate, cursor: 'pointer' }} onClick={() => setEditing(c)}>{(safePage - 1) * PER_PAGE + i + 1}</td>
-                    <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 600, color: '#1a1a1a', cursor: 'pointer' }} onClick={() => setEditing(c)}>{c.name}</td>
-                    <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 700, color: base > 0 ? C.green : C.slate, whiteSpace: 'nowrap', cursor: 'pointer' }} onClick={() => setEditing(c)}>{fmt(base)}</td>
-                    <td style={{ padding: '12px 16px', fontSize: 13, color: c.threshold_kwh > 0 ? '#1a1a1a' : C.slate, whiteSpace: 'nowrap', cursor: 'pointer' }} onClick={() => setEditing(c)}>{fmtKwh(c.threshold_kwh)}</td>
-                    <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 700, color: disc > 0 ? C.green : C.slate, whiteSpace: 'nowrap', cursor: 'pointer' }} onClick={() => setEditing(c)}>{fmt(disc)}</td>
-                    <td style={{ padding: '12px 16px', whiteSpace: 'nowrap', cursor: 'pointer' }} onClick={() => setEditing(c)}>
+                    {canDelete && (
+                      <td style={{ padding: '12px 16px' }} onClick={(e) => { e.stopPropagation(); toggleOne(c.id); }}>
+                        <input type="checkbox" checked={isSelected} onChange={() => toggleOne(c.id)}
+                          style={{ cursor: 'pointer', width: 15, height: 15, accentColor: C.green }} />
+                      </td>
+                    )}
+                    <td style={{ padding: '12px 16px', fontSize: 12, color: C.slate, cursor: cellCursor }} onClick={openEdit}>{(safePage - 1) * PER_PAGE + i + 1}</td>
+                    <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 600, color: '#1a1a1a', cursor: cellCursor }} onClick={openEdit}>{c.name}</td>
+                    <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 700, color: base > 0 ? C.green : C.slate, whiteSpace: 'nowrap', cursor: cellCursor }} onClick={openEdit}>{fmt(base)}</td>
+                    <td style={{ padding: '12px 16px', fontSize: 13, color: c.threshold_kwh > 0 ? '#1a1a1a' : C.slate, whiteSpace: 'nowrap', cursor: cellCursor }} onClick={openEdit}>{fmtKwh(c.threshold_kwh)}</td>
+                    <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 700, color: disc > 0 ? C.green : C.slate, whiteSpace: 'nowrap', cursor: cellCursor }} onClick={openEdit}>{fmt(disc)}</td>
+                    <td style={{ padding: '12px 16px', whiteSpace: 'nowrap', cursor: cellCursor }} onClick={openEdit}>
                       {hasSaving
                         ? <span style={{ background: '#E4F3E3', color: '#1B512D', fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99 }}>${(base - disc).toFixed(3)}/kWh</span>
                         : <span style={{ color: C.slate, fontSize: 12 }}>—</span>}
@@ -632,7 +645,7 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
                 );
               })}
               {visible.length === 0 && (
-                <tr><td colSpan={7} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No companies match your search.</td></tr>
+                <tr><td colSpan={canDelete ? 7 : 6} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No companies match your search.</td></tr>
               )}
             </tbody>
           </table>
@@ -650,7 +663,7 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
         <CompanyModal key={editing.id} title="Edit Company"
           initial={{ name: editing.name, base_rate: editing.base_rate, threshold_kwh: editing.threshold_kwh, discounted_rate: editing.discounted_rate }}
           onSave={(data) => updateCompany(editing.id, data)}
-          onDelete={() => deleteCompany(editing.id)}
+          onDelete={canDelete ? () => deleteCompany(editing.id) : undefined}
           onClose={() => setEditing(null)} />
       )}
     </div>
@@ -665,6 +678,10 @@ interface VehiclesTabProps {
 }
 
 function VehiclesTab({ companies, error }: VehiclesTabProps) {
+  const { can } = usePermissions();
+  const canEdit   = can('corporatecrm', 'can_edit');
+  const canDelete = can('corporatecrm', 'can_delete');
+
   const [vehicles, setVehicles] = useState<CRMVehicle[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -760,7 +777,7 @@ function VehiclesTab({ companies, error }: VehiclesTabProps) {
         <CompanyFilter value={companyFilter} companies={companies}
           onChange={(v) => { setCompanyFilter(v); setPage(1); setSelected(new Set()); }} />
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-          {selected.size > 0 && !batchConfirm && (
+          {canDelete && selected.size > 0 && !batchConfirm && (
             <>
               <span style={{ fontSize: 12, color: C.slate, fontWeight: 600 }}>{selected.size} selected</span>
               <button onClick={() => setBatchConfirm(true)}
@@ -773,14 +790,16 @@ function VehiclesTab({ companies, error }: VehiclesTabProps) {
               </button>
             </>
           )}
-          <button onClick={() => setAdding(true)}
-            style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-            + Add Vehicle
-          </button>
+          {canEdit && (
+            <button onClick={() => setAdding(true)}
+              style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              + Add Vehicle
+            </button>
+          )}
         </div>
       </div>
 
-      {batchConfirm && (
+      {canDelete && batchConfirm && (
         <BatchConfirmBar count={selected.size} noun="vehicle" deleting={batchDeleting}
           onConfirm={batchDelete} onCancel={() => setBatchConfirm(false)} />
       )}
@@ -790,10 +809,12 @@ function VehiclesTab({ companies, error }: VehiclesTabProps) {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
-                <th style={{ padding: '12px 16px', borderBottom: '1px solid #EBEBEB', width: 40 }}>
-                  <input type="checkbox" checked={allVisibleSelected} onChange={toggleAll}
-                    style={{ cursor: 'pointer', width: 15, height: 15, accentColor: C.green }} />
-                </th>
+                {canDelete && (
+                  <th style={{ padding: '12px 16px', borderBottom: '1px solid #EBEBEB', width: 40 }}>
+                    <input type="checkbox" checked={allVisibleSelected} onChange={toggleAll}
+                      style={{ cursor: 'pointer', width: 15, height: 15, accentColor: C.green }} />
+                  </th>
+                )}
                 {['#', 'Vehicle Plate', 'Company'].map((h) => (
                   <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
@@ -802,24 +823,28 @@ function VehiclesTab({ companies, error }: VehiclesTabProps) {
             <tbody>
               {paged.map((v, i) => {
                 const isSelected = selected.has(v.id);
+                const cellCursor = canEdit ? 'pointer' : 'default';
+                const openEdit = () => { if (canEdit) setEditing(v); };
                 return (
                   <tr key={v.id} style={{ borderBottom: '1px solid #F3F3F3', background: isSelected ? '#FFF8F8' : 'transparent' }}
                     onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = '#FAFAFA'; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = isSelected ? '#FFF8F8' : 'transparent'; }}>
-                    <td style={{ padding: '12px 16px' }} onClick={(e) => { e.stopPropagation(); toggleOne(v.id); }}>
-                      <input type="checkbox" checked={isSelected} onChange={() => toggleOne(v.id)}
-                        style={{ cursor: 'pointer', width: 15, height: 15, accentColor: C.green }} />
-                    </td>
-                    <td style={{ padding: '12px 16px', fontSize: 12, color: C.slate, cursor: 'pointer' }} onClick={() => setEditing(v)}>{(safePage - 1) * PER_PAGE + i + 1}</td>
-                    <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 700, color: C.green, fontFamily: 'monospace', letterSpacing: '0.05em', cursor: 'pointer' }} onClick={() => setEditing(v)}>{v.vehicle_plate}</td>
-                    <td style={{ padding: '12px 16px', fontSize: 13, color: v.crm_companies ? '#1a1a1a' : C.slate, cursor: 'pointer' }} onClick={() => setEditing(v)}>
+                    {canDelete && (
+                      <td style={{ padding: '12px 16px' }} onClick={(e) => { e.stopPropagation(); toggleOne(v.id); }}>
+                        <input type="checkbox" checked={isSelected} onChange={() => toggleOne(v.id)}
+                          style={{ cursor: 'pointer', width: 15, height: 15, accentColor: C.green }} />
+                      </td>
+                    )}
+                    <td style={{ padding: '12px 16px', fontSize: 12, color: C.slate, cursor: cellCursor }} onClick={openEdit}>{(safePage - 1) * PER_PAGE + i + 1}</td>
+                    <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 700, color: C.green, fontFamily: 'monospace', letterSpacing: '0.05em', cursor: cellCursor }} onClick={openEdit}>{v.vehicle_plate}</td>
+                    <td style={{ padding: '12px 16px', fontSize: 13, color: v.crm_companies ? '#1a1a1a' : C.slate, cursor: cellCursor }} onClick={openEdit}>
                       {v.crm_companies?.name ?? <span style={{ fontStyle: 'italic' }}>Unassigned</span>}
                     </td>
                   </tr>
                 );
               })}
               {visible.length === 0 && (
-                <tr><td colSpan={4} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No vehicles match your search.</td></tr>
+                <tr><td colSpan={canDelete ? 4 : 3} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No vehicles match your search.</td></tr>
               )}
             </tbody>
           </table>
@@ -838,7 +863,7 @@ function VehiclesTab({ companies, error }: VehiclesTabProps) {
           initial={{ vehicle_plate: editing.vehicle_plate, company_id: editing.company_id ?? '' }}
           companies={companies}
           onSave={(data) => updateVehicle(editing.id, data)}
-          onDelete={() => deleteVehicle(editing.id)}
+          onDelete={canDelete ? () => deleteVehicle(editing.id) : undefined}
           onClose={() => setEditing(null)} />
       )}
     </div>
@@ -878,7 +903,7 @@ function DriverModal({ initial, title, companies, onSave, onDelete, onClose }: D
   };
 
   return (
-    <div onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 440, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -938,6 +963,10 @@ interface SPDriversTabProps {
 }
 
 function SPDriversTab({ companies, error }: SPDriversTabProps) {
+  const { can } = usePermissions();
+  const canEdit   = can('corporatecrm', 'can_edit');
+  const canDelete = can('corporatecrm', 'can_delete');
+
   const [drivers, setDrivers] = useState<CRMDriver[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -1023,7 +1052,7 @@ function SPDriversTab({ companies, error }: SPDriversTabProps) {
           <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}>⌕</span>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-          {selected.size > 0 && !batchConfirm && (
+          {canDelete && selected.size > 0 && !batchConfirm && (
             <>
               <span style={{ fontSize: 12, color: C.slate, fontWeight: 600 }}>{selected.size} selected</span>
               <button onClick={() => setBatchConfirm(true)}
@@ -1036,14 +1065,16 @@ function SPDriversTab({ companies, error }: SPDriversTabProps) {
               </button>
             </>
           )}
-          <button onClick={() => setAdding(true)}
-            style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-            + Add Driver
-          </button>
+          {canEdit && (
+            <button onClick={() => setAdding(true)}
+              style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              + Add Driver
+            </button>
+          )}
         </div>
       </div>
 
-      {batchConfirm && (
+      {canDelete && batchConfirm && (
         <BatchConfirmBar count={selected.size} noun="driver" deleting={batchDeleting}
           onConfirm={batchDelete} onCancel={() => setBatchConfirm(false)} />
       )}
@@ -1053,10 +1084,12 @@ function SPDriversTab({ companies, error }: SPDriversTabProps) {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
-                <th style={{ padding: '12px 16px', borderBottom: '1px solid #EBEBEB', width: 40 }}>
-                  <input type="checkbox" checked={allVisibleSelected} onChange={toggleAll}
-                    style={{ cursor: 'pointer', width: 15, height: 15, accentColor: C.green }} />
-                </th>
+                {canDelete && (
+                  <th style={{ padding: '12px 16px', borderBottom: '1px solid #EBEBEB', width: 40 }}>
+                    <input type="checkbox" checked={allVisibleSelected} onChange={toggleAll}
+                      style={{ cursor: 'pointer', width: 15, height: 15, accentColor: C.green }} />
+                  </th>
+                )}
                 {['#', 'Driver Email', 'Company'].map((h) => (
                   <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
@@ -1065,24 +1098,28 @@ function SPDriversTab({ companies, error }: SPDriversTabProps) {
             <tbody>
               {paged.map((d, i) => {
                 const isSelected = selected.has(d.id);
+                const cellCursor = canEdit ? 'pointer' : 'default';
+                const openEdit = () => { if (canEdit) setEditing(d); };
                 return (
                   <tr key={d.id} style={{ borderBottom: '1px solid #F3F3F3', background: isSelected ? '#FFF8F8' : 'transparent' }}
                     onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = '#FAFAFA'; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = isSelected ? '#FFF8F8' : 'transparent'; }}>
-                    <td style={{ padding: '12px 16px' }} onClick={(e) => { e.stopPropagation(); toggleOne(d.id); }}>
-                      <input type="checkbox" checked={isSelected} onChange={() => toggleOne(d.id)}
-                        style={{ cursor: 'pointer', width: 15, height: 15, accentColor: C.green }} />
-                    </td>
-                    <td style={{ padding: '12px 16px', fontSize: 12, color: C.slate, cursor: 'pointer' }} onClick={() => setEditing(d)}>{(safePage - 1) * PER_PAGE + i + 1}</td>
-                    <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 600, color: C.green, cursor: 'pointer' }} onClick={() => setEditing(d)}>{d.driver_email}</td>
-                    <td style={{ padding: '12px 16px', fontSize: 13, color: d.crm_companies ? '#1a1a1a' : C.slate, cursor: 'pointer' }} onClick={() => setEditing(d)}>
+                    {canDelete && (
+                      <td style={{ padding: '12px 16px' }} onClick={(e) => { e.stopPropagation(); toggleOne(d.id); }}>
+                        <input type="checkbox" checked={isSelected} onChange={() => toggleOne(d.id)}
+                          style={{ cursor: 'pointer', width: 15, height: 15, accentColor: C.green }} />
+                      </td>
+                    )}
+                    <td style={{ padding: '12px 16px', fontSize: 12, color: C.slate, cursor: cellCursor }} onClick={openEdit}>{(safePage - 1) * PER_PAGE + i + 1}</td>
+                    <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 600, color: C.green, cursor: cellCursor }} onClick={openEdit}>{d.driver_email}</td>
+                    <td style={{ padding: '12px 16px', fontSize: 13, color: d.crm_companies ? '#1a1a1a' : C.slate, cursor: cellCursor }} onClick={openEdit}>
                       {d.crm_companies?.name ?? <span style={{ fontStyle: 'italic' }}>Unassigned</span>}
                     </td>
                   </tr>
                 );
               })}
               {visible.length === 0 && (
-                <tr><td colSpan={4} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No drivers match your search.</td></tr>
+                <tr><td colSpan={canDelete ? 4 : 3} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No drivers match your search.</td></tr>
               )}
             </tbody>
           </table>
@@ -1101,7 +1138,7 @@ function SPDriversTab({ companies, error }: SPDriversTabProps) {
           initial={{ driver_email: editing.driver_email, company_id: editing.company_id ?? '' }}
           companies={companies}
           onSave={(data) => updateDriver(editing.id, data)}
-          onDelete={() => deleteDriver(editing.id)}
+          onDelete={canDelete ? () => deleteDriver(editing.id) : undefined}
           onClose={() => setEditing(null)} />
       )}
     </div>

@@ -12,6 +12,7 @@ import {
 import { CustomerPortal } from './portal/CustomerPortal';
 import { upsertDocument, blobToBase64 } from './portal/portalDb';
 import { supabase } from '../lib/supabase';
+import { usePermissions } from '../permissions';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -217,7 +218,7 @@ export function StatementView({ stmt, billingMonth, onClose }: StatementViewProp
   const tdStyle: React.CSSProperties = { padding: '10px 14px', fontSize: 13, borderBottom: '1px solid #F3F3F3' };
 
   return (
-    <div onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', overflowY: 'auto', padding: '40px 24px' }}>
       <div style={{ background: C.white, borderRadius: 20, padding: 36, width: '100%', maxWidth: 860, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 28 }}
         onClick={(e) => e.stopPropagation()}>
@@ -564,6 +565,9 @@ export function CorporateStatementPDF({ stmt, billingMonth }: PDFProps) {
 type ScreenTab = 'generate' | 'portal';
 
 export function ScreenCorporateInvoicing() {
+  const { can } = usePermissions();
+  const canEdit = can('corporateinvoicing', 'can_edit');
+
   const [tab, setTab] = useState<ScreenTab>('generate');
   const [billingMonth, setBillingMonth] = useState(prevMonth);
   const [companies, setCompanies] = useState<CRMCompany[]>([]);
@@ -862,12 +866,14 @@ export function ScreenCorporateInvoicing() {
           />
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flex: 1, flexWrap: 'wrap' }}>
-          <button
-            onClick={pullGoParkin}
-            disabled={pulling}
-            style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: pulling ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: pulling ? 'default' : 'pointer' }}>
-            {pulling ? 'Pulling…' : '⬇ Pull GoParkin Data'}
-          </button>
+          {canEdit && (
+            <button
+              onClick={pullGoParkin}
+              disabled={pulling}
+              style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: pulling ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: pulling ? 'default' : 'pointer' }}>
+              {pulling ? 'Pulling…' : '⬇ Pull GoParkin Data'}
+            </button>
+          )}
           <label title={managedCarparks.length === 0 ? 'No carparks marked CPO yet — go to Charging Records → CPO Carparks to tag them.' : ''}
             style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', borderRadius: 10,
               border: `1px solid ${cpoOnly ? C.green : '#EBEBEB'}`,
@@ -878,11 +884,13 @@ export function ScreenCorporateInvoicing() {
               style={{ width: 14, height: 14, accentColor: C.green, cursor: 'pointer' }} />
             CPO carparks only <span style={{ opacity: 0.6, fontWeight: 600 }}>· {managedCarparks.length}</span>
           </label>
-          <button
-            onClick={() => fileRef.current?.click()}
-            style={{ padding: '9px 20px', borderRadius: 10, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-            ⬆ Upload SP Corporate (.xlsx)
-          </button>
+          {canEdit && (
+            <button
+              onClick={() => fileRef.current?.click()}
+              style={{ padding: '9px 20px', borderRadius: 10, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              ⬆ Upload SP Corporate (.xlsx)
+            </button>
+          )}
           <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleFileSelect} />
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {goparkinRecords.length > 0 && (
@@ -1042,10 +1050,12 @@ export function ScreenCorporateInvoicing() {
                 style={{ padding: '9px 18px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
                 ⬇ Download Master CSV
               </button>
-              <button onClick={() => publishAll(statements)} disabled={!!publishing}
-                style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: publishing ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: publishing ? 'default' : 'pointer' }}>
-                {publishing ? 'Publishing…' : `↑ Publish All (${statements.length})`}
-              </button>
+              {canEdit && (
+                <button onClick={() => publishAll(statements)} disabled={!!publishing}
+                  style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: publishing ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: publishing ? 'default' : 'pointer' }}>
+                  {publishing ? 'Publishing…' : `↑ Publish All (${statements.length})`}
+                </button>
+              )}
             </div>
           )}
           <div style={{ overflowX: 'auto' }}>
@@ -1094,12 +1104,14 @@ export function ScreenCorporateInvoicing() {
                                 style={{ padding: '6px 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1 }}>
                                 ⬇ PDF
                               </button>
-                              <button
-                                onClick={() => publishOne(stmt)}
-                                disabled={busy}
-                                style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: busy ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: busy ? 'default' : 'pointer' }}>
-                                {busy ? '…' : '↑ Publish'}
-                              </button>
+                              {canEdit && (
+                                <button
+                                  onClick={() => publishOne(stmt)}
+                                  disabled={busy}
+                                  style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: busy ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: busy ? 'default' : 'pointer' }}>
+                                  {busy ? '…' : '↑ Publish'}
+                                </button>
+                              )}
                             </div>
                           );
                         })()}

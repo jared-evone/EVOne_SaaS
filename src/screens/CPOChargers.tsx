@@ -3,6 +3,7 @@ import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { BrandLogo, type Brand } from '../components/BrandLogo';
 import { supabase } from '../lib/supabase';
+import { usePermissions } from '../permissions';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -200,7 +201,7 @@ function LocationModal({ initial, title, onSave, onDelete, onClose, chargerCount
   const canSave = form.name.trim().length > 0 && !saving;
 
   return (
-    <div onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 520, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
@@ -403,7 +404,7 @@ function ChargerModal({ initial, title, locations, lockLocation, onSave, onDelet
   const canSave = form.charger_code.trim().length > 0 && form.location_id !== null && !saving;
 
   return (
-    <div onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 620, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -730,12 +731,14 @@ type DetailTab = 'overview' | 'meter' | 'maintenance';
 interface DetailModalProps {
   charger: Charger;
   location: Location | null;
+  canEdit: boolean;
+  canDelete: boolean;
   onEdit: () => void;
   onClose: () => void;
   onChanged: () => Promise<void>;
 }
 
-function DetailModal({ charger, location, onEdit, onClose, onChanged }: DetailModalProps) {
+function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, onChanged }: DetailModalProps) {
   const [tab, setTab] = useState<DetailTab>('overview');
   const [readings, setReadings] = useState<MeterReading[]>([]);
   const [maintenance, setMaintenance] = useState<MaintenanceRecord[]>([]);
@@ -786,7 +789,7 @@ function DetailModal({ charger, location, onEdit, onClose, onChanged }: DetailMo
   ];
 
   return (
-    <div onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1050, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 760, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         {/* Header */}
@@ -801,10 +804,12 @@ function DetailModal({ charger, location, onEdit, onClose, onChanged }: DetailMo
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button onClick={onEdit}
-              style={{ padding: '8px 16px', borderRadius: 10, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-              Edit
-            </button>
+            {canEdit && (
+              <button onClick={onEdit}
+                style={{ padding: '8px 16px', borderRadius: 10, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                Edit
+              </button>
+            )}
             <button onClick={onClose}
               style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
           </div>
@@ -852,7 +857,7 @@ function DetailModal({ charger, location, onEdit, onClose, onChanged }: DetailMo
 
         {tab === 'meter' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <MeterReadingForm chargerId={charger.id} onAdded={refreshAndParent} />
+            {canEdit && <MeterReadingForm chargerId={charger.id} onAdded={refreshAndParent} />}
             {loading ? (
               <div style={{ padding: 24, textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</div>
             ) : readings.length === 0 ? (
@@ -875,10 +880,12 @@ function DetailModal({ charger, location, onEdit, onClose, onChanged }: DetailMo
                         <td style={{ padding: '10px 14px', fontSize: 12, color: '#1a1a1a', whiteSpace: 'nowrap' }}>{fmtDate(r.reading_date)}</td>
                         <td style={{ padding: '10px 14px', fontSize: 13, fontWeight: 700, color: C.green, whiteSpace: 'nowrap' }}>{Number(r.reading_kwh).toLocaleString()}</td>
                         <td style={{ padding: '10px 14px', textAlign: 'right' }}>
-                          <button onClick={() => deleteReading(r.id)}
-                            style={{ background: 'transparent', border: 'none', color: '#C0321A', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>
-                            Delete
-                          </button>
+                          {canDelete && (
+                            <button onClick={() => deleteReading(r.id)}
+                              style={{ background: 'transparent', border: 'none', color: '#C0321A', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>
+                              Delete
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -891,7 +898,7 @@ function DetailModal({ charger, location, onEdit, onClose, onChanged }: DetailMo
 
         {tab === 'maintenance' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <MaintenanceForm chargerId={charger.id} onAdded={refreshAndParent} />
+            {canEdit && <MaintenanceForm chargerId={charger.id} onAdded={refreshAndParent} />}
             {loading ? (
               <div style={{ padding: 24, textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</div>
             ) : maintenance.length === 0 ? (
@@ -936,10 +943,12 @@ function DetailModal({ charger, location, onEdit, onClose, onChanged }: DetailMo
                           ⬇ PDF
                         </button>
                       )}
-                      <button onClick={() => deleteMaintenance(m)}
-                        style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                        Delete
-                      </button>
+                      {canDelete && (
+                        <button onClick={() => deleteMaintenance(m)}
+                          style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                          Delete
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -1138,13 +1147,14 @@ interface LocationDrilldownProps {
   location: Location;
   chargers: Charger[];
   latestByCharger: Map<string, MeterReading>;
+  canEdit: boolean;
   onClose: () => void;
   onSelectCharger: (c: Charger) => void;
   onAddCharger: () => void;
   onEditLocation: () => void;
 }
 
-function LocationDrilldownModal({ location, chargers, latestByCharger, onClose, onSelectCharger, onAddCharger, onEditLocation }: LocationDrilldownProps) {
+function LocationDrilldownModal({ location, chargers, latestByCharger, canEdit, onClose, onSelectCharger, onAddCharger, onEditLocation }: LocationDrilldownProps) {
   const [pmFilter, setPmFilter] = useState<PmFilter>('all');
 
   const pmStatus = (c: Charger): PmFilter => {
@@ -1171,7 +1181,7 @@ function LocationDrilldownModal({ location, chargers, latestByCharger, onClose, 
   ];
 
   return (
-    <div onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 820, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         {/* Header */}
@@ -1194,10 +1204,12 @@ function LocationDrilldownModal({ location, chargers, latestByCharger, onClose, 
             )}
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
-            <button onClick={onEditLocation}
-              style={{ padding: '7px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-              Edit Location
-            </button>
+            {canEdit && (
+              <button onClick={onEditLocation}
+                style={{ padding: '7px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                Edit Location
+              </button>
+            )}
             <button onClick={onClose}
               style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
           </div>
@@ -1228,10 +1240,12 @@ function LocationDrilldownModal({ location, chargers, latestByCharger, onClose, 
               );
             })}
           </div>
-          <button onClick={onAddCharger}
-            style={{ marginLeft: 'auto', padding: '8px 16px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-            + New Charger
-          </button>
+          {canEdit && (
+            <button onClick={onAddCharger}
+              style={{ marginLeft: 'auto', padding: '8px 16px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              + New Charger
+            </button>
+          )}
         </div>
 
         {/* Charger grid */}
@@ -1261,6 +1275,10 @@ function LocationDrilldownModal({ location, chargers, latestByCharger, onClose, 
 // ── Screen Root ───────────────────────────────────────────────────
 
 export function ScreenCPOChargers() {
+  const { can } = usePermissions();
+  const canEdit   = can('cpochargers', 'can_edit');
+  const canDelete = can('cpochargers', 'can_delete');
+
   const [locations, setLocations] = useState<Location[]>([]);
   const [chargers, setChargers] = useState<Charger[]>([]);
   const [readings, setReadings] = useState<MeterReading[]>([]);
@@ -1438,10 +1456,12 @@ export function ScreenCPOChargers() {
             style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
           <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}>⌕</span>
         </div>
-        <button onClick={() => setAddingLocation(true)}
-          style={{ marginLeft: 'auto', padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-          + New Location
-        </button>
+        {canEdit && (
+          <button onClick={() => setAddingLocation(true)}
+            style={{ marginLeft: 'auto', padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+            + New Location
+          </button>
+        )}
       </div>
 
       {visibleLocations.length === 0 ? (
@@ -1476,6 +1496,7 @@ export function ScreenCPOChargers() {
           location={currentLocation}
           chargers={chargersByLocation.get(viewLocationId) ?? []}
           latestByCharger={latestByCharger}
+          canEdit={canEdit}
           onClose={() => setViewLocationId(null)}
           onSelectCharger={(c) => setSelectedCharger(c)}
           onAddCharger={() => setAddingCharger(true)}
@@ -1487,6 +1508,8 @@ export function ScreenCPOChargers() {
         <DetailModal
           charger={selectedCharger}
           location={locations.find((l) => l.id === selectedCharger.location_id) ?? null}
+          canEdit={canEdit}
+          canDelete={canDelete}
           onClose={() => setSelectedCharger(null)}
           onEdit={() => setEditingCharger(selectedCharger)}
           onChanged={fetchAll}
@@ -1522,7 +1545,7 @@ export function ScreenCPOChargers() {
           }}
           locations={locations}
           onSave={(data) => updateCharger(editingCharger.id, data)}
-          onDelete={() => deleteCharger(editingCharger.id)}
+          onDelete={canDelete ? () => deleteCharger(editingCharger.id) : undefined}
           onClose={() => setEditingCharger(null)} />
       )}
 
@@ -1547,7 +1570,7 @@ export function ScreenCPOChargers() {
           managedCarparks={managedCarparks}
           currentLocationId={editingLocation.id}
           onSave={(data) => updateLocation(editingLocation.id, data)}
-          onDelete={() => deleteLocation(editingLocation.id)}
+          onDelete={canDelete ? () => deleteLocation(editingLocation.id) : undefined}
           onClose={() => setEditingLocation(null)} />
       )}
     </div>

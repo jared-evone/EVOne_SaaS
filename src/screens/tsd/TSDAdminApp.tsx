@@ -426,9 +426,6 @@ function WorkOrderModal({
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
     >
       <div
         style={{
@@ -921,9 +918,6 @@ function CustomerModal({
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
       }}
     >
       <div
