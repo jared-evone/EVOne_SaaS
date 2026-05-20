@@ -17,6 +17,7 @@ import { ScreenCorporateInvoicing } from './screens/CorporateInvoicing';
 import { ScreenCPOChargers } from './screens/CPOChargers';
 import { ScreenSettings } from './screens/Settings';
 import { ScreenDBHealth } from './screens/DBHealth';
+import { ScreenChargingDashboard } from './screens/ChargingDashboard';
 import { Login } from './screens/Login';
 import { TSDWorkspace } from './screens/tsd/TSDWorkspace';
 import { PublicApplication } from './screens/crm/PublicApplication';
@@ -33,6 +34,7 @@ type NavGroup = { kind: 'group'; key: string;  icon: string; label: string; chil
 type NavEntry = NavLeaf | NavGroup;
 
 const NAV_ALL: NavEntry[] = [
+  { kind: 'leaf', id: 'charging_dashboard',icon: '▤', label: 'Charging Dashboard' },
   { kind: 'leaf', id: 'overview',          icon: '⊞', label: 'Overview' },
   { kind: 'leaf', id: 'orders',            icon: '◈', label: 'Invoices' },
   { kind: 'leaf', id: 'installations',     icon: '◎', label: 'Installations' },
@@ -66,6 +68,7 @@ const SCREEN_TITLES: Record<ScreenId, string> = {
   cpochargers:         'CPO Chargers',
   charging:            'Charging Records',
   corporateinvoicing:  'Corporate Invoicing',
+  charging_dashboard:  'Charging Dashboard',
   settings:            'Users & Permissions',
   dbhealth:            'DB Health',
 };
@@ -84,6 +87,7 @@ const screens: Record<ScreenId, JSX.Element> = {
   cpochargers:         <ScreenCPOChargers />,
   charging:            <ScreenChargingRecords />,
   corporateinvoicing:  <ScreenCorporateInvoicing />,
+  charging_dashboard:  <ScreenChargingDashboard />,
   settings:            <ScreenSettings />,
   dbhealth:            <ScreenDBHealth />,
 };

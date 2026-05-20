@@ -337,6 +337,49 @@ function filterDupes(incoming: ChargingRow[], existingKeys: Set<string>): { clea
   return { clean, dupeCount };
 }
 
+// ── Freshness pill ────────────────────────────────────────────────
+
+function FreshnessPill({ source, at }: { source: 'goparkin' | 'sp'; at: string | null }) {
+  const label = source === 'goparkin' ? 'GoParkin' : 'SP';
+  const srcStyle = SOURCE_COLORS[source];
+
+  if (!at) {
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '5px 12px', borderRadius: 99, background: '#F3F3F3', color: '#767B77', fontSize: 12, fontWeight: 600 }}>
+        <span style={{ background: srcStyle.bg, color: srcStyle.color, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99 }}>{label}</span>
+        no records yet
+      </span>
+    );
+  }
+
+  const iso = at.includes(' ') ? at.replace(' ', 'T') : at;
+  const ms = new Date(iso).getTime();
+  const ageMs   = Date.now() - ms;
+  const ageDays = Math.floor(ageMs / 86_400_000);
+  const ageHrs  = Math.floor(ageMs / 3_600_000);
+  const ageLabel =
+    ageDays >= 1 ? `${ageDays} day${ageDays === 1 ? '' : 's'} ago` :
+    ageHrs  >= 1 ? `${ageHrs} hour${ageHrs === 1 ? '' : 's'} ago`  :
+                   '<1 hour ago';
+  const tone =
+    ageDays >= 7 ? { bg: '#FDEAEA', fg: '#C0321A' } :
+    ageDays >= 2 ? { bg: '#FFF8E1', fg: '#B07D00' } :
+                   { bg: C.honeydew, fg: C.green };
+  const fmt = new Date(ms).toLocaleString('en-SG', {
+    timeZone: 'Asia/Singapore', day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+
+  return (
+    <span title={`Latest ${label} record · ${fmt}`}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '5px 12px', borderRadius: 99,
+        background: tone.bg, color: tone.fg, fontSize: 12, fontWeight: 700 }}>
+      <span style={{ background: srcStyle.bg, color: srcStyle.color, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99, letterSpacing: '0.02em' }}>{label}</span>
+      {fmt} <span style={{ opacity: 0.75, fontWeight: 500 }}>· {ageLabel}</span>
+    </span>
+  );
+}
+
 // ── Paginator ─────────────────────────────────────────────────────
 
 function Paginator({ page, totalPages, total, from, to, onPrev, onNext }: {
@@ -659,10 +702,14 @@ function UploadModal({ source, fileName, rows, warnings, dupeCount, onConfirm, o
         </div>
 
         <div style={{ background: C.seasalt, borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 18 }}>📄</span>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a' }}>{fileName}</div>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+            <span style={{ fontSize: 18, flexShrink: 0 }}>📄</span>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div title={fileName} style={{
+                fontSize: 13, fontWeight: 600, color: '#1a1a1a',
+                display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                overflow: 'hidden', wordBreak: 'break-word', lineHeight: 1.35,
+              }}>{fileName}</div>
               <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
                 {rows.length > 0
                   ? <span><strong style={{ color: C.green }}>{rows.length.toLocaleString()}</strong> records ready to import</span>
@@ -733,6 +780,8 @@ interface SummaryRow {
   sp_count: number;
   total_energy: number;
   total_revenue: number;
+  latest_goparkin_at: string | null;
+  latest_sp_at:       string | null;
 }
 
 interface CarparkAggRow {
@@ -800,6 +849,8 @@ export function ScreenChargingRecords() {
       sp_count:       Number(row.sp_count) || 0,
       total_energy:   Number(row.total_energy) || 0,
       total_revenue:  Number(row.total_revenue) || 0,
+      latest_goparkin_at: row.latest_goparkin_at ?? null,
+      latest_sp_at:       row.latest_sp_at ?? null,
     });
   };
 
@@ -859,31 +910,42 @@ export function ScreenChargingRecords() {
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>, source: 'goparkin' | 'sp') => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) return;
     e.target.value = '';
 
     if (source === 'sp') {
-      const text = await file.text();
-      const { rows, warnings } = parseSpCSV(text);
+      // Bulk: parse every selected CSV, merge rows, accumulate warnings (prefixed with file name).
+      const allRows: ChargingRow[] = [];
+      const allWarnings: string[] = [];
+      for (const f of files) {
+        const text = await f.text();
+        const { rows, warnings } = parseSpCSV(text);
+        allRows.push(...rows);
+        for (const w of warnings) allWarnings.push(`${f.name}: ${w}`);
+      }
+      const fileLabel = files.length === 1
+        ? files[0].name
+        : `${files.length} SP files (${files.map((f) => f.name).join(', ')})`;
 
       const uniqueCarparks = [...new Set(
-        rows.map((r) => r.carpark_code).filter((c): c is string => !!c)
+        allRows.map((r) => r.carpark_code).filter((c): c is string => !!c)
       )];
       const knownCodes = new Set(carparkPrices.map((p) => p.carpark_code));
       const missing = uniqueCarparks.filter((c) => !knownCodes.has(c));
 
       if (missing.length > 0) {
-        setPendingSpUpload({ fileName: file.name, rows, warnings, missingCarparks: missing });
+        setPendingSpUpload({ fileName: fileLabel, rows: allRows, warnings: allWarnings, missingCarparks: missing });
         return;
       }
 
-      const priced = applySpPrices(rows, carparkPrices);
+      const priced = applySpPrices(allRows, carparkPrices);
       const chargerIds = [...new Set(priced.map((r) => r.charger_id).filter((c): c is string => !!c))];
       const existingKeys = await fetchExistingKeys(chargerIds);
       const { clean, dupeCount } = filterDupes(priced, existingKeys);
-      setUploadModal({ source: 'sp', fileName: file.name, rows: clean, warnings, dupeCount });
+      setUploadModal({ source: 'sp', fileName: fileLabel, rows: clean, warnings: allWarnings, dupeCount });
     } else {
+      const file = files[0];
       const { rows, warnings } = await parseXLSXFile(file);
       const chargerIds = [...new Set(rows.map((r) => r.charger_id).filter((c): c is string => !!c))];
       const existingKeys = await fetchExistingKeys(chargerIds);
@@ -962,6 +1024,21 @@ export function ScreenChargingRecords() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+      {/* Data freshness panel — two pills, one per CSMS source. */}
+      {summary && (summary.latest_goparkin_at || summary.latest_sp_at) && (
+        <div style={{ background: C.white, borderRadius: 12, padding: '12px 16px', border: '1px solid #EBEBEB',
+          display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            Latest Records
+          </span>
+          <FreshnessPill source="goparkin" at={summary.latest_goparkin_at} />
+          <FreshnessPill source="sp"       at={summary.latest_sp_at} />
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: C.slate, fontWeight: 500 }}>
+            Upload fresh CSMS files to keep these up to date.
+          </span>
+        </div>
+      )}
 
       {/* KPI row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
@@ -1049,9 +1126,10 @@ export function ScreenChargingRecords() {
                 ⬆ GoParkin (.xlsx)
               </button>
               <button onClick={() => spRef.current?.click()}
+                title="Select one or more SP CSVs to upload in bulk"
                 style={{ padding: '9px 18px', borderRadius: 10, border: `1px solid ${SOURCE_COLORS.sp.color}`, background: SOURCE_COLORS.sp.bg,
                   color: SOURCE_COLORS.sp.color, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-                ⬆ SP (.csv)
+                ⬆ SP (.csv · bulk)
               </button>
               <button onClick={refreshAll}
                 style={{ padding: '9px 14px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
@@ -1081,7 +1159,7 @@ export function ScreenChargingRecords() {
             {/* Hidden file inputs */}
             <input ref={gpRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }}
               onChange={(e) => handleFileSelect(e, 'goparkin')} />
-            <input ref={spRef} type="file" accept=".csv" style={{ display: 'none' }}
+            <input ref={spRef} type="file" accept=".csv" multiple style={{ display: 'none' }}
               onChange={(e) => handleFileSelect(e, 'sp')} />
           </div>
 
