@@ -54,7 +54,9 @@ const NAV_ALL: NavEntry[] = [
   ]},
 ];
 
-const SCREEN_TITLES: Record<ScreenId, string> = {
+// Only top-level navigable screens get titles + components. Sub-screen permission
+// keys (e.g. charging_cpo_carparks) live in the matrix but never render directly.
+const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
   overview:       'Overview',
   orders:         'Invoices',
   installations:  'Installations',
@@ -73,7 +75,7 @@ const SCREEN_TITLES: Record<ScreenId, string> = {
   dbhealth:            'DB Health',
 };
 
-const screens: Record<ScreenId, JSX.Element> = {
+const screens: Partial<Record<ScreenId, JSX.Element>> = {
   overview:       <ScreenOverview />,
   orders:         <ScreenInvoices />,
   installations:  <ScreenInstallations />,

@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
 import { CarparksTab, type ManagedCarpark, type CpoLocationLite, type CarparkAgg } from './charging/CarparksTab';
-import { CsvImportTab } from './charging/CsvImportTab';
+// CsvImportTab is archived in src/screens/charging/CsvImportTab.tsx — left on disk
+// in case we want to re-enable the temporary preview tab later.
 
 const PREVIEW_LIMIT = 1000;
 
@@ -660,22 +661,52 @@ interface UploadModalProps {
   rows: ChargingRow[];
   warnings: string[];
   dupeCount: number;
+  uploaderEmail: string;
+  uploaderDepartment: string;
   onConfirm: () => Promise<void>;
   onClose: () => void;
 }
 
-function UploadModal({ source, fileName, rows, warnings, dupeCount, onConfirm, onClose }: UploadModalProps) {
+function UploadModal({ source, fileName, rows, warnings, dupeCount, uploaderEmail, uploaderDepartment, onConfirm, onClose }: UploadModalProps) {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const srcColor = SOURCE_COLORS[source];
 
   const handleUpload = async () => {
     setUploading(true);
+    setUploadError(null);
     setProgress({ done: 0, total: rows.length });
+
+    // 1) Create the upload-history row first so we can stamp upload_id on every batch.
+    const { data: upload, error: upErr } = await supabase
+      .from('crm_charging_record_uploads')
+      .insert({
+        source,
+        file_label:  fileName,
+        row_count:   rows.length,
+        uploaded_by: uploaderEmail,
+        department:  uploaderDepartment,
+      })
+      .select('id')
+      .single();
+    if (upErr || !upload) {
+      setUploadError(upErr?.message ?? 'Could not start upload tracking.');
+      setUploading(false);
+      return;
+    }
+    const uploadId = upload.id as string;
+
+    // 2) Insert records in batches, every row carries upload_id for later revert.
     let done = 0;
     for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-      const batch = rows.slice(i, i + BATCH_SIZE).map((r) => ({ ...r, source }));
-      await supabase.from('crm_charging_records').insert(batch);
+      const batch = rows.slice(i, i + BATCH_SIZE).map((r) => ({ ...r, source, upload_id: uploadId }));
+      const { error: insErr } = await supabase.from('crm_charging_records').insert(batch);
+      if (insErr) {
+        setUploadError(`Inserted ${done.toLocaleString()} rows before failing: ${insErr.message}. Use Upload History to revert this partial upload.`);
+        setUploading(false);
+        return;
+      }
       done += batch.length;
       setProgress({ done, total: rows.length });
     }
@@ -745,6 +776,10 @@ function UploadModal({ source, fileName, rows, warnings, dupeCount, onConfirm, o
           </div>
         )}
 
+        {uploadError && (
+          <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '12px 16px', color: '#C0321A', fontSize: 12, fontWeight: 600 }}>{uploadError}</div>
+        )}
+
         {uploading && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ background: '#EBEBEB', borderRadius: 99, height: 8, overflow: 'hidden' }}>
@@ -794,12 +829,429 @@ interface CarparkAggRow {
   total_revenue: number;
 }
 
-export function ScreenChargingRecords() {
-  const { can } = usePermissions();
-  const canEdit   = can('charging', 'can_edit');
-  const canDelete = can('charging', 'can_delete');
+// ── Download Modal (filter + CSV export, available to view-only users) ───
 
-  const [tab, setTab] = useState<'records' | 'sp_price' | 'carparks' | 'csv_import'>('records');
+function csvCell(val: string | number | null | undefined): string {
+  const s = String(val ?? '');
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+const DOWNLOAD_COLUMNS: { key: keyof ChargingRecord; label: string }[] = [
+  { key: 'source',                      label: 'Source' },
+  { key: 'carpark_code',                label: 'Carpark' },
+  { key: 'charger_id',                  label: 'Charger' },
+  { key: 'connector_id',                label: 'Connector' },
+  { key: 'charge_type',                 label: 'Charge Type' },
+  { key: 'vehicle_plate_number',        label: 'Vehicle Plate' },
+  { key: 'start_date_time',             label: 'Start' },
+  { key: 'end_date_time',               label: 'End' },
+  { key: 'total_charging_time_minutes', label: 'Duration (min)' },
+  { key: 'total_energy_supplied_kwh',   label: 'Energy (kWh)' },
+  { key: 'transaction_amount',          label: 'Transaction Amount' },
+  { key: 'payment_amount',              label: 'Payment Amount' },
+  { key: 'payment_status',              label: 'Status' },
+  { key: 'mode_of_payment',             label: 'Payment Mode' },
+  { key: 'payment_date',                label: 'Payment Date' },
+  { key: 'transaction_type',            label: 'Transaction Type' },
+  { key: 'discount_rate',               label: 'Discount Rate (%)' },
+];
+
+interface DownloadModalProps {
+  carparks: string[]; // distinct carpark names, pre-fetched
+  onClose: () => void;
+}
+
+function DownloadModal({ carparks, onClose }: DownloadModalProps) {
+  // Default range: last 30 days, ending today (SGT calendar).
+  const today = new Date();
+  const monthAgo = new Date();
+  monthAgo.setDate(today.getDate() - 30);
+  const toISO = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+  const [startDate, setStartDate] = useState(toISO(monthAgo));
+  const [endDate,   setEndDate]   = useState(toISO(today));
+  const [source,    setSource]    = useState<'all' | 'goparkin' | 'sp'>('all');
+  const [carparkSearch, setCarparkSearch] = useState('');
+  const [selected, setSelected] = useState<Set<string>>(() => new Set(carparks));
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [error, setError] = useState<string | null>(null);
+
+  const filteredCarparks = useMemo(() => {
+    const q = carparkSearch.trim().toLowerCase();
+    if (!q) return carparks;
+    return carparks.filter((c) => c.toLowerCase().includes(q));
+  }, [carparks, carparkSearch]);
+
+  const allSelected = selected.size === carparks.length;
+  const someSelected = selected.size > 0 && !allSelected;
+
+  const toggleAll = () => {
+    setSelected(allSelected ? new Set() : new Set(carparks));
+  };
+  const toggleOne = (name: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  };
+
+  const handleDownload = async () => {
+    setError(null);
+    if (selected.size === 0) { setError('Pick at least one carpark.'); return; }
+    if (!startDate || !endDate) { setError('Pick a start and end date.'); return; }
+    if (startDate > endDate)   { setError('Start date must be before end date.'); return; }
+
+    setBusy(true);
+    setProgress({ done: 0, total: 0 });
+
+    // Inclusive end of day → use the day AFTER endDate as the exclusive upper bound.
+    const endExclusive = new Date(endDate);
+    endExclusive.setDate(endExclusive.getDate() + 1);
+    const endISO = toISO(endExclusive);
+
+    // First, get the row count for progress (with the same filters).
+    let countQ = supabase
+      .from('crm_charging_records')
+      .select('id', { count: 'exact', head: true })
+      .gte('end_date_time', startDate)
+      .lt('end_date_time',  endISO);
+    if (source !== 'all') countQ = countQ.eq('source', source);
+    if (!allSelected)     countQ = countQ.in('carpark_code', [...selected]);
+
+    const { count, error: countErr } = await countQ;
+    if (countErr) { setError(countErr.message); setBusy(false); return; }
+    const total = count ?? 0;
+    setProgress({ done: 0, total });
+
+    if (total === 0) {
+      setError('No records matched the filter.');
+      setBusy(false);
+      return;
+    }
+
+    // Page through results in 1000-row batches.
+    const PAGE = 1000;
+    const rows: ChargingRecord[] = [];
+    let from = 0;
+    while (from < total) {
+      let q = supabase
+        .from('crm_charging_records')
+        .select('*')
+        .gte('end_date_time', startDate)
+        .lt('end_date_time',  endISO)
+        .order('end_date_time', { ascending: false })
+        .range(from, from + PAGE - 1);
+      if (source !== 'all') q = q.eq('source', source);
+      if (!allSelected)     q = q.in('carpark_code', [...selected]);
+
+      const { data, error: dataErr } = await q;
+      if (dataErr) { setError(dataErr.message); setBusy(false); return; }
+      if (!data || data.length === 0) break;
+      rows.push(...(data as ChargingRecord[]));
+      from += PAGE;
+      setProgress({ done: Math.min(from, total), total });
+    }
+
+    // Build CSV
+    const header = DOWNLOAD_COLUMNS.map((c) => c.label).join(',');
+    const body = rows.map((r) =>
+      DOWNLOAD_COLUMNS.map((c) => csvCell(r[c.key] as string | number | null)).join(','),
+    ).join('\n');
+    const blob = new Blob([header + '\n' + body], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `charging_records_${startDate}_to_${endDate}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    setBusy(false);
+    onClose();
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 560, maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>Download Charging Records</div>
+          {!busy && (
+            <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
+          )}
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Start Date</label>
+            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
+              style={{ width: '100%', padding: '8px 12px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>End Date</label>
+            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
+              style={{ width: '100%', padding: '8px 12px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
+          </div>
+        </div>
+
+        <div>
+          <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Source</label>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {(['all', 'goparkin', 'sp'] as const).map((s) => (
+              <button key={s} onClick={() => setSource(s)}
+                style={{ flex: 1, padding: '7px 12px', borderRadius: 99,
+                  border: source === s ? 'none' : '1px solid #EBEBEB',
+                  background: source === s ? C.green : C.white,
+                  color: source === s ? C.white : C.slate,
+                  fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                {s === 'all' ? 'All Sources' : s === 'goparkin' ? 'GoParkin' : 'SP'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Carparks · {selected.size}/{carparks.length}
+            </label>
+            <button onClick={toggleAll}
+              style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, border: '1px solid #EBEBEB', background: C.white, color: C.slate, cursor: 'pointer', fontFamily: 'Figtree' }}>
+              {allSelected ? 'Clear all' : 'Select all'}
+            </button>
+          </div>
+          <div style={{ position: 'relative' }}>
+            <input value={carparkSearch} onChange={(e) => setCarparkSearch(e.target.value)} placeholder="Search carparks…"
+              style={{ width: '100%', padding: '7px 12px 7px 30px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', background: C.seasalt, boxSizing: 'border-box' }} />
+            <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 13 }}>⌕</span>
+          </div>
+          <div style={{ marginTop: 8, maxHeight: 220, overflowY: 'auto', border: '1px solid #EBEBEB', borderRadius: 10, background: C.white }}>
+            {filteredCarparks.length === 0 && (
+              <div style={{ padding: '12px 14px', fontSize: 12, color: C.slate, textAlign: 'center' }}>No carparks match.</div>
+            )}
+            {filteredCarparks.map((name) => {
+              const checked = selected.has(name);
+              return (
+                <label key={name} style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '8px 12px', cursor: 'pointer',
+                  borderBottom: '1px solid #F3F3F3',
+                  background: checked ? C.honeydew : 'transparent',
+                }}>
+                  <input type="checkbox" checked={checked} onChange={() => toggleOne(name)}
+                    style={{ width: 14, height: 14, accentColor: C.green, cursor: 'pointer' }} />
+                  <span style={{ fontSize: 12, color: checked ? C.green : '#1a1a1a', fontWeight: checked ? 700 : 500 }}>{name}</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{error}</div>
+        )}
+
+        {busy && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ background: '#EBEBEB', borderRadius: 99, height: 6, overflow: 'hidden' }}>
+              <div style={{ background: C.green, height: '100%', width: `${progress.total > 0 ? (progress.done / progress.total) * 100 : 0}%`, transition: 'width .2s ease' }} />
+            </div>
+            <div style={{ fontSize: 11, color: C.slate, textAlign: 'center' }}>
+              {progress.total > 0
+                ? `Fetched ${progress.done.toLocaleString()} / ${progress.total.toLocaleString()} records`
+                : 'Counting matching records…'}
+            </div>
+          </div>
+        )}
+
+        {!busy && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+            <div style={{ fontSize: 11, color: C.slate }}>
+              {someSelected ? `${selected.size} of ${carparks.length} carparks selected.` : allSelected ? 'All carparks included.' : 'No carparks selected.'}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={onClose}
+                style={{ padding: '9px 20px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                Cancel
+              </button>
+              <button onClick={handleDownload}
+                style={{ padding: '9px 22px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                ⬇ Download CSV
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Upload History Tab ────────────────────────────────────────────
+
+interface UploadRow {
+  id:          string;
+  source:      'goparkin' | 'sp';
+  file_label:  string;
+  row_count:   number;
+  uploaded_by: string | null;
+  uploaded_at: string;
+  department:  string | null;
+  live_count?: number; // computed on the fly: how many of those rows are still in the table
+}
+
+function UploadHistoryTab({ onRefresh }: { onRefresh: () => Promise<void> }) {
+  const [uploads, setUploads] = useState<UploadRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [reverting, setReverting] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchUploads = async () => {
+    setLoading(true);
+    const { data, error: e } = await supabase
+      .from('crm_charging_record_uploads')
+      .select('*')
+      .order('uploaded_at', { ascending: false });
+    if (e) { setError(e.message); setLoading(false); return; }
+    const rows = (data as UploadRow[]) ?? [];
+
+    // For each upload, get the current live row count (may be < row_count if records were partially deleted).
+    const withCounts = await Promise.all(rows.map(async (r) => {
+      const { count } = await supabase
+        .from('crm_charging_records')
+        .select('id', { count: 'exact', head: true })
+        .eq('upload_id', r.id);
+      return { ...r, live_count: count ?? 0 };
+    }));
+    setUploads(withCounts);
+    setLoading(false);
+  };
+
+  useEffect(() => { fetchUploads(); }, []);
+
+  const revert = async (uploadId: string) => {
+    setReverting(uploadId);
+    setError(null);
+    // CASCADE on the FK means deleting the upload row deletes all its records.
+    const { error: e } = await supabase
+      .from('crm_charging_record_uploads')
+      .delete()
+      .eq('id', uploadId);
+    if (e) { setError(e.message); setReverting(null); return; }
+    await fetchUploads();
+    await onRefresh();
+    setReverting(null);
+    setConfirmId(null);
+  };
+
+  const fmtWhen = (iso: string) => new Date(iso).toLocaleString('en-SG', {
+    timeZone: 'Asia/Singapore', day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>Upload History</div>
+        <div style={{ fontSize: 12, color: C.slate, marginTop: 3 }}>
+          Every CSMS upload is recorded here. Click <strong>Revert</strong> to delete all records inserted by that upload — the operation cascades and cannot be undone.
+        </div>
+      </div>
+
+      {error && (
+        <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{error}</div>
+      )}
+
+      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ background: C.seasalt }}>
+              {['When', 'Source', 'File(s)', 'Records', 'By', ''].map((h) => (
+                <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {loading && uploads.length === 0 ? (
+              <tr><td colSpan={6} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</td></tr>
+            ) : uploads.length === 0 ? (
+              <tr><td colSpan={6} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
+                No tracked uploads yet. Future GoParkin / SP imports will appear here automatically.
+              </td></tr>
+            ) : (
+              uploads.map((u) => {
+                const sStyle = SOURCE_COLORS[u.source];
+                const isConfirming = confirmId === u.id;
+                const isReverting  = reverting === u.id;
+                const live = u.live_count ?? 0;
+                const partial = live > 0 && live < u.row_count;
+                return (
+                  <tr key={u.id} style={{ borderBottom: '1px solid #F3F3F3', background: isConfirming ? '#FFF8F8' : 'transparent' }}>
+                    <td style={{ padding: '12px 16px', fontSize: 12, color: '#1a1a1a', whiteSpace: 'nowrap' }}>{fmtWhen(u.uploaded_at)}</td>
+                    <td style={{ padding: '12px 16px' }}>
+                      <span style={{ background: sStyle.bg, color: sStyle.color, fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99 }}>
+                        {SOURCE_LABELS[u.source]}
+                      </span>
+                    </td>
+                    <td style={{ padding: '12px 16px', fontSize: 12, color: '#1a1a1a', maxWidth: 360 }}>
+                      <div title={u.file_label} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.file_label}</div>
+                    </td>
+                    <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 700, color: C.green, whiteSpace: 'nowrap' }}>
+                      {live === 0 && u.row_count > 0
+                        ? <span style={{ color: C.slate, fontWeight: 600 }}>Reverted</span>
+                        : (
+                          <>
+                            {live.toLocaleString()}
+                            {partial && <span style={{ color: C.slate, fontWeight: 500 }}> / {u.row_count.toLocaleString()}</span>}
+                          </>
+                        )}
+                    </td>
+                    <td style={{ padding: '12px 16px', fontSize: 12, color: C.slate }}>{u.uploaded_by ?? '—'}</td>
+                    <td style={{ padding: '12px 16px', textAlign: 'right' }}>
+                      {live === 0
+                        ? <span style={{ fontSize: 11, color: C.slate }}>—</span>
+                        : isConfirming
+                          ? (
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: '#FDEAEA', borderRadius: 10, padding: '6px 10px' }}>
+                              <span style={{ fontSize: 11, fontWeight: 700, color: '#C0321A' }}>Delete {live.toLocaleString()} rows?</span>
+                              <button onClick={() => setConfirmId(null)} disabled={isReverting}
+                                style={{ padding: '3px 10px', borderRadius: 8, border: '1px solid #FDEAEA', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                                Cancel
+                              </button>
+                              <button onClick={() => revert(u.id)} disabled={isReverting}
+                                style={{ padding: '3px 10px', borderRadius: 8, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: isReverting ? 'default' : 'pointer' }}>
+                                {isReverting ? 'Reverting…' : 'Yes, revert'}
+                              </button>
+                            </div>
+                          )
+                          : (
+                            <button onClick={() => setConfirmId(u.id)}
+                              style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #FDEAEA', background: '#FDEAEA', color: '#C0321A', fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                              ↺ Revert
+                            </button>
+                          )}
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+export function ScreenChargingRecords() {
+  const { can, user } = usePermissions();
+  const canEdit       = can('charging', 'can_edit');
+  const canDelete     = can('charging', 'can_delete');
+  const canSeeCarparks = can('charging_cpo_carparks', 'can_view');
+  const canSeeSpPrice  = can('charging_sp_price',     'can_view');
+
+  const [tab, setTab] = useState<'records' | 'sp_price' | 'carparks' | 'upload_history'>('records');
   const [records, setRecords] = useState<ChargingRecord[]>([]);
   const [summary, setSummary] = useState<SummaryRow | null>(null);
   const [carparkAgg, setCarparkAgg] = useState<CarparkAgg[]>([]);
@@ -827,8 +1279,7 @@ export function ScreenChargingRecords() {
     missingCarparks: string[];
   } | null>(null);
 
-  const [clearConfirm, setClearConfirm] = useState(false);
-  const [clearDeleting, setClearDeleting] = useState(false);
+  const [downloadOpen, setDownloadOpen] = useState(false);
 
   const gpRef = useRef<HTMLInputElement>(null);
   const spRef = useRef<HTMLInputElement>(null);
@@ -905,14 +1356,6 @@ export function ScreenChargingRecords() {
     fetchManagedCarparks();
     fetchCpoLocations();
   }, []);
-
-  const clearTable = async () => {
-    setClearDeleting(true);
-    await supabase.from('crm_charging_records').delete().not('id', 'is', null);
-    await refreshAll();
-    setClearDeleting(false);
-    setClearConfirm(false);
-  };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>, source: 'goparkin' | 'sp') => {
     const files = Array.from(e.target.files ?? []);
@@ -1020,12 +1463,15 @@ export function ScreenChargingRecords() {
     return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '60vh', color: C.slate, fontSize: 13 }}>Loading…</div>;
   }
 
-  const tabs: { id: 'records' | 'sp_price' | 'carparks' | 'csv_import'; label: string }[] = [
-    { id: 'records',    label: 'Charging Records' },
-    { id: 'carparks',   label: '◉ CPO Carparks' },
-    { id: 'sp_price',   label: '⚡ SP Price' },
-    { id: 'csv_import', label: '📋 CSV Import (Preview)' },
+  const tabs: { id: 'records' | 'sp_price' | 'carparks' | 'upload_history'; label: string }[] = [
+    { id: 'records',  label: 'Charging Records' },
+    ...(canSeeCarparks ? [{ id: 'carparks' as const, label: '◉ CPO Carparks' }] : []),
+    ...(canSeeSpPrice  ? [{ id: 'sp_price' as const, label: '⚡ SP Price'     }] : []),
+    ...(canDelete      ? [{ id: 'upload_history' as const, label: '↺ Upload History' }] : []),
   ];
+
+  // If the currently-selected tab is no longer visible, fall back to Records.
+  const activeTab = tabs.some((t) => t.id === tab) ? tab : 'records';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -1060,8 +1506,8 @@ export function ScreenChargingRecords() {
             style={{
               padding: '9px 20px', border: 'none', background: 'transparent',
               fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer',
-              color: tab === t.id ? C.green : C.slate,
-              borderBottom: tab === t.id ? `2px solid ${C.green}` : '2px solid transparent',
+              color: activeTab === t.id ? C.green : C.slate,
+              borderBottom: activeTab === t.id ? `2px solid ${C.green}` : '2px solid transparent',
               marginBottom: -2,
             }}>
             {t.label}
@@ -1070,12 +1516,12 @@ export function ScreenChargingRecords() {
       </div>
 
       {/* SP Price tab */}
-      {tab === 'sp_price' && (
+      {activeTab === 'sp_price' && (
         <SpPriceTab prices={carparkPrices} onRefresh={fetchCarparkPrices} />
       )}
 
       {/* CPO Carparks tab */}
-      {tab === 'carparks' && (
+      {activeTab === 'carparks' && (
         <CarparksTab
           agg={carparkAgg}
           managed={managedCarparks}
@@ -1084,13 +1530,13 @@ export function ScreenChargingRecords() {
         />
       )}
 
-      {/* CSV Import preview tab (temporary) */}
-      {tab === 'csv_import' && (
-        <CsvImportTab onUploaded={refreshAll} />
+      {/* Upload History tab */}
+      {activeTab === 'upload_history' && (
+        <UploadHistoryTab onRefresh={refreshAll} />
       )}
 
       {/* Records tab */}
-      {tab === 'records' && (
+      {activeTab === 'records' && (
         <>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             {/* Source filter pills */}
@@ -1140,29 +1586,11 @@ export function ScreenChargingRecords() {
                   ⬆ SP (.csv · bulk)
                 </button>
               )}
-              <button onClick={refreshAll}
-                style={{ padding: '9px 14px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-                ↻
+              <button onClick={() => setDownloadOpen(true)}
+                title="Download a filtered CSV (carpark + date range)"
+                style={{ padding: '9px 18px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                ⬇ Download CSV
               </button>
-              {canDelete && (!clearConfirm
-                ? (
-                  <button onClick={() => setClearConfirm(true)} disabled={records.length === 0}
-                    style={{ padding: '9px 16px', borderRadius: 10, border: '1px solid #FDEAEA', background: '#FDEAEA', color: '#C0321A', fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: records.length > 0 ? 'pointer' : 'default', opacity: records.length === 0 ? 0.5 : 1 }}>
-                    🗑 Clear All
-                  </button>
-                ) : (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#FDEAEA', borderRadius: 10, padding: '6px 12px' }}>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: '#C0321A' }}>Delete all {records.length.toLocaleString()} records?</span>
-                    <button onClick={() => setClearConfirm(false)}
-                      style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #FDEAEA', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                      No
-                    </button>
-                    <button onClick={clearTable} disabled={clearDeleting}
-                      style={{ padding: '4px 10px', borderRadius: 8, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-                      {clearDeleting ? 'Deleting…' : 'Yes, Delete All'}
-                    </button>
-                  </div>
-                ))}
             </div>
 
             {/* Hidden file inputs */}
@@ -1250,6 +1678,8 @@ export function ScreenChargingRecords() {
           rows={uploadModal.rows}
           warnings={uploadModal.warnings}
           dupeCount={uploadModal.dupeCount}
+          uploaderEmail={user.email}
+          uploaderDepartment={user.department}
           onConfirm={refreshAll}
           onClose={() => setUploadModal(null)}
         />
@@ -1260,6 +1690,13 @@ export function ScreenChargingRecords() {
           carparks={pendingSpUpload.missingCarparks}
           onSave={handleNewPricesSave}
           onClose={() => setPendingSpUpload(null)}
+        />
+      )}
+
+      {downloadOpen && (
+        <DownloadModal
+          carparks={[...carparkAgg.map((c) => c.carpark_name)].sort((a, b) => a.localeCompare(b))}
+          onClose={() => setDownloadOpen(false)}
         />
       )}
     </div>

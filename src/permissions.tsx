@@ -13,31 +13,36 @@ export type ScreenKey =
   | 'overview' | 'orders' | 'installations' | 'customers' | 'social' | 'sales'
   | 'purchaseorders' | 'inventory' | 'suppliers'
   | 'corporatecrm' | 'cpochargers' | 'charging' | 'corporateinvoicing' | 'charging_dashboard'
+  | 'charging_cpo_carparks' | 'charging_sp_price'
   | 'settings' | 'dbhealth';
 
 export const SCREEN_LABELS: Record<ScreenKey, string> = {
-  overview:           'Overview',
-  orders:             'Invoices',
-  installations:      'Installations',
-  customers:          'Customers',
-  social:             'Social Media Planner',
-  sales:              'Sales',
-  purchaseorders:     'Purchase Orders',
-  inventory:          'Inventory & Products',
-  suppliers:          'Suppliers',
-  corporatecrm:       'Corporate CRM',
-  cpochargers:        'CPO Chargers',
-  charging:           'Charging Records',
-  corporateinvoicing: 'Corporate Invoicing',
-  charging_dashboard: 'Charging Dashboard',
-  settings:           'Users & Permissions',
-  dbhealth:           'DB Health',
+  overview:              'Overview',
+  orders:                'Invoices',
+  installations:         'Installations',
+  customers:             'Customers',
+  social:                'Social Media Planner',
+  sales:                 'Sales',
+  purchaseorders:        'Purchase Orders',
+  inventory:             'Inventory & Products',
+  suppliers:             'Suppliers',
+  corporatecrm:          'Corporate CRM',
+  cpochargers:           'CPO Chargers',
+  charging:              'Charging Records',
+  charging_cpo_carparks: 'Charging Records › CPO Carparks tab',
+  charging_sp_price:     'Charging Records › SP Price tab',
+  corporateinvoicing:    'Corporate Invoicing',
+  charging_dashboard:    'Charging Dashboard',
+  settings:              'Users & Permissions',
+  dbhealth:              'DB Health',
 };
 
 // Each department exposes only its own screens in the NAV + Settings matrix.
 // Tech currently routes to TSDWorkspace so its screen list is empty here.
 export const DEPARTMENT_SCREENS: Record<Department, ScreenKey[]> = {
-  cpo:   ['charging_dashboard', 'corporatecrm', 'cpochargers', 'charging', 'corporateinvoicing', 'settings', 'dbhealth'],
+  cpo:   ['charging_dashboard', 'corporatecrm', 'cpochargers', 'charging',
+          'charging_cpo_carparks', 'charging_sp_price',
+          'corporateinvoicing', 'settings', 'dbhealth'],
   sales: ['overview', 'orders', 'installations', 'customers', 'social', 'sales',
           'purchaseorders', 'inventory', 'suppliers', 'charging_dashboard', 'settings', 'dbhealth'],
   tech:  [],

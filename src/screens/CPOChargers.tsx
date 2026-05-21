@@ -41,6 +41,7 @@ interface Charger {
   next_maintenance_date: string | null;
   form_a_next_date: string | null;
   form_d_next_date: string | null;
+  meter_reading_day: number | null;  // day-of-month (1-31), fixed monthly schedule
   notes: string | null;
 }
 
@@ -51,6 +52,8 @@ interface MeterReading {
   reading_date: string;
   recorded_by: string | null;
   notes: string | null;
+  pdf_path: string | null;
+  pdf_filename: string | null;
   created_at: string;
 }
 
@@ -80,6 +83,29 @@ function addMonthsISO(iso: string, months: number): string {
   const d = new Date(iso);
   d.setMonth(d.getMonth() + months);
   return d.toISOString().slice(0, 10);
+}
+
+// Next occurrence of a fixed day-of-month, today or later.
+// If the day exceeds the target month's length (e.g. day=31 in February),
+// it's clamped to the last day of that month.
+function nextMeterReadingDate(day: number | null, from: Date = new Date()): Date | null {
+  if (day == null) return null;
+  const ref = new Date(from.getFullYear(), from.getMonth(), from.getDate()); // strip time
+  const targetThisMonth = Math.min(day, new Date(ref.getFullYear(), ref.getMonth() + 1, 0).getDate());
+  const candidate = new Date(ref.getFullYear(), ref.getMonth(), targetThisMonth);
+  if (candidate >= ref) return candidate;
+  const targetNextMonth = Math.min(day, new Date(ref.getFullYear(), ref.getMonth() + 2, 0).getDate());
+  return new Date(ref.getFullYear(), ref.getMonth() + 1, targetNextMonth);
+}
+
+function ordinalSuffix(n: number): string {
+  if (n >= 11 && n <= 13) return 'th';
+  switch (n % 10) {
+    case 1: return 'st';
+    case 2: return 'nd';
+    case 3: return 'rd';
+    default: return 'th';
+  }
 }
 
 function effectivePmDate(c: Pick<Charger, 'form_a_next_date' | 'form_d_next_date' | 'next_maintenance_date'>): string | null {
@@ -322,7 +348,7 @@ function LocationModal({ initial, title, onSave, onDelete, onClose, chargerCount
             <div style={{ fontSize: 13, fontWeight: 700, color: '#C0321A' }}>Delete this location?</div>
             <div style={{ fontSize: 12, color: '#C0321A' }}>
               {chargerCount > 0
-                ? `${chargerCount} charger${chargerCount > 1 ? 's' : ''} will become unassigned (chargers themselves are not deleted).`
+                ? `${chargerCount} charger${chargerCount > 1 ? 's' : ''} attached to this location will also be deleted, along with their meter readings and maintenance records. This cannot be undone.`
                 : 'No chargers are assigned to this location.'}
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
@@ -374,6 +400,7 @@ function makeBlankCharger(locationId: string | null): ChargerForm {
     next_maintenance_date: null,
     form_a_next_date: null,
     form_d_next_date: null,
+    meter_reading_day: null,
     notes: '',
   };
 }
@@ -512,6 +539,28 @@ function ChargerModal({ initial, title, locations, lockLocation, onSave, onDelet
           </div>
         </div>
 
+        {/* Meter Reading schedule */}
+        <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.green }}>Meter Reading Schedule</div>
+          <div>
+            <FieldLabel>Day of Month</FieldLabel>
+            <select value={form.meter_reading_day ?? ''}
+              onChange={(e) => set('meter_reading_day', e.target.value === '' ? null : Number(e.target.value))}
+              style={{ ...inputStyle(), background: C.white, cursor: 'pointer' }}>
+              <option value="">— Not scheduled —</option>
+              {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                <option key={d} value={d}>{`${d}${ordinalSuffix(d)} of each month`}</option>
+              ))}
+            </select>
+          </div>
+          <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5 }}>
+            Readings are expected every month on this day. The actual <em>reading date</em> recorded per entry can drift (e.g. day off, technician unavailable), but the schedule never moves.
+            {form.meter_reading_day === 31 && (
+              <span style={{ color: '#B07D00' }}> · 31st: months with fewer days fall back to the last day.</span>
+            )}
+          </div>
+        </div>
+
         <div>
           <FieldLabel>Notes</FieldLabel>
           <textarea value={form.notes ?? ''} onChange={(e) => set('notes', e.target.value)} rows={3}
@@ -562,18 +611,42 @@ interface MeterReadingFormProps {
 function MeterReadingForm({ chargerId, onAdded }: MeterReadingFormProps) {
   const [reading, setReading] = useState('');
   const [date, setDate] = useState(todayISO());
+  const [file, setFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const canSave = reading.trim() !== '' && !saving;
 
   const submit = async () => {
     setSaving(true);
+    let pdf_path: string | null = null;
+    let pdf_filename: string | null = null;
+
+    if (file) {
+      const fileId = crypto.randomUUID();
+      pdf_path = `chargers/${chargerId}/readings/${fileId}.pdf`;
+      pdf_filename = file.name;
+      const { error: upErr } = await supabase.storage.from(STORAGE_BUCKET).upload(pdf_path, file, {
+        contentType: 'application/pdf',
+      });
+      if (upErr) {
+        alert(`PDF upload failed: ${upErr.message}`);
+        setSaving(false);
+        return;
+      }
+    }
+
     await supabase.from('cpo_meter_readings').insert({
       charger_id: chargerId,
       reading_kwh: Number(reading),
       reading_date: date,
+      pdf_path,
+      pdf_filename,
     });
+
     setReading('');
+    setFile(null);
+    if (fileRef.current) fileRef.current.value = '';
     await onAdded();
     setSaving(false);
   };
@@ -591,6 +664,17 @@ function MeterReadingForm({ chargerId, onAdded }: MeterReadingFormProps) {
           <FieldLabel>Reading Date</FieldLabel>
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle()} />
         </div>
+      </div>
+      <div>
+        <FieldLabel>Reading PDF (optional)</FieldLabel>
+        <input ref={fileRef} type="file" accept="application/pdf"
+          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          style={{ ...inputStyle(), padding: 8 }} />
+        {file && (
+          <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>
+            Selected: <span style={{ color: '#1a1a1a', fontWeight: 600 }}>{file.name}</span> ({(file.size / 1024).toFixed(0)} KB)
+          </div>
+        )}
       </div>
       <button onClick={submit} disabled={!canSave}
         style={{ alignSelf: 'flex-end', padding: '8px 18px', borderRadius: 10, border: 'none',
@@ -753,6 +837,9 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
   const [readings, setReadings] = useState<MeterReading[]>([]);
   const [maintenance, setMaintenance] = useState<MaintenanceRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [confirmReadingId, setConfirmReadingId] = useState<string | null>(null);
+  const [confirmMaintenanceId, setConfirmMaintenanceId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchAll = async () => {
     const [r1, r2] = await Promise.all([
@@ -770,15 +857,22 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
   const pmFormD = pmUrgency(charger.form_d_next_date);
   const latestKwh = readings[0]?.reading_kwh ?? null;
 
-  const deleteReading = async (id: string) => {
-    await supabase.from('cpo_meter_readings').delete().eq('id', id);
+  const deleteReading = async (rec: MeterReading) => {
+    setDeleting(true);
+    if (rec.pdf_path) await supabase.storage.from(STORAGE_BUCKET).remove([rec.pdf_path]);
+    await supabase.from('cpo_meter_readings').delete().eq('id', rec.id);
     await fetchAll();
+    setDeleting(false);
+    setConfirmReadingId(null);
   };
 
   const deleteMaintenance = async (rec: MaintenanceRecord) => {
+    setDeleting(true);
     if (rec.pdf_path) await supabase.storage.from(STORAGE_BUCKET).remove([rec.pdf_path]);
     await supabase.from('cpo_maintenance_records').delete().eq('id', rec.id);
     await fetchAll();
+    setDeleting(false);
+    setConfirmMaintenanceId(null);
   };
 
   const openPdf = async (path: string) => {
@@ -855,6 +949,7 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
             <InfoRow label="Latest Reading"    value={latestKwh !== null ? `${Number(latestKwh).toLocaleString()} kWh` : '—'} />
             <InfoRow label="Form A · Next"     value={fmtDate(charger.form_a_next_date)} />
             <InfoRow label="Form D · Next"     value={fmtDate(charger.form_d_next_date)} />
+            <InfoRow label="Meter Reading"     value={charger.meter_reading_day ? `${charger.meter_reading_day}${ordinalSuffix(charger.meter_reading_day)} of each month` : '—'} />
 
             {charger.notes && (
               <div style={{ background: C.seasalt, borderRadius: 12, padding: 14 }}>
@@ -867,6 +962,33 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
 
         {tab === 'meter' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {(() => {
+              const day = charger.meter_reading_day;
+              if (!day) {
+                return (
+                  <div style={{ background: C.seasalt, border: '1px dashed #EBEBEB', borderRadius: 12, padding: '10px 16px', fontSize: 12, color: C.slate, lineHeight: 1.5 }}>
+                    No monthly reading schedule set. Edit the charger to pick a day-of-month.
+                  </div>
+                );
+              }
+              const next = nextMeterReadingDate(day);
+              const days = next ? Math.round((next.getTime() - new Date(new Date().toDateString()).getTime()) / 86_400_000) : null;
+              const tone =
+                days === null     ? { bg: C.seasalt,    fg: C.slate,   sub: '' } :
+                days < 0          ? { bg: '#FDEAEA',    fg: '#C0321A', sub: `${Math.abs(days)} days late` } :
+                days === 0        ? { bg: C.honeydew,   fg: C.green,   sub: 'today' } :
+                days <= 3         ? { bg: '#FFF8E1',    fg: '#B07D00', sub: `in ${days} day${days === 1 ? '' : 's'}` } :
+                                    { bg: C.honeydew,   fg: C.green,   sub: `in ${days} days` };
+              return (
+                <div style={{ background: tone.bg, color: tone.fg, borderRadius: 12, padding: '10px 16px', display: 'flex', alignItems: 'center', gap: 14, fontSize: 13, fontWeight: 600 }}>
+                  <span style={{ fontSize: 16 }}>◷</span>
+                  <span>
+                    Monthly reading scheduled for the <strong>{day}{ordinalSuffix(day)}</strong>.
+                    {next && <> Next due <strong>{fmtDate(next.toISOString().slice(0, 10))}</strong> · {tone.sub}.</>}
+                  </span>
+                </div>
+              );
+            })()}
             {canEdit && <MeterReadingForm chargerId={charger.id} onAdded={refreshAndParent} />}
             {loading ? (
               <div style={{ padding: 24, textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</div>
@@ -890,12 +1012,35 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
                         <td style={{ padding: '10px 14px', fontSize: 12, color: '#1a1a1a', whiteSpace: 'nowrap' }}>{fmtDate(r.reading_date)}</td>
                         <td style={{ padding: '10px 14px', fontSize: 13, fontWeight: 700, color: C.green, whiteSpace: 'nowrap' }}>{Number(r.reading_kwh).toLocaleString()}</td>
                         <td style={{ padding: '10px 14px', textAlign: 'right' }}>
-                          {canDelete && (
-                            <button onClick={() => deleteReading(r.id)}
-                              style={{ background: 'transparent', border: 'none', color: '#C0321A', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>
-                              Delete
-                            </button>
-                          )}
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                            {r.pdf_path && (
+                              <button onClick={() => openPdf(r.pdf_path!)}
+                                title={r.pdf_filename ?? 'Reading PDF'}
+                                style={{ padding: '4px 10px', borderRadius: 6, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                                ⬇ PDF
+                              </button>
+                            )}
+                            {canDelete && (
+                              confirmReadingId === r.id ? (
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: '#FDEAEA', borderRadius: 8, padding: '4px 8px' }}>
+                                  <span style={{ fontSize: 11, fontWeight: 700, color: '#C0321A' }}>Delete this reading{r.pdf_path ? ' + PDF' : ''}?</span>
+                                  <button onClick={() => setConfirmReadingId(null)} disabled={deleting}
+                                    style={{ padding: '3px 8px', borderRadius: 6, border: '1px solid #FDEAEA', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                                    Cancel
+                                  </button>
+                                  <button onClick={() => deleteReading(r)} disabled={deleting}
+                                    style={{ padding: '3px 8px', borderRadius: 6, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: deleting ? 'default' : 'pointer' }}>
+                                    {deleting ? '…' : 'Yes, delete'}
+                                  </button>
+                                </span>
+                              ) : (
+                                <button onClick={() => setConfirmReadingId(r.id)}
+                                  style={{ background: 'transparent', border: 'none', color: '#C0321A', cursor: 'pointer', fontSize: 11, fontWeight: 700 }}>
+                                  Delete
+                                </button>
+                              )
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -954,10 +1099,24 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
                         </button>
                       )}
                       {canDelete && (
-                        <button onClick={() => deleteMaintenance(m)}
-                          style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                          Delete
-                        </button>
+                        confirmMaintenanceId === m.id ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#FDEAEA', borderRadius: 8, padding: '6px 10px' }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: '#C0321A' }}>Delete this record{m.pdf_path ? ' + PDF' : ''}?</span>
+                            <button onClick={() => setConfirmMaintenanceId(null)} disabled={deleting}
+                              style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #FDEAEA', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                              Cancel
+                            </button>
+                            <button onClick={() => deleteMaintenance(m)} disabled={deleting}
+                              style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: deleting ? 'default' : 'pointer' }}>
+                              {deleting ? 'Deleting…' : 'Yes, delete'}
+                            </button>
+                          </div>
+                        ) : (
+                          <button onClick={() => setConfirmMaintenanceId(m.id)}
+                            style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                            Delete
+                          </button>
+                        )
                       )}
                     </div>
                   </div>
@@ -973,9 +1132,9 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
 
 function DetailStat({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) {
   return (
-    <div style={{ background: C.seasalt, borderRadius: 12, padding: '12px 14px' }}>
+    <div style={{ background: C.seasalt, borderRadius: 12, padding: '12px 14px', minWidth: 0 }}>
       <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 15, fontWeight: 700, color: valueColor ?? C.green }}>{value}</div>
+      <div style={{ fontSize: 14, fontWeight: 700, color: valueColor ?? C.green, lineHeight: 1.3, wordBreak: 'break-word' }}>{value}</div>
     </div>
   );
 }
@@ -1087,6 +1246,23 @@ function ChargerCard({ charger, latestReading, onClick }: ChargerCardProps) {
   const pmFormA = pmUrgency(charger.form_a_next_date);
   const pmFormD = pmUrgency(charger.form_d_next_date);
 
+  // Monthly meter reading urgency — driven by the next occurrence of meter_reading_day.
+  const nextReading = nextMeterReadingDate(charger.meter_reading_day);
+  const meterTone = (() => {
+    if (!nextReading) return null;
+    const todayMid = new Date(new Date().toDateString());
+    const days = Math.round((nextReading.getTime() - todayMid.getTime()) / 86_400_000);
+    const label =
+      days < 0  ? `Late ${Math.abs(days)}d` :
+      days === 0 ? 'Due today' :
+      `Due in ${days}d`;
+    const palette =
+      days < 0  ? { bg: '#FDEAEA', color: '#C0321A' } :
+      days <= 3 ? { bg: '#FFF8E1', color: '#B07D00' } :
+                  { bg: C.honeydew, color: C.green };
+    return { ...palette, label };
+  })();
+
   return (
     <div
       onClick={onClick}
@@ -1136,6 +1312,12 @@ function ChargerCard({ charger, latestReading, onClick }: ChargerCardProps) {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {meterTone && (
+          <div style={{ background: meterTone.bg, color: meterTone.color, borderRadius: 10, padding: '6px 12px', fontSize: 11, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span>Meter Reading ({charger.meter_reading_day}{ordinalSuffix(charger.meter_reading_day!)})</span>
+            <span>{meterTone.label}</span>
+          </div>
+        )}
         <div style={{ background: pmFormA.bg, color: pmFormA.color, borderRadius: 10, padding: '6px 12px', fontSize: 11, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span>Form A (6-mo)</span>
           <span>{pmFormA.label}</span>
@@ -1151,8 +1333,6 @@ function ChargerCard({ charger, latestReading, onClick }: ChargerCardProps) {
 
 // ── Location Drilldown Modal ──────────────────────────────────────
 
-type PmFilter = 'all' | 'overdue' | 'due_soon' | 'no_pm';
-
 interface LocationDrilldownProps {
   location: Location;
   chargers: Charger[];
@@ -1165,30 +1345,28 @@ interface LocationDrilldownProps {
 }
 
 function LocationDrilldownModal({ location, chargers, latestByCharger, canEdit, onClose, onSelectCharger, onAddCharger, onEditLocation }: LocationDrilldownProps) {
-  const [pmFilter, setPmFilter] = useState<PmFilter>('all');
+  const earliest = earliestPmDate(chargers);
+  const pm       = pmUrgency(earliest);
 
-  const pmStatus = (c: Charger): PmFilter => {
-    const d = daysFromToday(effectivePmDate(c));
-    if (d === null) return 'no_pm';
-    if (d < 0) return 'overdue';
-    if (d <= 30) return 'due_soon';
-    return 'all';
+  // Pick the charger whose Form A / Form D date is the earliest at this location.
+  const earliestOwner = (key: 'form_a_next_date' | 'form_d_next_date'): Charger | null => {
+    return chargers.reduce<Charger | null>((min, c) => {
+      const d = c[key];
+      if (!d) return min;
+      if (!min || !min[key]) return c;
+      return d < (min[key] as string) ? c : min;
+    }, null);
   };
-
-  const overdue   = chargers.filter((c) => pmStatus(c) === 'overdue').length;
-  const dueSoon   = chargers.filter((c) => pmStatus(c) === 'due_soon').length;
-  const noPm      = chargers.filter((c) => pmStatus(c) === 'no_pm').length;
-  const earliest  = earliestPmDate(chargers);
-  const pm        = pmUrgency(earliest);
-
-  const visible = chargers.filter((c) => pmFilter === 'all' || pmStatus(c) === pmFilter);
-
-  const PM_TABS: { id: PmFilter; label: string; count: number }[] = [
-    { id: 'all',      label: 'All',           count: chargers.length },
-    { id: 'overdue',  label: 'PM Overdue',    count: overdue },
-    { id: 'due_soon', label: 'PM Due ≤ 30d',  count: dueSoon },
-    { id: 'no_pm',    label: 'No PM Set',     count: noPm },
-  ];
+  const nextFormAOwner = earliestOwner('form_a_next_date');
+  const nextFormDOwner = earliestOwner('form_d_next_date');
+  const nextFormA = pmUrgency(nextFormAOwner?.form_a_next_date ?? null);
+  const nextFormD = pmUrgency(nextFormDOwner?.form_d_next_date ?? null);
+  const nextFormAValue = nextFormAOwner
+    ? `${nextFormAOwner.charger_code} (${nextFormA.label})`
+    : nextFormA.label;
+  const nextFormDValue = nextFormDOwner
+    ? `${nextFormDOwner.charger_code} (${nextFormD.label})`
+    : nextFormD.label;
 
   return (
     <div
@@ -1227,47 +1405,30 @@ function LocationDrilldownModal({ location, chargers, latestByCharger, canEdit, 
 
         {/* Compact stats */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
-          <DetailStat label="Chargers"     value={String(chargers.length)} />
-          <DetailStat label="PM Overdue"   value={String(overdue)}  valueColor={overdue > 0 ? '#C0321A' : undefined} />
-          <DetailStat label="PM Due ≤ 30d" value={String(dueSoon)}  valueColor={dueSoon > 0 ? '#B45309' : undefined} />
-          <DetailStat label="Earliest PM"  value={pm.label}         valueColor={pm.color} />
+          <DetailStat label="Chargers"    value={String(chargers.length)} />
+          <DetailStat label="Next Form A" value={nextFormAValue} valueColor={nextFormA.color} />
+          <DetailStat label="Next Form D" value={nextFormDValue} valueColor={nextFormD.color} />
+          <DetailStat label="Earliest PM" value={pm.label}        valueColor={pm.color} />
         </div>
 
         {/* Toolbar */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', gap: 6 }}>
-            {PM_TABS.map((t) => {
-              const active = pmFilter === t.id;
-              return (
-                <button key={t.id} onClick={() => setPmFilter(t.id)}
-                  style={{ padding: '6px 14px', borderRadius: 99,
-                    border: `1px solid ${active ? C.green : '#EBEBEB'}`,
-                    background: active ? C.green : C.white,
-                    color: active ? C.white : C.slate,
-                    fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                  {t.label} <span style={{ opacity: 0.7 }}>· {t.count}</span>
-                </button>
-              );
-            })}
-          </div>
-          {canEdit && (
+        {canEdit && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
             <button onClick={onAddCharger}
-              style={{ marginLeft: 'auto', padding: '8px 16px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              style={{ padding: '8px 16px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
               + New Charger
             </button>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* Charger grid */}
-        {visible.length === 0 ? (
+        {chargers.length === 0 ? (
           <div style={{ padding: 32, textAlign: 'center', color: C.slate, fontSize: 13, background: C.seasalt, borderRadius: 12, border: '1px dashed #EBEBEB' }}>
-            {chargers.length === 0
-              ? 'No chargers at this location yet. Click "+ New Charger" to add the first one.'
-              : 'No chargers match the current filter.'}
+            No chargers at this location yet. Click "+ New Charger" to add the first one.
           </div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12 }}>
-            {visible.map((c) => (
+            {chargers.map((c) => (
               <ChargerCard
                 key={c.id}
                 charger={c}
@@ -1417,8 +1578,14 @@ export function ScreenCPOChargers() {
   };
 
   const deleteCharger = async (id: string) => {
-    const { data: recs } = await supabase.from('cpo_maintenance_records').select('pdf_path').eq('charger_id', id);
-    const paths = (recs ?? []).map((r: { pdf_path: string | null }) => r.pdf_path).filter((p): p is string => !!p);
+    const [{ data: maintRecs }, { data: readRecs }] = await Promise.all([
+      supabase.from('cpo_maintenance_records').select('pdf_path').eq('charger_id', id),
+      supabase.from('cpo_meter_readings').select('pdf_path').eq('charger_id', id),
+    ]);
+    const paths = [
+      ...((maintRecs ?? []) as { pdf_path: string | null }[]),
+      ...((readRecs ?? [])  as { pdf_path: string | null }[]),
+    ].map((r) => r.pdf_path).filter((p): p is string => !!p);
     if (paths.length) await supabase.storage.from(STORAGE_BUCKET).remove(paths);
     const { error } = await supabase.from('cpo_chargers').delete().eq('id', id);
     if (error) { setError(error.message); return; }
@@ -1438,16 +1605,23 @@ export function ScreenCPOChargers() {
     return l.name.toLowerCase().includes(q) || (l.address ?? '').toLowerCase().includes(q);
   });
 
-  const totalChargers = chargers.length;
-  const pmOverdue = chargers.filter((c) => {
+  // Only count chargers that are attached to a location the user can actually see.
+  // Orphan rows (location_id = NULL after a parent location was deleted) would
+  // otherwise inflate the KPIs even though no card on screen displays them.
+  const locationIds = new Set(locations.map((l) => l.id));
+  const assignedChargers = chargers.filter((c) => c.location_id !== null && locationIds.has(c.location_id));
+  const orphanCount = chargers.length - assignedChargers.length;
+
+  const totalChargers = assignedChargers.length;
+  const pmOverdue = assignedChargers.filter((c) => {
     const d = daysFromToday(effectivePmDate(c));
     return d !== null && d < 0;
   }).length;
-  const pmDueSoon = chargers.filter((c) => {
+  const pmDueSoon = assignedChargers.filter((c) => {
     const d = daysFromToday(effectivePmDate(c));
     return d !== null && d >= 0 && d <= 30;
   }).length;
-  const noPm = chargers.filter((c) => effectivePmDate(c) === null).length;
+  const noPm = assignedChargers.filter((c) => effectivePmDate(c) === null).length;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -1459,6 +1633,15 @@ export function ScreenCPOChargers() {
         <KPICard label="PM Overdue"      value={String(pmOverdue)} sub="Form A or Form D past due" />
         <KPICard label="PM Due Soon"     value={String(pmDueSoon)} sub="within 30 days" />
       </div>
+
+      {orphanCount > 0 && (
+        <div style={{ background: '#FFF8E1', color: '#B07D00', borderRadius: 12, padding: '10px 16px', fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 14 }}>⚠</span>
+          <span>
+            {orphanCount} charger{orphanCount === 1 ? '' : 's'} {orphanCount === 1 ? 'is' : 'are'} not linked to any location (parent location was deleted). KPIs above exclude {orphanCount === 1 ? 'it' : 'them'}. Edit the charger to reassign, or delete via Supabase if no longer needed.
+          </span>
+        </div>
+      )}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <div style={{ position: 'relative', width: 280 }}>
@@ -1551,6 +1734,7 @@ export function ScreenCPOChargers() {
             next_maintenance_date: editingCharger.next_maintenance_date,
             form_a_next_date: editingCharger.form_a_next_date,
             form_d_next_date: editingCharger.form_d_next_date,
+            meter_reading_day: editingCharger.meter_reading_day,
             notes: editingCharger.notes,
           }}
           locations={locations}
