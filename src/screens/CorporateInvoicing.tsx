@@ -22,6 +22,10 @@ export interface CRMCompany {
   base_rate: number;
   threshold_kwh: number;
   discounted_rate: number;
+  invoice_email: string | null;
+  invoice_cc_emails: string[];
+  contract_path: string | null;
+  contract_filename: string | null;
 }
 
 interface CRMVehicle {

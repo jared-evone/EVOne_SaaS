@@ -24,7 +24,15 @@ export interface FormTemplate {
   vehicles_required: boolean;
   sp_drivers_required: boolean;
   is_active: boolean;
+  goparkin_pdf_path: string | null;
+  goparkin_pdf_filename: string | null;
+  sp_pdf_path: string | null;
+  sp_pdf_filename: string | null;
+  contract_pdf_path: string | null;
+  contract_pdf_filename: string | null;
 }
+
+export const INSTRUCTION_BUCKET = 'crm-instructions';
 
 export type ApplicationStatus = 'draft' | 'pending' | 'approved' | 'rejected';
 
@@ -41,6 +49,15 @@ export interface Application {
   vehicle_plates: string[];
   sp_driver_emails: string[];
   custom_responses: Record<string, string>;
+  rfid_cards_requested: boolean;
+  rfid_cards_quantity: number;
+  invoice_cc_emails: string[];
+  signature_data_url: string | null;
+  signed_at: string | null;
+  tariff_base_rate: number;
+  tariff_threshold_kwh: number;
+  tariff_discounted_rate: number;
+  vehicle_count: number;
   contract_accepted_at: string | null;
   contract_snapshot: string | null;
   status: ApplicationStatus;
@@ -51,6 +68,9 @@ export interface Application {
   created_company_id: string | null;
   created_at: string;
 }
+
+export const RFID_CARD_PRICE_SGD = 15;
+export const KWH_PER_VEHICLE = 500;
 
 const STATUS_COLORS: Record<ApplicationStatus, { bg: string; color: string; label: string }> = {
   draft:    { bg: '#F3F3F3', color: '#767B77', label: 'Draft / Not Submitted' },
@@ -102,6 +122,8 @@ interface InviteModalProps {
 
 function InviteModal({ template, onCreated, onClose }: InviteModalProps) {
   const [email, setEmail] = useState('');
+  const [baseRate, setBaseRate]             = useState<string>('');
+  const [discountedRate, setDiscountedRate] = useState<string>('');
   const [created, setCreated] = useState<Application | null>(null);
   const [copying, setCopying] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -111,6 +133,8 @@ function InviteModal({ template, onCreated, onClose }: InviteModalProps) {
     const { data, error } = await supabase.from('crm_account_applications').insert({
       template_id: template.id,
       invited_email: email.trim() || null,
+      tariff_base_rate:       Number(baseRate)       || 0,
+      tariff_discounted_rate: Number(discountedRate) || 0,
       status: 'draft',
     }).select().single();
     setSaving(false);
@@ -150,6 +174,28 @@ function InviteModal({ template, onCreated, onClose }: InviteModalProps) {
               <FieldLabel>Customer Email (optional, for your records)</FieldLabel>
               <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
                 placeholder="contact@company.com" style={inputStyle()} />
+            </div>
+            <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Tariff Quote (SGD / kWh)</div>
+                <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
+                  Shown to the customer right after the charging-network map. Leave at 0 if you don't want to display a tariff yet. The threshold is set by the customer's declared fleet size ({KWH_PER_VEHICLE} kWh per vehicle).
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div>
+                  <FieldLabel>Pre-threshold</FieldLabel>
+                  <input type="number" step="0.001" min="0" value={baseRate}
+                    onChange={(e) => setBaseRate(e.target.value)}
+                    placeholder="0.65" style={inputStyle()} />
+                </div>
+                <div>
+                  <FieldLabel>Post-threshold</FieldLabel>
+                  <input type="number" step="0.001" min="0" value={discountedRate}
+                    onChange={(e) => setDiscountedRate(e.target.value)}
+                    placeholder="0.55" style={inputStyle()} />
+                </div>
+              </div>
             </div>
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
               <button onClick={onClose}
@@ -223,14 +269,16 @@ function ApplicationDetailModal({ application: app, template, onChanged, onClose
       .from('crm_companies')
       .insert({
         name: app.company_name ?? 'Unnamed Company',
-        base_rate: 0,
-        threshold_kwh: 1000,
-        discounted_rate: 0,
+        base_rate:       app.tariff_base_rate,
+        threshold_kwh:   app.tariff_threshold_kwh,
+        discounted_rate: app.tariff_discounted_rate,
         contract_text: app.contract_snapshot,
         contact_name: app.contact_name,
         contact_email: app.contact_email,
         contact_phone: app.contact_phone,
         billing_address: app.billing_address,
+        invoice_email: app.contact_email,
+        invoice_cc_emails: app.invoice_cc_emails ?? [],
       })
       .select()
       .single();
@@ -457,6 +505,55 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 
 // ── Form Designer ─────────────────────────────────────────────────
 
+interface InstructionPdfBoxProps {
+  title: string;
+  path: string | null;
+  filename: string | null;
+  onUpload: (file: File) => Promise<void>;
+  onRemove: () => Promise<void>;
+  onView:   (path: string) => Promise<void>;
+}
+
+function InstructionPdfBox({ title, path, filename, onUpload, onRemove, onView }: InstructionPdfBoxProps) {
+  const [busy, setBusy] = useState(false);
+  const handleFile = async (file: File | undefined) => {
+    if (!file) return;
+    setBusy(true);
+    await onUpload(file);
+    setBusy(false);
+  };
+  return (
+    <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{title}</div>
+      {path && filename ? (
+        <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 16 }}>📄</span>
+          <div style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {filename}
+          </div>
+          <button type="button" onClick={() => onView(path)}
+            style={{ padding: '5px 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+            View
+          </button>
+          <button type="button" onClick={() => onRemove()} disabled={busy}
+            style={{ padding: '5px 10px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: busy ? 'default' : 'pointer' }}>
+            Remove
+          </button>
+        </div>
+      ) : (
+        <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5 }}>
+          No PDF uploaded yet. Choose a file below to attach instructions for applicants.
+        </div>
+      )}
+      <input type="file" accept="application/pdf,.pdf"
+        onChange={(e) => { void handleFile(e.target.files?.[0]); e.target.value = ''; }}
+        disabled={busy}
+        style={{ width: '100%', padding: 8, borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', boxSizing: 'border-box', background: C.white }} />
+      {busy && <div style={{ fontSize: 11, color: C.slate }}>Uploading…</div>}
+    </div>
+  );
+}
+
 interface FormDesignerProps {
   template: FormTemplate;
   onSaved: () => Promise<void>;
@@ -483,6 +580,12 @@ function FormDesigner({ template, onSaved }: FormDesignerProps) {
       custom_fields: form.custom_fields,
       vehicles_required: form.vehicles_required,
       sp_drivers_required: form.sp_drivers_required,
+      goparkin_pdf_path: form.goparkin_pdf_path,
+      goparkin_pdf_filename: form.goparkin_pdf_filename,
+      sp_pdf_path: form.sp_pdf_path,
+      sp_pdf_filename: form.sp_pdf_filename,
+      contract_pdf_path: form.contract_pdf_path,
+      contract_pdf_filename: form.contract_pdf_filename,
       updated_at: new Date().toISOString(),
     }).eq('id', form.id);
     setSaving(false);
@@ -494,23 +597,32 @@ function FormDesigner({ template, onSaved }: FormDesignerProps) {
     await onSaved();
   };
 
-  const addField = () => {
-    const newField: CustomField = {
-      id: crypto.randomUUID(),
-      label: 'New Field',
-      type: 'text',
-      required: false,
-      placeholder: '',
-    };
-    set('custom_fields', [...form.custom_fields, newField]);
+  type PdfPathKey = 'goparkin_pdf_path' | 'sp_pdf_path' | 'contract_pdf_path';
+  type PdfNameKey = 'goparkin_pdf_filename' | 'sp_pdf_filename' | 'contract_pdf_filename';
+
+  const uploadInstruction = async (file: File, pathKey: PdfPathKey, nameKey: PdfNameKey) => {
+    const oldPath = form[pathKey];
+    if (oldPath) await supabase.storage.from(INSTRUCTION_BUCKET).remove([oldPath]);
+    const fileId = crypto.randomUUID();
+    const ext = file.name.match(/\.[^.]+$/)?.[0] ?? '.pdf';
+    const path = `${fileId}${ext}`;
+    const { error: upErr } = await supabase.storage.from(INSTRUCTION_BUCKET).upload(path, file, {
+      contentType: file.type || 'application/pdf',
+    });
+    if (upErr) { alert(`Upload failed: ${upErr.message}`); return; }
+    setForm((f) => ({ ...f, [pathKey]: path, [nameKey]: file.name }));
   };
 
-  const updateField = (id: string, patch: Partial<CustomField>) => {
-    set('custom_fields', form.custom_fields.map((f) => f.id === id ? { ...f, ...patch } : f));
+  const removeInstruction = async (pathKey: PdfPathKey, nameKey: PdfNameKey) => {
+    const oldPath = form[pathKey];
+    if (oldPath) await supabase.storage.from(INSTRUCTION_BUCKET).remove([oldPath]);
+    setForm((f) => ({ ...f, [pathKey]: null, [nameKey]: null }));
   };
 
-  const removeField = (id: string) => {
-    set('custom_fields', form.custom_fields.filter((f) => f.id !== id));
+  const viewInstruction = async (path: string) => {
+    const { data, error } = await supabase.storage.from(INSTRUCTION_BUCKET).createSignedUrl(path, 60);
+    if (error || !data) { alert(`Could not open PDF: ${error?.message ?? 'unknown'}`); return; }
+    window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
   };
 
   return (
@@ -545,10 +657,24 @@ function FormDesigner({ template, onSaved }: FormDesignerProps) {
             style={{ ...inputStyle(), resize: 'vertical', lineHeight: 1.5 }} />
         </div>
         <div>
-          <FieldLabel>Contract Text</FieldLabel>
+          <FieldLabel>Contract Text (fallback if no PDF is uploaded)</FieldLabel>
           <textarea value={form.contract_text ?? ''} onChange={(e) => set('contract_text', e.target.value)} rows={10}
             placeholder="The full contract the customer agrees to."
             style={{ ...inputStyle(), resize: 'vertical', lineHeight: 1.5, fontFamily: 'monospace', fontSize: 12 }} />
+        </div>
+        <div>
+          <FieldLabel>Contract PDF</FieldLabel>
+          <InstructionPdfBox
+            title="Service Agreement"
+            path={form.contract_pdf_path}
+            filename={form.contract_pdf_filename}
+            onUpload={(f) => uploadInstruction(f, 'contract_pdf_path', 'contract_pdf_filename')}
+            onRemove={() => removeInstruction('contract_pdf_path', 'contract_pdf_filename')}
+            onView={(p) => viewInstruction(p)}
+          />
+          <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>
+            When a PDF is uploaded, the public form shows View / Download buttons and uses the file name in the agreement line. Falls back to the text above otherwise.
+          </div>
         </div>
       </div>
 
@@ -576,51 +702,32 @@ function FormDesigner({ template, onSaved }: FormDesignerProps) {
       </div>
 
       <div style={{ background: C.white, borderRadius: 16, padding: 24, border: '1px solid #EBEBEB', display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 700, color: C.green }}>Custom Fields</div>
-            <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>Add fields beyond the standard ones (company, contact, address).</div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.green }}>"Before You Start" Instructions</div>
+          <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
+            Upload a PDF for each platform. Applicants see View / Download buttons in the public form so they can follow the steps before submitting.
           </div>
-          <button onClick={addField}
-            style={{ padding: '7px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-            + Add Field
-          </button>
         </div>
-        {form.custom_fields.length === 0 ? (
-          <div style={{ padding: 24, textAlign: 'center', color: C.slate, fontSize: 13, background: C.seasalt, borderRadius: 12, border: '1px dashed #EBEBEB' }}>
-            No custom fields. Click "+ Add Field" to add one.
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {form.custom_fields.map((f) => (
-              <div key={f.id} style={{ background: C.seasalt, borderRadius: 12, padding: 12, display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 80px auto', gap: 10, alignItems: 'center' }}>
-                <input value={f.label} onChange={(e) => updateField(f.id, { label: e.target.value })}
-                  placeholder="Label"
-                  style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white }} />
-                <select value={f.type} onChange={(e) => updateField(f.id, { type: e.target.value as CustomFieldType })}
-                  style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white }}>
-                  <option value="text">Text</option>
-                  <option value="textarea">Long Text</option>
-                  <option value="email">Email</option>
-                  <option value="phone">Phone</option>
-                </select>
-                <input value={f.placeholder} onChange={(e) => updateField(f.id, { placeholder: e.target.value })}
-                  placeholder="Placeholder (optional)"
-                  style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white }} />
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: C.slate, cursor: 'pointer' }}>
-                  <input type="checkbox" checked={f.required} onChange={(e) => updateField(f.id, { required: e.target.checked })}
-                    style={{ width: 14, height: 14, accentColor: C.green, cursor: 'pointer' }} />
-                  Required
-                </label>
-                <button onClick={() => removeField(f.id)}
-                  style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
-                  Remove
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <InstructionPdfBox
+            title="GoParkin App"
+            path={form.goparkin_pdf_path}
+            filename={form.goparkin_pdf_filename}
+            onUpload={(f) => uploadInstruction(f, 'goparkin_pdf_path', 'goparkin_pdf_filename')}
+            onRemove={() => removeInstruction('goparkin_pdf_path', 'goparkin_pdf_filename')}
+            onView={(p) => viewInstruction(p)}
+          />
+          <InstructionPdfBox
+            title="SP Mobility App"
+            path={form.sp_pdf_path}
+            filename={form.sp_pdf_filename}
+            onUpload={(f) => uploadInstruction(f, 'sp_pdf_path', 'sp_pdf_filename')}
+            onRemove={() => removeInstruction('sp_pdf_path', 'sp_pdf_filename')}
+            onView={(p) => viewInstruction(p)}
+          />
+        </div>
       </div>
+
     </div>
   );
 }

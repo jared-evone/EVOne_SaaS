@@ -183,7 +183,7 @@ export async function uploadStatementForCompany(args: {
   const total_kwh    = args.total_kwh_override    ?? 0;
   const total_amount = args.total_amount_override ?? 0;
   const placeholder: PortalStatementData = {
-    company: { id: args.company_id, name: '', base_rate: 0, threshold_kwh: 0, discounted_rate: 0 },
+    company: { id: args.company_id, name: '', base_rate: 0, threshold_kwh: 0, discounted_rate: 0, invoice_email: null, invoice_cc_emails: [], contract_path: null, contract_filename: null },
     goparkinRows: [],
     spRows: [],
     totalKwh: total_kwh,
@@ -229,7 +229,7 @@ export async function uploadInvoiceForCompany(args: {
   const total_amount = args.total_amount_override ?? (stmt as { total_amount?: number } | null)?.total_amount ?? 0;
   const applied_rate = (stmt as { applied_rate?: number } | null)?.applied_rate ?? 0;
   const statement_data = (stmt as { statement_data?: unknown } | null)?.statement_data ?? {
-    company: { id: args.company_id, name: '', base_rate: 0, threshold_kwh: 0, discounted_rate: 0 },
+    company: { id: args.company_id, name: '', base_rate: 0, threshold_kwh: 0, discounted_rate: 0, invoice_email: null, invoice_cc_emails: [], contract_path: null, contract_filename: null },
     goparkinRows: [],
     spRows: [],
     totalKwh: total_kwh,

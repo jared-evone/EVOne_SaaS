@@ -13,7 +13,13 @@ interface CRMCompany {
   base_rate: number;
   threshold_kwh: number;
   discounted_rate: number;
+  invoice_email: string | null;
+  invoice_cc_emails: string[];
+  contract_path: string | null;
+  contract_filename: string | null;
 }
+
+const CONTRACT_BUCKET = 'crm-contracts';
 
 interface CRMVehicle {
   id: string;
@@ -252,25 +258,56 @@ export function CompanyFilter({ value, companies, onChange }: CompanyFilterProps
 interface CompanyModalProps {
   initial: Omit<CRMCompany, 'id'>;
   title: string;
+  canDelete: boolean;
   onSave: (data: Omit<CRMCompany, 'id'>) => Promise<void>;
   onDelete?: () => Promise<void>;
   onClose: () => void;
 }
 
-function CompanyModal({ initial, title, onSave, onDelete, onClose }: CompanyModalProps) {
+function CompanyModal({ initial, title, canDelete, onSave, onDelete, onClose }: CompanyModalProps) {
   const [form, setForm] = useState(initial);
+  const [ccText, setCcText] = useState((initial.invoice_cc_emails ?? []).join(', '));
+  const [contractFile, setContractFile] = useState<File | null>(null);
+  const [removeContract, setRemoveContract] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const contractRef = useRef<HTMLInputElement>(null);
 
-  const textField = (label: string, key: keyof typeof form, type = 'text') => (
+  const viewContract = async () => {
+    if (!initial.contract_path) return;
+    const { data, error } = await supabase.storage.from(CONTRACT_BUCKET).createSignedUrl(initial.contract_path, 60);
+    if (error || !data) { alert(`Could not open contract: ${error?.message ?? 'unknown'}`); return; }
+    window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
+  };
+
+  const downloadContract = async () => {
+    if (!initial.contract_path) return;
+    const { data, error } = await supabase.storage.from(CONTRACT_BUCKET)
+      .createSignedUrl(initial.contract_path, 60, { download: initial.contract_filename ?? true });
+    if (error || !data) { alert(`Could not download contract: ${error?.message ?? 'unknown'}`); return; }
+    const a = document.createElement('a');
+    a.href = data.signedUrl;
+    a.rel = 'noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  const textField = (label: string, key: 'name' | 'base_rate' | 'threshold_kwh' | 'discounted_rate' | 'invoice_email', type = 'text', placeholder?: string) => (
     <div>
       <FieldLabel>{label}</FieldLabel>
       <input
         type={type}
         step={type === 'number' ? '0.001' : undefined}
-        value={String(form[key])}
-        onChange={(e) => setForm((f) => ({ ...f, [key]: type === 'number' ? Number(e.target.value) : e.target.value }))}
+        placeholder={placeholder}
+        value={form[key] == null ? '' : String(form[key])}
+        onChange={(e) => setForm((f) => ({
+          ...f,
+          [key]: type === 'number'
+            ? Number(e.target.value)
+            : (key === 'invoice_email' ? (e.target.value || null) : e.target.value),
+        }))}
         style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }}
       />
     </div>
@@ -278,7 +315,43 @@ function CompanyModal({ initial, title, onSave, onDelete, onClose }: CompanyModa
 
   const handleSave = async () => {
     setSaving(true);
-    await onSave(form);
+    const cc = ccText
+      .split(/[\s,;]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    let contract_path     = form.contract_path;
+    let contract_filename = form.contract_filename;
+
+    if (contractFile) {
+      if (initial.contract_path) {
+        await supabase.storage.from(CONTRACT_BUCKET).remove([initial.contract_path]);
+      }
+      const fileId = crypto.randomUUID();
+      const ext = contractFile.name.match(/\.[^.]+$/)?.[0] ?? '';
+      const path = `${fileId}${ext}`;
+      const { error: upErr } = await supabase.storage.from(CONTRACT_BUCKET).upload(path, contractFile, {
+        contentType: contractFile.type || 'application/octet-stream',
+      });
+      if (upErr) {
+        alert(`Contract upload failed: ${upErr.message}`);
+        setSaving(false);
+        return;
+      }
+      contract_path     = path;
+      contract_filename = contractFile.name;
+    } else if (removeContract && initial.contract_path) {
+      await supabase.storage.from(CONTRACT_BUCKET).remove([initial.contract_path]);
+      contract_path     = null;
+      contract_filename = null;
+    }
+
+    await onSave({
+      ...form,
+      invoice_cc_emails: cc,
+      contract_path,
+      contract_filename,
+    });
     setSaving(false);
     onClose();
   };
@@ -305,6 +378,81 @@ function CompanyModal({ initial, title, onSave, onDelete, onClose }: CompanyModa
             {textField('Base Rate', 'base_rate', 'number')}
             {textField('Threshold (kWh)', 'threshold_kwh', 'number')}
             {textField('Discounted Rate', 'discounted_rate', 'number')}
+          </div>
+        </div>
+        <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Invoicing</div>
+          {textField('Invoice Email (To)', 'invoice_email', 'email', 'billing@company.com')}
+          <div>
+            <FieldLabel>CC List</FieldLabel>
+            <textarea
+              value={ccText}
+              onChange={(e) => setCcText(e.target.value)}
+              rows={2}
+              placeholder="finance@company.com, ops@company.com"
+              style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box', resize: 'vertical', lineHeight: 1.5 }}
+            />
+            <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>
+              Separate multiple addresses with commas, semicolons, spaces, or newlines.
+            </div>
+          </div>
+        </div>
+        <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Contract</div>
+          {initial.contract_path && initial.contract_filename && !removeContract && !contractFile && (
+            <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 16 }}>📄</span>
+              <div style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {initial.contract_filename}
+              </div>
+              <button type="button" onClick={viewContract}
+                style={{ padding: '5px 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                View
+              </button>
+              <button type="button" onClick={downloadContract}
+                style={{ padding: '5px 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                ⬇ Download
+              </button>
+              {canDelete && (
+                <button type="button" onClick={() => setRemoveContract(true)}
+                  style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                  Remove
+                </button>
+              )}
+            </div>
+          )}
+          {removeContract && initial.contract_path && !contractFile && (
+            <div style={{ background: '#FDEAEA', border: '1px solid #FDEAEA', borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, fontWeight: 600, color: '#C0321A' }}>
+              Contract will be removed when you save.
+              <button type="button" onClick={() => setRemoveContract(false)}
+                style={{ marginLeft: 'auto', padding: '4px 10px', borderRadius: 6, border: 'none', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                Undo
+              </button>
+            </div>
+          )}
+          <div>
+            <FieldLabel>{initial.contract_path ? 'Replace File' : 'Upload File'}</FieldLabel>
+            <input
+              ref={contractRef}
+              type="file"
+              accept="application/pdf,.pdf,.doc,.docx"
+              onChange={(e) => { setContractFile(e.target.files?.[0] ?? null); setRemoveContract(false); }}
+              style={{ width: '100%', padding: 8, borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box', background: C.white }}
+            />
+            {contractFile && (
+              <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>
+                Selected: <span style={{ color: '#1a1a1a', fontWeight: 600 }}>{contractFile.name}</span> ({(contractFile.size / 1024).toFixed(0)} KB)
+                <button type="button" onClick={() => { setContractFile(null); if (contractRef.current) contractRef.current.value = ''; }}
+                  style={{ marginLeft: 8, padding: '2px 8px', borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                  Clear
+                </button>
+              </div>
+            )}
+            {!contractFile && !initial.contract_path && (
+              <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>
+                Accepted formats: PDF, DOC, DOCX.
+              </div>
+            )}
           </div>
         </div>
 
@@ -541,16 +689,28 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
     await supabase.from('crm_companies').update(data).eq('id', id);
     await onRefresh();
   };
-  const deleteCompany = async (id: string) => {
+  const deleteCompany = async (id: string, contractPath: string | null) => {
+    if (contractPath) await supabase.storage.from(CONTRACT_BUCKET).remove([contractPath]);
     await supabase.from('crm_companies').delete().eq('id', id);
     await onRefresh();
   };
   const batchDelete = async () => {
     setBatchDeleting(true);
-    await supabase.from('crm_companies').delete().in('id', [...selected]);
+    const ids = [...selected];
+    const paths = companies
+      .filter((c) => selected.has(c.id) && c.contract_path)
+      .map((c) => c.contract_path!) ;
+    if (paths.length) await supabase.storage.from(CONTRACT_BUCKET).remove(paths);
+    await supabase.from('crm_companies').delete().in('id', ids);
     await onRefresh();
     clearSelection();
     setBatchDeleting(false);
+  };
+  const viewContractFor = async (c: CRMCompany) => {
+    if (!c.contract_path) return;
+    const { data, error: e } = await supabase.storage.from(CONTRACT_BUCKET).createSignedUrl(c.contract_path, 60);
+    if (e || !data) { alert(`Could not open contract: ${e?.message ?? 'unknown'}`); return; }
+    window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
   };
 
   return (
@@ -609,7 +769,7 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
                       style={{ cursor: 'pointer', width: 15, height: 15, accentColor: C.green }} />
                   </th>
                 )}
-                {['#', 'Company Name', 'Base Rate', 'Threshold', 'Discounted Rate', 'Saving'].map((h) => (
+                {['#', 'Company Name', 'Base Rate', 'Threshold', 'Discounted Rate', 'Saving', 'Contract'].map((h) => (
                   <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
@@ -641,11 +801,22 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
                         ? <span style={{ background: '#E4F3E3', color: '#1B512D', fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99 }}>${(base - disc).toFixed(3)}/kWh</span>
                         : <span style={{ color: C.slate, fontSize: 12 }}>—</span>}
                     </td>
+                    <td style={{ padding: '12px 16px', whiteSpace: 'nowrap' }} onClick={(e) => e.stopPropagation()}>
+                      {c.contract_path
+                        ? (
+                          <button onClick={() => viewContractFor(c)}
+                            title={c.contract_filename ? `View ${c.contract_filename}` : 'View contract'}
+                            style={{ padding: '4px 12px', borderRadius: 6, border: `1px solid ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                            View
+                          </button>
+                        )
+                        : <span style={{ color: C.slate, fontSize: 12 }}>—</span>}
+                    </td>
                   </tr>
                 );
               })}
               {visible.length === 0 && (
-                <tr><td colSpan={canDelete ? 7 : 6} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No companies match your search.</td></tr>
+                <tr><td colSpan={canDelete ? 8 : 7} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No companies match your search.</td></tr>
               )}
             </tbody>
           </table>
@@ -656,14 +827,24 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
       </div>
 
       {adding && (
-        <CompanyModal title="Add Company" initial={{ name: '', base_rate: 0, threshold_kwh: 1000, discounted_rate: 0 }}
+        <CompanyModal title="Add Company" canDelete={canDelete}
+          initial={{ name: '', base_rate: 0, threshold_kwh: 1000, discounted_rate: 0, invoice_email: null, invoice_cc_emails: [], contract_path: null, contract_filename: null }}
           onSave={addCompany} onClose={() => setAdding(false)} />
       )}
       {editing && (
-        <CompanyModal key={editing.id} title="Edit Company"
-          initial={{ name: editing.name, base_rate: editing.base_rate, threshold_kwh: editing.threshold_kwh, discounted_rate: editing.discounted_rate }}
+        <CompanyModal key={editing.id} title="Edit Company" canDelete={canDelete}
+          initial={{
+            name: editing.name,
+            base_rate: editing.base_rate,
+            threshold_kwh: editing.threshold_kwh,
+            discounted_rate: editing.discounted_rate,
+            invoice_email: editing.invoice_email,
+            invoice_cc_emails: editing.invoice_cc_emails ?? [],
+            contract_path: editing.contract_path,
+            contract_filename: editing.contract_filename,
+          }}
           onSave={(data) => updateCompany(editing.id, data)}
-          onDelete={canDelete ? () => deleteCompany(editing.id) : undefined}
+          onDelete={canDelete ? () => deleteCompany(editing.id, editing.contract_path) : undefined}
           onClose={() => setEditing(null)} />
       )}
     </div>

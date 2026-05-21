@@ -37,6 +37,10 @@ export interface PortalStatementData {
     base_rate: number;
     threshold_kwh: number;
     discounted_rate: number;
+    invoice_email: string | null;
+    invoice_cc_emails: string[];
+    contract_path: string | null;
+    contract_filename: string | null;
   };
   goparkinRows: Array<{ plate: string; location: string; start: string; end: string; kwh: number }>;
   spRows: Array<{ driverEmail: string; location: string; startDateTime: string; endDateTime: string; energyKwh: number }>;

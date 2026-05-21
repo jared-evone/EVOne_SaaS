@@ -152,6 +152,27 @@ function earliestPmDate(chargers: Charger[]): string | null {
   return dates.reduce((min, d) => (d < min ? d : min));
 }
 
+function nextLocationMeterReading(chargers: Charger[]): { chargerCode: string; date: string } | null {
+  const entries = chargers
+    .map((c) => {
+      const d = nextMeterReadingDate(c.meter_reading_day);
+      return d ? { chargerCode: c.charger_code, date: d.toISOString().slice(0, 10) } : null;
+    })
+    .filter((e): e is { chargerCode: string; date: string } => !!e);
+  if (!entries.length) return null;
+  return entries.reduce((min, e) => (e.date < min.date ? e : min));
+}
+
+function nextLocationFormDue(chargers: Charger[]): { form: 'A' | 'D'; chargerCode: string; date: string } | null {
+  const entries: { form: 'A' | 'D'; chargerCode: string; date: string }[] = [];
+  for (const c of chargers) {
+    if (c.form_a_next_date) entries.push({ form: 'A', chargerCode: c.charger_code, date: c.form_a_next_date });
+    if (c.form_d_next_date) entries.push({ form: 'D', chargerCode: c.charger_code, date: c.form_d_next_date });
+  }
+  if (!entries.length) return null;
+  return entries.reduce((min, e) => (e.date < min.date ? e : min));
+}
+
 function FieldLabel({ children }: { children: string }) {
   return (
     <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>
@@ -626,25 +647,21 @@ function MeterReadingForm({ chargerId, numConnectors, onAdded }: MeterReadingFor
   );
   const setGun = (letter: string, v: string) => setGunValues((prev) => ({ ...prev, [letter]: v }));
 
-  const canSave = reading.trim() !== '' && !saving;
+  const canSave = reading.trim() !== '' && file !== null && !saving;
 
   const submit = async () => {
+    if (!file) return;
     setSaving(true);
-    let pdf_path: string | null = null;
-    let pdf_filename: string | null = null;
-
-    if (file) {
-      const fileId = crypto.randomUUID();
-      pdf_path = `chargers/${chargerId}/readings/${fileId}.pdf`;
-      pdf_filename = file.name;
-      const { error: upErr } = await supabase.storage.from(STORAGE_BUCKET).upload(pdf_path, file, {
-        contentType: 'application/pdf',
-      });
-      if (upErr) {
-        alert(`PDF upload failed: ${upErr.message}`);
-        setSaving(false);
-        return;
-      }
+    const fileId = crypto.randomUUID();
+    const pdf_path = `chargers/${chargerId}/readings/${fileId}.pdf`;
+    const pdf_filename = file.name;
+    const { error: upErr } = await supabase.storage.from(STORAGE_BUCKET).upload(pdf_path, file, {
+      contentType: 'application/pdf',
+    });
+    if (upErr) {
+      alert(`PDF upload failed: ${upErr.message}`);
+      setSaving(false);
+      return;
     }
 
     // Collapse the gun inputs into a clean { A: 1234.5, … } object — drop empties + NaN.
@@ -705,13 +722,17 @@ function MeterReadingForm({ chargerId, numConnectors, onAdded }: MeterReadingFor
       )}
 
       <div>
-        <FieldLabel>Reading PDF (optional)</FieldLabel>
+        <FieldLabel>Reading PDF (required)</FieldLabel>
         <input ref={fileRef} type="file" accept="application/pdf"
           onChange={(e) => setFile(e.target.files?.[0] ?? null)}
           style={{ ...inputStyle(), padding: 8 }} />
-        {file && (
+        {file ? (
           <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>
             Selected: <span style={{ color: '#1a1a1a', fontWeight: 600 }}>{file.name}</span> ({(file.size / 1024).toFixed(0)} KB)
+          </div>
+        ) : (
+          <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>
+            Attach the signed reading sheet (PDF) before saving.
           </div>
         )}
       </div>
@@ -740,7 +761,7 @@ function MaintenanceForm({ chargerId, onAdded }: MaintenanceFormProps) {
   const [saving, setSaving] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const canSave = date !== '' && !saving;
+  const canSave = date !== '' && file !== null && !saving;
 
   const cycleMonths = (t: MaintenanceType): number | null => {
     if (t === 'preventive_form_a') return 6;
@@ -765,22 +786,18 @@ function MaintenanceForm({ chargerId, onAdded }: MaintenanceFormProps) {
   };
 
   const submit = async () => {
+    if (!file) return;
     setSaving(true);
-    let pdf_path: string | null = null;
-    let pdf_filename: string | null = null;
-
-    if (file) {
-      const fileId = crypto.randomUUID();
-      pdf_path = `chargers/${chargerId}/${fileId}.pdf`;
-      pdf_filename = file.name;
-      const { error: upErr } = await supabase.storage.from(STORAGE_BUCKET).upload(pdf_path, file, {
-        contentType: 'application/pdf',
-      });
-      if (upErr) {
-        alert(`PDF upload failed: ${upErr.message}`);
-        setSaving(false);
-        return;
-      }
+    const fileId = crypto.randomUUID();
+    const pdf_path = `chargers/${chargerId}/${fileId}.pdf`;
+    const pdf_filename = file.name;
+    const { error: upErr } = await supabase.storage.from(STORAGE_BUCKET).upload(pdf_path, file, {
+      contentType: 'application/pdf',
+    });
+    if (upErr) {
+      alert(`PDF upload failed: ${upErr.message}`);
+      setSaving(false);
+      return;
     }
 
     await supabase.from('cpo_maintenance_records').insert({
@@ -838,13 +855,17 @@ function MaintenanceForm({ chargerId, onAdded }: MaintenanceFormProps) {
         </div>
       </div>
       <div>
-        <FieldLabel>Report PDF</FieldLabel>
+        <FieldLabel>Report PDF (required)</FieldLabel>
         <input ref={fileRef} type="file" accept="application/pdf"
           onChange={(e) => setFile(e.target.files?.[0] ?? null)}
           style={{ ...inputStyle(), padding: 8 }} />
-        {file && (
+        {file ? (
           <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>
             Selected: <span style={{ color: '#1a1a1a', fontWeight: 600 }}>{file.name}</span> ({(file.size / 1024).toFixed(0)} KB)
+          </div>
+        ) : (
+          <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>
+            Attach the signed maintenance report (PDF) before saving.
           </div>
         )}
       </div>
@@ -914,10 +935,22 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
     setConfirmMaintenanceId(null);
   };
 
-  const openPdf = async (path: string) => {
+  const viewPdf = async (path: string) => {
     const { data, error } = await supabase.storage.from(STORAGE_BUCKET).createSignedUrl(path, 60);
     if (error || !data) { alert(`Could not open PDF: ${error?.message ?? 'unknown'}`); return; }
-    window.open(data.signedUrl, '_blank');
+    window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
+  };
+
+  const downloadPdf = async (path: string, filename: string | null) => {
+    const { data, error } = await supabase.storage.from(STORAGE_BUCKET)
+      .createSignedUrl(path, 60, { download: filename ?? true });
+    if (error || !data) { alert(`Could not download PDF: ${error?.message ?? 'unknown'}`); return; }
+    const a = document.createElement('a');
+    a.href = data.signedUrl;
+    a.rel = 'noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   };
 
   const refreshAndParent = async () => {
@@ -984,7 +1017,7 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
             <InfoRow label="Type-Approval ID"  value={charger.type_approval_id ?? '—'} />
             <InfoRow label="Registration Code" value={charger.registration_code ?? '—'} />
             <InfoRow label="Bay"               value={charger.bay_label ?? '—'} />
-            <InfoRow label="Coordinates"       value={charger.latitude != null && charger.longitude != null ? `${charger.latitude}, ${charger.longitude}` : '—'} />
+            <InfoRow label="Coordinates"       value={location?.latitude != null && location?.longitude != null ? `${location.latitude}, ${location.longitude}` : '—'} />
             <InfoRow label="Latest Reading"    value={latestKwh !== null ? `${Number(latestKwh).toLocaleString()} kWh` : '—'} />
             <InfoRow label="Form A · Next"     value={fmtDate(charger.form_a_next_date)} />
             <InfoRow label="Form D · Next"     value={fmtDate(charger.form_d_next_date)} />
@@ -1066,11 +1099,18 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
                         <td style={{ padding: '10px 14px', textAlign: 'right' }}>
                           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                             {r.pdf_path && (
-                              <button onClick={() => openPdf(r.pdf_path!)}
-                                title={r.pdf_filename ?? 'Reading PDF'}
-                                style={{ padding: '4px 10px', borderRadius: 6, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
-                                ⬇ PDF
-                              </button>
+                              <>
+                                <button onClick={() => viewPdf(r.pdf_path!)}
+                                  title={r.pdf_filename ? `View ${r.pdf_filename}` : 'View PDF'}
+                                  style={{ padding: '4px 10px', borderRadius: 6, border: `1px solid ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                                  View
+                                </button>
+                                <button onClick={() => downloadPdf(r.pdf_path!, r.pdf_filename)}
+                                  title={r.pdf_filename ? `Download ${r.pdf_filename}` : 'Download PDF'}
+                                  style={{ padding: '4px 10px', borderRadius: 6, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                                  ⬇ PDF
+                                </button>
+                              </>
                             )}
                             {canDelete && (
                               confirmReadingId === r.id ? (
@@ -1145,10 +1185,18 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
                     </div>
                     <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                       {m.pdf_path && (
-                        <button onClick={() => openPdf(m.pdf_path!)}
-                          style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-                          ⬇ PDF
-                        </button>
+                        <>
+                          <button onClick={() => viewPdf(m.pdf_path!)}
+                            title={m.pdf_filename ? `View ${m.pdf_filename}` : 'View PDF'}
+                            style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                            View
+                          </button>
+                          <button onClick={() => downloadPdf(m.pdf_path!, m.pdf_filename)}
+                            title={m.pdf_filename ? `Download ${m.pdf_filename}` : 'Download PDF'}
+                            style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                            ⬇ PDF
+                          </button>
+                        </>
                       )}
                       {canDelete && (
                         confirmMaintenanceId === m.id ? (
@@ -1210,10 +1258,10 @@ interface LocationCardProps {
 }
 
 function LocationCard({ location, chargers, brand, onClick }: LocationCardProps) {
-  const withPm    = chargers.filter((c) => effectivePmDate(c) !== null).length;
-  const missingPm = chargers.length - withPm;
-  const earliest  = earliestPmDate(chargers);
-  const pm        = pmUrgency(earliest);
+  const meterNext = nextLocationMeterReading(chargers);
+  const formNext  = nextLocationFormDue(chargers);
+  const meterTone = meterNext ? pmUrgency(meterNext.date) : { label: '—', bg: '#F3F3F3', color: '#767B77' };
+  const formTone  = formNext  ? pmUrgency(formNext.date)  : { label: '—', bg: '#F3F3F3', color: '#767B77' };
 
   return (
     <div
@@ -1259,28 +1307,19 @@ function LocationCard({ location, chargers, brand, onClick }: LocationCardProps)
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        {chargers.length === 0 ? (
-          <span style={{ fontSize: 11, fontWeight: 600, color: C.slate, fontStyle: 'italic' }}>
-            No chargers yet
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ background: meterTone.bg, color: meterTone.color, borderRadius: 10, padding: '8px 12px', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+          <span style={{ flexShrink: 0 }}>Next Meter Reading</span>
+          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'right' }}>
+            {meterNext ? `${meterNext.chargerCode} · ${fmtDate(meterNext.date)}` : 'None scheduled'}
           </span>
-        ) : (
-          <>
-            <span style={{ fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 99, background: '#E4F3E3', color: '#1B512D' }}>
-              {withPm} PM scheduled
-            </span>
-            {missingPm > 0 && (
-              <span style={{ fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 99, background: '#FFF8E1', color: '#B07D00' }}>
-                {missingPm} no PM
-              </span>
-            )}
-          </>
-        )}
-      </div>
-
-      <div style={{ background: pm.bg, color: pm.color, borderRadius: 10, padding: '8px 12px', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <span>Earliest PM</span>
-        <span>{pm.label}</span>
+        </div>
+        <div style={{ background: formTone.bg, color: formTone.color, borderRadius: 10, padding: '8px 12px', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+          <span style={{ flexShrink: 0 }}>Next Form {formNext?.form ?? 'A/D'}</span>
+          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'right' }}>
+            {formNext ? `${formNext.chargerCode} · ${fmtDate(formNext.date)}` : 'None scheduled'}
+          </span>
+        </div>
       </div>
     </div>
   );
