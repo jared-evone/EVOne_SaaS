@@ -12,11 +12,11 @@ import {
 import { OverlayFormRenderer, isOverlay } from './OverlayForm';
 
 interface TechAppProps {
-  onBack: () => void;
-  onSignOut: () => void;
+  onBack?: () => void;
+  onSignOut?: () => void;
 }
 
-export function TechApp({ onBack, onSignOut }: TechAppProps) {
+export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
   const store = useWorkOrderStore();
   const me = DEMO_TECHNICIAN;
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -129,14 +129,19 @@ function Shell({
   crumb,
 }: {
   children: React.ReactNode;
-  onBack: () => void;
-  onSignOut: () => void;
+  onBack?: () => void;
+  onSignOut?: () => void;
   title: string;
   subtitle: string;
   crumb: string;
 }) {
+  // When embedded inside the Dashboard (no onBack/onSignOut), the parent
+  // already provides the logo, page title, sign-out menu, and scroll —
+  // so the Shell's own chrome would just duplicate it.
+  const embedded = !onBack && !onSignOut;
   return (
-    <div style={{ height: '100%', overflowY: 'auto', background: C.seasalt }}>
+    <div style={{ height: '100%', overflowY: embedded ? 'visible' : 'auto', background: embedded ? 'transparent' : C.seasalt }}>
+      {!embedded && (
       <header
         style={{
           background: C.white,
@@ -180,6 +185,7 @@ function Shell({
         >
           ← TSD Workspace
         </button>
+        {onSignOut && (
         <button
           onClick={onSignOut}
           style={{
@@ -196,9 +202,11 @@ function Shell({
         >
           ⏻
         </button>
+        )}
       </header>
+      )}
 
-      <div style={{ maxWidth: 720, margin: '0 auto', padding: '24px 20px 60px' }}>
+      <div style={{ maxWidth: 720, margin: '0 auto', padding: embedded ? '0 0 60px' : '24px 20px 60px' }}>
         <div style={{ marginBottom: 20 }}>
           <div style={{ fontSize: 22, fontWeight: 700, color: C.green, letterSpacing: '-0.02em' }}>{title}</div>
           <div style={{ fontSize: 12, color: C.slate, marginTop: 4 }}>{subtitle}</div>
@@ -289,7 +297,7 @@ function TechFillFormView({
 }: {
   workOrder: WorkOrder;
   onBack: () => void;
-  onSignOut: () => void;
+  onSignOut?: () => void;
 }) {
   const store = useWorkOrderStore();
   const me = DEMO_TECHNICIAN;

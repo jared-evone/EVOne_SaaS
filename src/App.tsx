@@ -6,6 +6,7 @@ import { ScreenOverview } from './screens/Overview';
 import { ScreenInvoices } from './screens/Invoices';
 import { ScreenInstallations } from './screens/Installations';
 import { ScreenCustomers } from './screens/Customers';
+import { ScreenProjects } from './screens/Projects';
 import { ScreenSocial } from './screens/Social';
 import { ScreenSales } from './screens/Sales';
 import { ScreenPurchaseOrders } from './screens/PurchaseOrders';
@@ -19,7 +20,9 @@ import { ScreenSettings } from './screens/Settings';
 import { ScreenDBHealth } from './screens/DBHealth';
 import { ScreenChargingDashboard } from './screens/ChargingDashboard';
 import { Login } from './screens/Login';
-import { TSDWorkspace } from './screens/tsd/TSDWorkspace';
+import { TechApp } from './screens/tsd/TechApp';
+import { WorkOrdersAdmin, FormBuilder } from './screens/tsd/TSDAdminApp';
+import { PICReviewBoard } from './screens/tsd/PICApp';
 import { PublicApplication } from './screens/crm/PublicApplication';
 import {
   PermissionsProvider, usePermissions,
@@ -39,6 +42,7 @@ const NAV_ALL: NavEntry[] = [
   { kind: 'leaf', id: 'orders',            icon: '◈', label: 'Invoices' },
   { kind: 'leaf', id: 'installations',     icon: '◎', label: 'Installations' },
   { kind: 'leaf', id: 'customers',         icon: '◉', label: 'Customers' },
+  { kind: 'leaf', id: 'projects',          icon: '◧', label: 'Projects' },
   { kind: 'leaf', id: 'social',            icon: '◫', label: 'Social Media Planner' },
   { kind: 'leaf', id: 'sales',             icon: '◐', label: 'Sales' },
   { kind: 'leaf', id: 'purchaseorders',    icon: '◧', label: 'Purchase Orders' },
@@ -48,6 +52,12 @@ const NAV_ALL: NavEntry[] = [
   { kind: 'leaf', id: 'cpochargers',       icon: '▣', label: 'CPO Chargers' },
   { kind: 'leaf', id: 'charging',          icon: '⚡', label: 'Charging Records' },
   { kind: 'leaf', id: 'corporateinvoicing',icon: '◈', label: 'Corporate Invoicing' },
+  { kind: 'leaf', id: 'tsd_technician',     icon: '🛠', label: 'Technician' },
+  { kind: 'group', key: 'tsd_admin_group', icon: '◆', label: 'TSD Admin', children: [
+    { kind: 'leaf', id: 'tsd_workorders', icon: '◧', label: 'Work Orders' },
+    { kind: 'leaf', id: 'tsd_forms',      icon: '◫', label: 'Form Templates' },
+    { kind: 'leaf', id: 'tsd_pic',        icon: '◑', label: 'PIC Review' },
+  ]},
   { kind: 'group', key: 'settings_group', icon: '◆', label: 'Settings', children: [
     { kind: 'leaf', id: 'settings', icon: '◉', label: 'Users & Permissions' },
     { kind: 'leaf', id: 'dbhealth', icon: '◫', label: 'DB Health' },
@@ -61,6 +71,7 @@ const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
   orders:         'Invoices',
   installations:  'Installations',
   customers:      'Customers',
+  projects:       'Projects',
   social:         'Social Media Planner',
   sales:          'Sales',
   purchaseorders: 'Purchase Orders',
@@ -71,6 +82,10 @@ const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
   charging:            'Charging Records',
   corporateinvoicing:  'Corporate Invoicing',
   charging_dashboard:  'Charging Dashboard',
+  tsd_technician:      'Technician',
+  tsd_workorders:      'Work Orders',
+  tsd_forms:           'Form Templates',
+  tsd_pic:             'PIC Review',
   settings:            'Users & Permissions',
   dbhealth:            'DB Health',
 };
@@ -80,6 +95,7 @@ const screens: Partial<Record<ScreenId, JSX.Element>> = {
   orders:         <ScreenInvoices />,
   installations:  <ScreenInstallations />,
   customers:      <ScreenCustomers />,
+  projects:       <ScreenProjects />,
   social:         <ScreenSocial />,
   sales:          <ScreenSales />,
   purchaseorders: <ScreenPurchaseOrders />,
@@ -90,6 +106,10 @@ const screens: Partial<Record<ScreenId, JSX.Element>> = {
   charging:            <ScreenChargingRecords />,
   corporateinvoicing:  <ScreenCorporateInvoicing />,
   charging_dashboard:  <ScreenChargingDashboard />,
+  tsd_technician:      <TechApp />,
+  tsd_workorders:      <WorkOrdersAdmin />,
+  tsd_forms:           <FormBuilder />,
+  tsd_pic:             <PICReviewBoard />,
   settings:            <ScreenSettings />,
   dbhealth:            <ScreenDBHealth />,
 };
@@ -321,11 +341,6 @@ export default function App() {
 
   if (!user) {
     return <Login onLogin={setUser} />;
-  }
-
-  // Technical Service still routes to its dedicated workspace (no dashboard nav)
-  if (user.department === 'tech') {
-    return <TSDWorkspace onSignOut={() => setUser(null)} />;
   }
 
   return (

@@ -8,13 +8,13 @@ interface DepartmentCard {
   id: Department;
   label: string;
   icon: string;
-  description: string;
 }
 
 const DEPARTMENTS: DepartmentCard[] = [
-  { id: 'tech',  label: DEPARTMENT_LABELS.tech,  icon: '⚙', description: 'Installations, maintenance, technician dispatch' },
-  { id: 'sales', label: DEPARTMENT_LABELS.sales, icon: '◐', description: 'Quotations, proposals, customer pipeline' },
-  { id: 'cpo',   label: DEPARTMENT_LABELS.cpo,   icon: '⚡', description: 'Charge point operations & energy oversight' },
+  { id: 'tech',  label: DEPARTMENT_LABELS.tech,  icon: '⚙' },
+  { id: 'sales', label: DEPARTMENT_LABELS.sales, icon: '◐' },
+  { id: 'cpo',   label: DEPARTMENT_LABELS.cpo,   icon: '⚡' },
+  { id: 'pm',    label: DEPARTMENT_LABELS.pm,    icon: '◉' },
 ];
 
 interface LoginProps {
@@ -73,14 +73,14 @@ export function Login({ onLogin }: LoginProps) {
         </div>
 
         {/* Department cards */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
           {DEPARTMENTS.map((d) => {
             const isActive = department === d.id;
             return (
               <button key={d.id} onClick={() => setDepartment(d.id)}
                 style={{
-                  display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8,
-                  padding: '14px 14px', borderRadius: 14,
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  padding: '14px 16px', borderRadius: 14,
                   border: `2px solid ${isActive ? C.green : '#EBEBEB'}`,
                   background: isActive ? C.honeydew : C.white,
                   cursor: 'pointer', textAlign: 'left', fontFamily: 'Figtree',
@@ -91,14 +91,11 @@ export function Login({ onLogin }: LoginProps) {
                   background: isActive ? C.green : '#F3F3F3',
                   color: isActive ? C.white : C.slate,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 18, fontWeight: 700,
+                  fontSize: 18, fontWeight: 700, flexShrink: 0,
                 }}>
                   {d.icon}
                 </div>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: isActive ? C.green : '#1a1a1a' }}>{d.label}</div>
-                  <div style={{ fontSize: 10, color: C.slate, marginTop: 2, lineHeight: 1.4 }}>{d.description}</div>
-                </div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: isActive ? C.green : '#1a1a1a' }}>{d.label}</div>
               </button>
             );
           })}

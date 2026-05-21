@@ -1,19 +1,21 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { supabase } from './lib/supabase';
 
-export type Department = 'cpo' | 'sales' | 'tech';
+export type Department = 'cpo' | 'sales' | 'tech' | 'pm';
 
 export const DEPARTMENT_LABELS: Record<Department, string> = {
   cpo:   'CPO',
   sales: 'Sales',
   tech:  'Technical Service',
+  pm:    'Project Management',
 };
 
 export type ScreenKey =
-  | 'overview' | 'orders' | 'installations' | 'customers' | 'social' | 'sales'
+  | 'overview' | 'orders' | 'installations' | 'customers' | 'projects' | 'social' | 'sales'
   | 'purchaseorders' | 'inventory' | 'suppliers'
   | 'corporatecrm' | 'cpochargers' | 'charging' | 'corporateinvoicing' | 'charging_dashboard'
   | 'charging_cpo_carparks' | 'charging_sp_price'
+  | 'tsd_technician' | 'tsd_workorders' | 'tsd_forms' | 'tsd_pic'
   | 'settings' | 'dbhealth';
 
 export const SCREEN_LABELS: Record<ScreenKey, string> = {
@@ -21,6 +23,7 @@ export const SCREEN_LABELS: Record<ScreenKey, string> = {
   orders:                'Invoices',
   installations:         'Installations',
   customers:             'Customers',
+  projects:              'Projects',
   social:                'Social Media Planner',
   sales:                 'Sales',
   purchaseorders:        'Purchase Orders',
@@ -33,19 +36,22 @@ export const SCREEN_LABELS: Record<ScreenKey, string> = {
   charging_sp_price:     'Charging Records › SP Price tab',
   corporateinvoicing:    'Corporate Invoicing',
   charging_dashboard:    'Charging Dashboard',
+  tsd_technician:        'Technician',
+  tsd_workorders:        'Work Orders',
+  tsd_forms:             'Form Templates',
+  tsd_pic:               'PIC Review',
   settings:              'Users & Permissions',
   dbhealth:              'DB Health',
 };
 
 // Each department exposes only its own screens in the NAV + Settings matrix.
-// Tech currently routes to TSDWorkspace so its screen list is empty here.
 export const DEPARTMENT_SCREENS: Record<Department, ScreenKey[]> = {
   cpo:   ['charging_dashboard', 'corporatecrm', 'cpochargers', 'charging',
           'charging_cpo_carparks', 'charging_sp_price',
           'corporateinvoicing', 'settings', 'dbhealth'],
-  sales: ['overview', 'orders', 'installations', 'customers', 'social', 'sales',
-          'purchaseorders', 'inventory', 'suppliers', 'charging_dashboard', 'settings', 'dbhealth'],
-  tech:  [],
+  sales: ['customers', 'projects', 'settings', 'dbhealth'],
+  tech:  ['tsd_technician', 'tsd_workorders', 'tsd_forms', 'tsd_pic', 'customers', 'projects', 'settings', 'dbhealth'],
+  pm:    ['customers', 'projects', 'settings', 'dbhealth'],
 };
 
 export interface ScreenCap {

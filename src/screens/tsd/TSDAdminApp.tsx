@@ -196,7 +196,7 @@ export function TSDAdminApp({ onBack, onSignOut }: TSDAdminAppProps) {
 // Work Orders admin
 // ─────────────────────────────────────────────────────────────────
 
-function WorkOrdersAdmin() {
+export function WorkOrdersAdmin() {
   const store = useWorkOrderStore();
   const [statusFilter, setStatusFilter] = useState<'all' | WorkOrderStatus>('all');
   const [search, setSearch] = useState('');
@@ -628,7 +628,7 @@ const CUSTOMER_TYPE_COLORS: Record<CustomerType, { bg: string; color: string }> 
   Enterprise:  { bg: C.green,    color: C.white },
 };
 
-function CustomersAdmin() {
+export function CustomersAdmin() {
   const store = useWorkOrderStore();
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<'All' | CustomerType>('All');
@@ -1100,7 +1100,7 @@ function CustomerModal({
 // Form Builder
 // ─────────────────────────────────────────────────────────────────
 
-function FormBuilder() {
+export function FormBuilder() {
   const store = useWorkOrderStore();
   const [selectedId, setSelectedId] = useState<string | null>(store.templates[0]?.id ?? null);
   const selected = store.templates.find((t) => t.id === selectedId) ?? null;
