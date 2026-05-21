@@ -54,8 +54,11 @@ interface MeterReading {
   notes: string | null;
   pdf_path: string | null;
   pdf_filename: string | null;
+  gun_readings: Record<string, number> | null;
   created_at: string;
 }
+
+const GUN_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
 
 type MaintenanceType = 'preventive_form_a' | 'preventive_form_d' | 'preventive' | 'corrective';
 
@@ -605,15 +608,23 @@ function ChargerModal({ initial, title, locations, lockLocation, onSave, onDelet
 
 interface MeterReadingFormProps {
   chargerId: string;
+  numConnectors: number;
   onAdded: () => Promise<void>;
 }
 
-function MeterReadingForm({ chargerId, onAdded }: MeterReadingFormProps) {
+function MeterReadingForm({ chargerId, numConnectors, onAdded }: MeterReadingFormProps) {
   const [reading, setReading] = useState('');
   const [date, setDate] = useState(todayISO());
   const [file, setFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // One input per connector — keyed by gun letter (A, B, C, …).
+  const gunLetters = GUN_LETTERS.slice(0, Math.max(0, numConnectors || 0));
+  const [gunValues, setGunValues] = useState<Record<string, string>>(() =>
+    Object.fromEntries(gunLetters.map((g) => [g, ''])),
+  );
+  const setGun = (letter: string, v: string) => setGunValues((prev) => ({ ...prev, [letter]: v }));
 
   const canSave = reading.trim() !== '' && !saving;
 
@@ -636,15 +647,24 @@ function MeterReadingForm({ chargerId, onAdded }: MeterReadingFormProps) {
       }
     }
 
+    // Collapse the gun inputs into a clean { A: 1234.5, … } object — drop empties + NaN.
+    const gunReadings: Record<string, number> = {};
+    for (const [letter, val] of Object.entries(gunValues)) {
+      const n = Number(val);
+      if (val.trim() !== '' && !isNaN(n)) gunReadings[letter] = n;
+    }
+
     await supabase.from('cpo_meter_readings').insert({
       charger_id: chargerId,
       reading_kwh: Number(reading),
       reading_date: date,
       pdf_path,
       pdf_filename,
+      gun_readings: Object.keys(gunReadings).length > 0 ? gunReadings : null,
     });
 
     setReading('');
+    setGunValues(Object.fromEntries(gunLetters.map((g) => [g, ''])));
     setFile(null);
     if (fileRef.current) fileRef.current.value = '';
     await onAdded();
@@ -656,7 +676,7 @@ function MeterReadingForm({ chargerId, onAdded }: MeterReadingFormProps) {
       <div style={{ fontSize: 12, fontWeight: 700, color: C.green }}>Log New Reading</div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <div>
-          <FieldLabel>Reading (kWh)</FieldLabel>
+          <FieldLabel>DB Meter Reading (kWh)</FieldLabel>
           <input type="number" step="0.01" value={reading} onChange={(e) => setReading(e.target.value)}
             placeholder="12345.67" style={inputStyle()} />
         </div>
@@ -665,6 +685,25 @@ function MeterReadingForm({ chargerId, onAdded }: MeterReadingFormProps) {
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle()} />
         </div>
       </div>
+
+      {gunLetters.length > 0 && (
+        <div>
+          <FieldLabel>Per-Connector Readings (kWh)</FieldLabel>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+            {gunLetters.map((letter) => (
+              <div key={letter}>
+                <label style={{ fontSize: 11, fontWeight: 600, color: C.slate, display: 'block', marginBottom: 4 }}>
+                  Gun {letter}
+                </label>
+                <input type="number" step="0.01" value={gunValues[letter] ?? ''}
+                  onChange={(e) => setGun(letter, e.target.value)}
+                  placeholder="0.00" style={inputStyle()} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div>
         <FieldLabel>Reading PDF (optional)</FieldLabel>
         <input ref={fileRef} type="file" accept="application/pdf"
@@ -989,7 +1028,13 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
                 </div>
               );
             })()}
-            {canEdit && <MeterReadingForm chargerId={charger.id} onAdded={refreshAndParent} />}
+            {canEdit && (
+              <MeterReadingForm
+                chargerId={charger.id}
+                numConnectors={charger.num_connectors ?? 1}
+                onAdded={refreshAndParent}
+              />
+            )}
             {loading ? (
               <div style={{ padding: 24, textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</div>
             ) : readings.length === 0 ? (
@@ -1010,7 +1055,14 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
                     {readings.map((r) => (
                       <tr key={r.id} style={{ borderBottom: '1px solid #F3F3F3' }}>
                         <td style={{ padding: '10px 14px', fontSize: 12, color: '#1a1a1a', whiteSpace: 'nowrap' }}>{fmtDate(r.reading_date)}</td>
-                        <td style={{ padding: '10px 14px', fontSize: 13, fontWeight: 700, color: C.green, whiteSpace: 'nowrap' }}>{Number(r.reading_kwh).toLocaleString()}</td>
+                        <td style={{ padding: '10px 14px', whiteSpace: 'nowrap' }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>{Number(r.reading_kwh).toLocaleString()}</div>
+                          {r.gun_readings && Object.keys(r.gun_readings).length > 0 && (
+                            <div style={{ fontSize: 10, color: C.slate, marginTop: 2 }}>
+                              {Object.entries(r.gun_readings).map(([g, v]) => `Gun ${g}: ${Number(v).toLocaleString()}`).join(' · ')}
+                            </div>
+                          )}
+                        </td>
                         <td style={{ padding: '10px 14px', textAlign: 'right' }}>
                           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                             {r.pdf_path && (
