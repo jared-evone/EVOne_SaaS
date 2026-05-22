@@ -4,6 +4,7 @@ import { PDFDownloadLink, Document, Page, View, Text, Image as PdfImage, pdf } f
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import evoneLogoUrl from '../assets/evone-logo.png';
+import { Download as DownloadIcon } from 'lucide-react';
 import {
   pdfGreen, pdfHoneydew, pdfSlate, pdfBorderW,
   bRight, bBottom, bAll,
@@ -249,7 +250,7 @@ export function StatementView({ stmt, billingMonth, onClose }: StatementViewProp
               style={{ textDecoration: 'none' }}>
               {({ loading }) => (
                 <button style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-                  {loading ? 'Preparing…' : '⬇ Download PDF'}
+                  {loading ? 'Preparing…' : <><DownloadIcon size={12} strokeWidth={2.25} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }}/> Download PDF</>}
                 </button>
               )}
             </PDFDownloadLink>
@@ -875,7 +876,7 @@ export function ScreenCorporateInvoicing() {
               onClick={pullGoParkin}
               disabled={pulling}
               style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: pulling ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: pulling ? 'default' : 'pointer' }}>
-              {pulling ? 'Pulling…' : '⬇ Pull GoParkin Data'}
+              {pulling ? 'Pulling…' : <><DownloadIcon size={12} strokeWidth={2.25} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }}/> Pull GoParkin Data</>}
             </button>
           )}
           <label title={managedCarparks.length === 0 ? 'No carparks marked CPO yet — go to Charging Records → CPO Carparks to tag them.' : ''}
@@ -962,7 +963,7 @@ export function ScreenCorporateInvoicing() {
               downloadCSV(`unmatched_records_${billingMonth}.csv`, rows);
             }}
             style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid #B07D00', background: C.white, color: '#B07D00', fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-            ⬇ Download Audit CSV
+            <DownloadIcon size={12} strokeWidth={2.25} style={{display:"inline",verticalAlign:"-2px",marginRight:4}}/> Download Audit CSV
           </button>
         </div>
       )}
@@ -1052,7 +1053,7 @@ export function ScreenCorporateInvoicing() {
                   downloadCSV(`corporate_invoicing_master_${billingMonth}.csv`, rows);
                 }}
                 style={{ padding: '9px 18px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                ⬇ Download Master CSV
+                <DownloadIcon size={12} strokeWidth={2.25} style={{display:"inline",verticalAlign:"-2px",marginRight:4}}/> Download Master CSV
               </button>
               {canEdit && (
                 <button onClick={() => publishAll(statements)} disabled={!!publishing}
@@ -1106,7 +1107,7 @@ export function ScreenCorporateInvoicing() {
                                 onClick={() => downloadStatementPdf(stmt)}
                                 disabled={busy}
                                 style={{ padding: '6px 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.6 : 1 }}>
-                                ⬇ PDF
+                                <DownloadIcon size={12} strokeWidth={2.25} style={{display:"inline",verticalAlign:"-2px",marginRight:4}}/> PDF
                               </button>
                               {canEdit && (
                                 <button

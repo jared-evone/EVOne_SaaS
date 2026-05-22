@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { C } from '../../theme';
 import { supabase } from '../../lib/supabase';
+import { FileText } from 'lucide-react';
 
 const BATCH_SIZE = 500;
 const PER_PAGE = 25;
@@ -318,7 +319,7 @@ export function CsvImportTab({ onUploaded }: CsvImportTabProps) {
           <div style={{ background: C.white, borderRadius: 14, padding: '16px 20px', border: '1px solid #EBEBEB', display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ fontSize: 16 }}>📄</span>
+                <FileText size={14} strokeWidth={1.75} style={{display:"inline-flex",color:"#5B6B7A"}}/>
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{fileName}</div>
                   <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>

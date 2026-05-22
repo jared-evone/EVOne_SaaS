@@ -5,6 +5,8 @@ import { ChargerLocationMap, type ChargerMapLocation } from '../../components/Ch
 import { supabase } from '../../lib/supabase';
 import type { Application, ApplicationStatus, CustomField, FormTemplate } from './AccountOpening';
 import { INSTRUCTION_BUCKET, RFID_CARD_PRICE_SGD, KWH_PER_VEHICLE } from './AccountOpening';
+import { Download as DownloadIcon } from 'lucide-react';
+import { FileText } from 'lucide-react';
 
 interface Props {
   token: string;
@@ -102,7 +104,7 @@ function ContractPdfBlock({ path, filename }: { path: string; filename: string }
   };
   return (
     <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, border: '1px solid #EBEBEB', display: 'flex', alignItems: 'center', gap: 10 }}>
-      <span style={{ fontSize: 20 }}>📄</span>
+      <FileText size={18} strokeWidth={1.75} style={{display:"inline-flex",color:"#5B6B7A"}}/>
       <div style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {filename}
       </div>
@@ -112,7 +114,7 @@ function ContractPdfBlock({ path, filename }: { path: string; filename: string }
       </button>
       <button type="button" onClick={() => open(true)}
         style={{ padding: '7px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-        ⬇ Download
+        <DownloadIcon size={12} strokeWidth={2.25} style={{display:"inline",verticalAlign:"-2px",marginRight:4}}/> Download
       </button>
     </div>
   );
@@ -234,7 +236,7 @@ function InstructionCard({ title, fallbackCopy, path, filename }: { title: strin
           </button>
           <button type="button" onClick={downloadPdf}
             style={{ padding: '5px 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
-            ⬇ PDF
+            <DownloadIcon size={12} strokeWidth={2.25} style={{display:"inline",verticalAlign:"-2px",marginRight:4}}/> PDF
           </button>
         </div>
       )}

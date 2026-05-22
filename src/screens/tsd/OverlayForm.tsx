@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { C } from '../../theme';
+import { FileText } from 'lucide-react';
 import type {
   FieldType,
   FormField,
@@ -181,7 +182,7 @@ function UploadPrompt({
         style={{ display: 'none' }}
         onChange={onFileSelect}
       />
-      <div style={{ fontSize: 36, marginBottom: 12 }}>📄</div>
+      <div style={{marginBottom:12,display:"inline-flex",justifyContent:"center"}}><FileText size={36} strokeWidth={1.5} color="#5B6B7A"/></div>
       <div style={{ fontSize: 14, fontWeight: 700, color: C.green, marginBottom: 4 }}>
         Upload the official form template
       </div>

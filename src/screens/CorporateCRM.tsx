@@ -4,6 +4,8 @@ import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { AccountOpening } from './crm/AccountOpening';
 import { usePermissions } from '../permissions';
+import { Search, Download as DownloadIcon } from 'lucide-react';
+import { FileText } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -117,7 +119,7 @@ export function CompanySelect({ value, companies, onChange }: CompanySelectProps
                   fontFamily: 'Figtree', fontSize: 12, outline: 'none', background: C.seasalt, boxSizing: 'border-box',
                 }}
               />
-              <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 14 }}>⌕</span>
+              <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 14 }}><Search size={14} /></span>
             </div>
           </div>
           <div style={{ maxHeight: 220, overflowY: 'auto' }}>
@@ -219,7 +221,7 @@ export function CompanyFilter({ value, companies, onChange }: CompanyFilterProps
                   fontFamily: 'Figtree', fontSize: 12, outline: 'none', background: C.seasalt, boxSizing: 'border-box',
                 }}
               />
-              <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 14 }}>⌕</span>
+              <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 14 }}><Search size={14} /></span>
             </div>
           </div>
           <div style={{ maxHeight: 280, overflowY: 'auto' }}>
@@ -401,7 +403,7 @@ function CompanyModal({ initial, title, canDelete, onSave, onDelete, onClose }: 
           <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Contract</div>
           {initial.contract_path && initial.contract_filename && !removeContract && !contractFile && (
             <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ fontSize: 16 }}>📄</span>
+              <FileText size={14} strokeWidth={1.75} style={{display:"inline-flex",color:"#5B6B7A"}}/>
               <div style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {initial.contract_filename}
               </div>
@@ -411,7 +413,7 @@ function CompanyModal({ initial, title, canDelete, onSave, onDelete, onClose }: 
               </button>
               <button type="button" onClick={downloadContract}
                 style={{ padding: '5px 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
-                ⬇ Download
+                <DownloadIcon size={12} strokeWidth={2.25} style={{display:"inline",verticalAlign:"-2px",marginRight:4}}/> Download
               </button>
               {canDelete && (
                 <button type="button" onClick={() => setRemoveContract(true)}
@@ -728,7 +730,7 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
         <div style={{ position: 'relative', width: 260 }}>
           <input value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} placeholder="Search companies…"
             style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
-          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}>⌕</span>
+          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}><Search size={14} /></span>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
           {canDelete && selected.size > 0 && !batchConfirm && (
@@ -953,7 +955,7 @@ function VehiclesTab({ companies, error }: VehiclesTabProps) {
         <div style={{ position: 'relative', width: 280 }}>
           <input value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} placeholder="Search plate or company…"
             style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
-          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}>⌕</span>
+          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}><Search size={14} /></span>
         </div>
         <CompanyFilter value={companyFilter} companies={companies}
           onChange={(v) => { setCompanyFilter(v); setPage(1); setSelected(new Set()); }} />
@@ -1230,7 +1232,7 @@ function SPDriversTab({ companies, error }: SPDriversTabProps) {
         <div style={{ position: 'relative', width: 300 }}>
           <input value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} placeholder="Search email or company…"
             style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
-          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}>⌕</span>
+          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}><Search size={14} /></span>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
           {canDelete && selected.size > 0 && !batchConfirm && (

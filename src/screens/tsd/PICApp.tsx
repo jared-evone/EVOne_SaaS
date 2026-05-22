@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { C } from '../../theme';
 import { Logo } from '../../components/Logo';
+import { Download as DownloadIcon, Power } from 'lucide-react';
 import {
   DEMO_PIC,
   STATUS_COLORS,
@@ -80,7 +81,7 @@ export function PICApp({ onBack, onSignOut }: PICAppProps) {
             cursor: 'pointer',
           }}
         >
-          ⏻
+          <Power size={14} strokeWidth={2.25} />
         </button>
       </header>
 
@@ -294,7 +295,7 @@ function PICReportEditor({ workOrder }: { workOrder: WorkOrder }) {
               cursor: 'pointer',
             }}
           >
-            ⬇ Export PDF
+            <DownloadIcon size={12} strokeWidth={2.25} style={{display:"inline",verticalAlign:"-2px",marginRight:4}}/> Export PDF
           </button>
           {!completed && (
             <>

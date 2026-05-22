@@ -3,18 +3,19 @@ import { C } from '../theme';
 import { Logo } from '../components/Logo';
 import { supabase } from '../lib/supabase';
 import { type Department, DEPARTMENT_LABELS, type SignedInUser } from '../permissions';
+import { Wrench, Handshake, Zap, FolderKanban, type LucideIcon } from 'lucide-react';
 
 interface DepartmentCard {
   id: Department;
   label: string;
-  icon: string;
+  icon: LucideIcon;
 }
 
 const DEPARTMENTS: DepartmentCard[] = [
-  { id: 'tech',  label: DEPARTMENT_LABELS.tech,  icon: '⚙' },
-  { id: 'sales', label: DEPARTMENT_LABELS.sales, icon: '◐' },
-  { id: 'cpo',   label: DEPARTMENT_LABELS.cpo,   icon: '⚡' },
-  { id: 'pm',    label: DEPARTMENT_LABELS.pm,    icon: '◉' },
+  { id: 'tech',  label: DEPARTMENT_LABELS.tech,  icon: Wrench },
+  { id: 'sales', label: DEPARTMENT_LABELS.sales, icon: Handshake },
+  { id: 'cpo',   label: DEPARTMENT_LABELS.cpo,   icon: Zap },
+  { id: 'pm',    label: DEPARTMENT_LABELS.pm,    icon: FolderKanban },
 ];
 
 interface LoginProps {
@@ -76,6 +77,7 @@ export function Login({ onLogin }: LoginProps) {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
           {DEPARTMENTS.map((d) => {
             const isActive = department === d.id;
+            const Icon = d.icon;
             return (
               <button key={d.id} onClick={() => setDepartment(d.id)}
                 style={{
@@ -93,7 +95,7 @@ export function Login({ onLogin }: LoginProps) {
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 18, fontWeight: 700, flexShrink: 0,
                 }}>
-                  {d.icon}
+                  <Icon size={20} strokeWidth={isActive ? 2.5 : 2} />
                 </div>
                 <div style={{ fontSize: 13, fontWeight: 700, color: isActive ? C.green : '#1a1a1a' }}>{d.label}</div>
               </button>

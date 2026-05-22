@@ -1,13 +1,14 @@
 import { C } from '../theme';
+import type { LucideIcon } from 'lucide-react';
 
 interface NavItemProps {
-  icon: string;
+  icon: LucideIcon;
   label: string;
   active: boolean;
   onClick: () => void;
 }
 
-export function NavItem({ icon, label, active, onClick }: NavItemProps) {
+export function NavItem({ icon: Icon, label, active, onClick }: NavItemProps) {
   return (
     <button
       onClick={onClick}
@@ -29,7 +30,7 @@ export function NavItem({ icon, label, active, onClick }: NavItemProps) {
         transition: 'background .15s, color .15s',
       }}
     >
-      <span style={{ fontSize: 18, width: 20, textAlign: 'center' }}>{icon}</span>
+      <Icon size={18} strokeWidth={active ? 2.25 : 2} style={{ flexShrink: 0 }} />
       {label}
       {active && (
         <span

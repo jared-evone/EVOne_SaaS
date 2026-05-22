@@ -5,6 +5,8 @@ import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
 import { CarparksTab, type ManagedCarpark, type CpoLocationLite, type CarparkAgg } from './charging/CarparksTab';
+import { Search, Download as DownloadIcon } from 'lucide-react';
+import { FileText } from 'lucide-react';
 // CsvImportTab is archived in src/screens/charging/CsvImportTab.tsx — left on disk
 // in case we want to re-enable the temporary preview tab later.
 
@@ -735,7 +737,7 @@ function UploadModal({ source, fileName, rows, warnings, dupeCount, uploaderEmai
 
         <div style={{ background: C.seasalt, borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-            <span style={{ fontSize: 18, flexShrink: 0 }}>📄</span>
+            <FileText size={16} strokeWidth={1.75} style={{display:"inline-flex",color:"#5B6B7A",flexShrink:0}}/>
             <div style={{ minWidth: 0, flex: 1 }}>
               <div title={fileName} style={{
                 fontSize: 13, fontWeight: 600, color: '#1a1a1a',
@@ -1025,7 +1027,7 @@ function DownloadModal({ carparks, onClose }: DownloadModalProps) {
           <div style={{ position: 'relative' }}>
             <input value={carparkSearch} onChange={(e) => setCarparkSearch(e.target.value)} placeholder="Search carparks…"
               style={{ width: '100%', padding: '7px 12px 7px 30px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', background: C.seasalt, boxSizing: 'border-box' }} />
-            <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 13 }}>⌕</span>
+            <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 13 }}><Search size={14} /></span>
           </div>
           <div style={{ marginTop: 8, maxHeight: 220, overflowY: 'auto', border: '1px solid #EBEBEB', borderRadius: 10, background: C.white }}>
             {filteredCarparks.length === 0 && (
@@ -1078,7 +1080,7 @@ function DownloadModal({ carparks, onClose }: DownloadModalProps) {
               </button>
               <button onClick={handleDownload}
                 style={{ padding: '9px 22px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-                ⬇ Download CSV
+                <DownloadIcon size={12} strokeWidth={2.25} style={{display:"inline",verticalAlign:"-2px",marginRight:4}}/> Download CSV
               </button>
             </div>
           </div>
@@ -1566,7 +1568,7 @@ export function ScreenChargingRecords() {
             <div style={{ position: 'relative', width: 260 }}>
               <input value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} placeholder="Search plate, charger, carpark…"
                 style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
-              <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}>⌕</span>
+              <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}><Search size={14} /></span>
             </div>
 
             {/* Import + Refresh */}
@@ -1589,7 +1591,7 @@ export function ScreenChargingRecords() {
               <button onClick={() => setDownloadOpen(true)}
                 title="Download a filtered CSV (carpark + date range)"
                 style={{ padding: '9px 18px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-                ⬇ Download CSV
+                <DownloadIcon size={12} strokeWidth={2.25} style={{display:"inline",verticalAlign:"-2px",marginRight:4}}/> Download CSV
               </button>
             </div>
 

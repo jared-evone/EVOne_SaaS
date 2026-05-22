@@ -3,6 +3,8 @@ import { C } from '../../theme';
 import { StatementView } from '../CorporateInvoicing';
 import { listAccounts, listDocumentsForCompany, countDocsByCompany, downloadPdfFromBase64, blobToBase64, uploadInvoiceForCompany, uploadStatementForCompany, deleteDocument } from './portalDb';
 import type { PortalAccount, PortalDocument, DocType } from './types';
+import { Search } from 'lucide-react';
+import { Download as DownloadIcon } from 'lucide-react';
 
 function fmtTs(s: string | null): string {
   if (!s) return '—';
@@ -224,7 +226,7 @@ export function MasterView() {
           <div style={{ position: 'relative' }}>
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search company or email…"
               style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
-            <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}>⌕</span>
+            <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}><Search size={14} /></span>
           </div>
         </div>
         <div style={{ maxHeight: '70vh', overflowY: 'auto', padding: 8 }}>
@@ -358,7 +360,7 @@ export function MasterView() {
                                   const cname = selected.account.crm_companies?.name ?? 'company';
                                   downloadPdfFromBase64(d.pdf_base64, `${cname}_${d.billing_month}_${d.doc_type}.pdf`);
                                 }}
-                                  style={{ padding: '5px 12px', borderRadius: 6, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>⬇ PDF</button>
+                                  style={{ padding: '5px 12px', borderRadius: 6, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}><DownloadIcon size={12} strokeWidth={2.25} style={{display:"inline",verticalAlign:"-2px",marginRight:4}}/> PDF</button>
                                 <button onClick={() => setConfirmDeleteId(d.id)}
                                   style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid #FDEAEA', background: C.white, color: '#C0321A', fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Delete</button>
                               </div>

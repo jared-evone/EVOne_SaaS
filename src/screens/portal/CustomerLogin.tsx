@@ -6,6 +6,7 @@ import { StatementView } from '../CorporateInvoicing';
 import { findAccountByEmail, recordLogin, listDocumentsForCompany, downloadPdfFromBase64, countFleetForCompany } from './portalDb';
 import { verifyPassword } from './portalAuth';
 import type { PortalAccount, PortalDocument, DocType } from './types';
+import { Download as DownloadIcon } from 'lucide-react';
 
 function fmtTs(s: string | null): string {
   if (!s) return '—';
@@ -192,7 +193,7 @@ function CustomerDashboard({ account, onLogout }: { account: PortalAccount; onLo
                             style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>View Details</button>
                         )}
                         <button onClick={() => downloadPdfFromBase64(d.pdf_base64, `${cname}_${d.billing_month}_${d.doc_type}.pdf`)}
-                          style={{ padding: '5px 12px', borderRadius: 6, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>⬇ PDF</button>
+                          style={{ padding: '5px 12px', borderRadius: 6, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}><DownloadIcon size={12} strokeWidth={2.25} style={{display:"inline",verticalAlign:"-2px",marginRight:4}}/> PDF</button>
                       </div>
                     </td>
                   </tr>

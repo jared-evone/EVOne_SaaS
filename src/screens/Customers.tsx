@@ -3,12 +3,19 @@ import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
+import { Search } from 'lucide-react';
 
 // ── Types (also imported by Projects.tsx for the project-hub view) ───
 
 export type CustomerType = 'residential' | 'commercial' | 'dealer';
 
 export const CUSTOMER_TYPES: CustomerType[] = ['residential', 'commercial', 'dealer'];
+
+interface MainContact {
+  name:  string;
+  email: string | null;
+  phone: string | null;
+}
 
 export interface Customer {
   id: string;
@@ -55,21 +62,53 @@ export function ScreenCustomers() {
   const canDelete = can('customers', 'can_delete');
 
   const [rows, setRows]       = useState<Customer[]>([]);
+  const [mainContacts, setMainContacts] = useState<Map<string, MainContact>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
   const [search, setSearch]   = useState('');
   const [typeFilter, setTypeFilter] = useState<'all' | CustomerType>('all');
   const [adding, setAdding]   = useState(false);
-  const [editing, setEditing] = useState<Customer | null>(null);
+  const [editing, setEditing] = useState<EditingState | null>(null);
 
   const fetchAll = async () => {
     setLoading(true);
-    const { data, error: err } = await supabase
-      .from('customers').select('*').order('name');
+    const [{ data, error: err }, { data: contacts }] = await Promise.all([
+      supabase.from('customers').select('*').order('name'),
+      supabase
+        .from('customer_contacts')
+        .select('customer_id, name, email, phone, position, created_at')
+        .order('position', { ascending: true })
+        .order('created_at', { ascending: true }),
+    ]);
     setLoading(false);
     if (err) { setError(err.message); return; }
     setError(null);
     setRows((data ?? []) as Customer[]);
+    // Build a customer_id → first contact map (rows are already sorted, so
+    // the first occurrence wins).
+    const map = new Map<string, MainContact>();
+    for (const c of (contacts ?? []) as Array<{ customer_id: string; name: string; email: string | null; phone: string | null }>) {
+      if (!map.has(c.customer_id)) map.set(c.customer_id, { name: c.name, email: c.email, phone: c.phone });
+    }
+    setMainContacts(map);
+  };
+
+  const openEdit = async (c: Customer) => {
+    const { data: contacts } = await supabase
+      .from('customer_contacts')
+      .select('id, name, email, phone')
+      .eq('customer_id', c.id)
+      .order('position', { ascending: true })
+      .order('created_at', { ascending: true })
+      .limit(1);
+    const contact = (contacts ?? [])[0] ?? null;
+    setEditing({
+      customer: c,
+      contactId: contact?.id ?? null,
+      contactName:  contact?.name  ?? '',
+      contactEmail: contact?.email ?? '',
+      contactPhone: contact?.phone ?? '',
+    });
   };
   useEffect(() => { fetchAll(); }, []);
 
@@ -83,12 +122,37 @@ export function ScreenCustomers() {
     if (typeFilter !== 'all' && c.type !== typeFilter) return false;
     if (!search) return true;
     const q = search.toLowerCase();
-    return (c.name + ' ' + (c.email ?? '') + ' ' + (c.phone ?? '')).toLowerCase().includes(q);
+    const m = mainContacts.get(c.id);
+    return (c.name + ' ' + (m?.name ?? '') + ' ' + (m?.email ?? '') + ' ' + (m?.phone ?? '')).toLowerCase().includes(q);
   });
 
-  const save = async (data: CustomerFormData, id?: string) => {
-    if (id) await supabase.from('customers').update(data).eq('id', id);
-    else    await supabase.from('customers').insert(data);
+  const save = async (data: CustomerFormData, id?: string, contactId?: string | null) => {
+    const contactPayload = {
+      name:  (data.contact_name  ?? '').trim(),
+      email: (data.contact_email ?? '').trim() || null,
+      phone: (data.contact_phone ?? '').trim() || null,
+    };
+    if (id) {
+      await supabase.from('customers').update({
+        name: data.name, type: data.type, address: data.address, notes: data.notes,
+      }).eq('id', id);
+      // Upsert the main contact row.
+      if (contactId) {
+        await supabase.from('customer_contacts').update(contactPayload).eq('id', contactId);
+      } else if (contactPayload.name || contactPayload.email || contactPayload.phone) {
+        await supabase.from('customer_contacts').insert({ ...contactPayload, customer_id: id });
+      }
+    } else {
+      const { data: created } = await supabase
+        .from('customers')
+        .insert({ name: data.name, type: data.type, address: data.address, notes: data.notes })
+        .select()
+        .single();
+      // Main contact is required on create — seed the first contact row.
+      if (created) {
+        await supabase.from('customer_contacts').insert({ ...contactPayload, customer_id: created.id });
+      }
+    }
     await fetchAll();
   };
 
@@ -124,7 +188,7 @@ export function ScreenCustomers() {
         <div style={{ position: 'relative', width: 260 }}>
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search customers…"
             style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
-          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}>⌕</span>
+          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}><Search size={14} /></span>
         </div>
         {canEdit && (
           <button onClick={() => setAdding(true)}
@@ -139,22 +203,23 @@ export function ScreenCustomers() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
-                {['Customer', 'Type', 'Billing Address'].map((h) => (
+                {['Customer', 'Type', 'Attention', 'Email', 'Phone', 'Billing Address'].map((h) => (
                   <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={3} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</td></tr>
+                <tr><td colSpan={6} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</td></tr>
               ) : visible.length === 0 ? (
-                <tr><td colSpan={3} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
+                <tr><td colSpan={6} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
                   {rows.length === 0 ? 'No customers yet. Click "+ New Customer" to add one.' : 'No customers match your filters.'}
                 </td></tr>
               ) : visible.map((c) => {
                 const p = TYPE_PALETTE[c.type];
+                const m = mainContacts.get(c.id);
                 const cellCursor = canEdit ? 'pointer' : 'default';
-                const open = () => { if (canEdit) setEditing(c); };
+                const open = () => { if (canEdit) void openEdit(c); };
                 return (
                   <tr key={c.id} style={{ borderBottom: '1px solid #F3F3F3' }}
                     onMouseEnter={(e) => (e.currentTarget.style.background = '#FAFAFA')}
@@ -172,7 +237,16 @@ export function ScreenCustomers() {
                         {TYPE_LABEL[c.type]}
                       </span>
                     </td>
-                    <td onClick={open} style={{ padding: '13px 16px', color: c.address ? '#1a1a1a' : C.slate, cursor: cellCursor, maxWidth: 420, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.address ?? ''}>
+                    <td onClick={open} style={{ padding: '13px 16px', cursor: cellCursor, color: m?.name ? '#1a1a1a' : C.slate, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 200 }} title={m?.name ?? ''}>
+                      {m?.name ?? '—'}
+                    </td>
+                    <td onClick={open} style={{ padding: '13px 16px', cursor: cellCursor, color: m?.email ? '#1a1a1a' : C.slate, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 240 }} title={m?.email ?? ''}>
+                      {m?.email ?? '—'}
+                    </td>
+                    <td onClick={open} style={{ padding: '13px 16px', cursor: cellCursor, color: m?.phone ? '#1a1a1a' : C.slate, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                      {m?.phone ?? '—'}
+                    </td>
+                    <td onClick={open} style={{ padding: '13px 16px', color: c.address ? '#1a1a1a' : C.slate, cursor: cellCursor, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.address ?? ''}>
                       {c.address ?? '—'}
                     </td>
                   </tr>
@@ -188,15 +262,31 @@ export function ScreenCustomers() {
           onSave={(d) => save(d)} onClose={() => setAdding(false)} />
       )}
       {editing && (
-        <CustomerModal key={editing.id} title="Edit Customer"
-          initial={{ name: editing.name, type: editing.type, address: editing.address, notes: editing.notes }}
+        <CustomerModal key={editing.customer.id} title="Edit Customer"
+          initial={{
+            name:    editing.customer.name,
+            type:    editing.customer.type,
+            address: editing.customer.address,
+            notes:   editing.customer.notes,
+            contact_name:  editing.contactName,
+            contact_email: editing.contactEmail,
+            contact_phone: editing.contactPhone,
+          }}
           canDelete={canDelete}
-          onSave={(d) => save(d, editing.id)}
-          onDelete={() => remove(editing.id)}
+          onSave={(d) => save(d, editing.customer.id, editing.contactId)}
+          onDelete={() => remove(editing.customer.id)}
           onClose={() => setEditing(null)} />
       )}
     </div>
   );
+}
+
+interface EditingState {
+  customer: Customer;
+  contactId: string | null;
+  contactName:  string;
+  contactEmail: string;
+  contactPhone: string;
 }
 
 interface CustomerFormData {
@@ -204,10 +294,15 @@ interface CustomerFormData {
   type:    CustomerType;
   address: string | null;
   notes:   string | null;
+  // Main contact (attention / email / phone). Required on both create and edit
+  // — the modal upserts the first customer_contacts row.
+  contact_name?:  string;
+  contact_email?: string;
+  contact_phone?: string;
 }
 
 function blankCustomer(): CustomerFormData {
-  return { name: '', type: 'residential', address: null, notes: null };
+  return { name: '', type: 'residential', address: null, notes: null, contact_name: '', contact_email: '', contact_phone: '' };
 }
 
 interface CustomerModalProps {
@@ -235,6 +330,9 @@ function CustomerModal({ initial, title, canDelete, onSave, onDelete, onClose }:
       type:    form.type,
       address: form.address && form.address.trim() ? form.address.trim() : null,
       notes:   form.notes   && form.notes.trim()   ? form.notes.trim()   : null,
+      contact_name:  form.contact_name?.trim()  || '',
+      contact_email: form.contact_email?.trim() || '',
+      contact_phone: form.contact_phone?.trim() || '',
     });
     setSaving(false);
     onClose();
@@ -247,7 +345,11 @@ function CustomerModal({ initial, title, canDelete, onSave, onDelete, onClose }:
     onClose();
   };
 
-  const canSave = form.name.trim().length > 0 && !saving;
+  const canSave = !saving
+    && form.name.trim().length > 0
+    && (form.contact_name  ?? '').trim().length > 0
+    && (form.contact_email ?? '').trim().length > 0
+    && (form.contact_phone ?? '').trim().length > 0;
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -268,6 +370,27 @@ function CustomerModal({ initial, title, canDelete, onSave, onDelete, onClose }:
             style={{ ...inputStyle(), background: C.white, cursor: 'pointer' }}>
             {CUSTOMER_TYPES.map((t) => (<option key={t} value={t}>{TYPE_LABEL[t]}</option>))}
           </select>
+        </div>
+
+        <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Main Contact</div>
+          <div>
+            <FieldLabel>Attention</FieldLabel>
+            <input value={form.contact_name ?? ''} onChange={(e) => set('contact_name', e.target.value)}
+              placeholder="Jane Tan" style={{ ...inputStyle(), background: C.white }} />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div>
+              <FieldLabel>Email</FieldLabel>
+              <input type="email" value={form.contact_email ?? ''} onChange={(e) => set('contact_email', e.target.value)}
+                placeholder="jane@acme.com" style={{ ...inputStyle(), background: C.white }} />
+            </div>
+            <div>
+              <FieldLabel>Phone Number</FieldLabel>
+              <input type="tel" value={form.contact_phone ?? ''} onChange={(e) => set('contact_phone', e.target.value)}
+                placeholder="+65 9123 4567" style={{ ...inputStyle(), background: C.white }} />
+            </div>
+          </div>
         </div>
 
         <div>

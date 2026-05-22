@@ -2,6 +2,13 @@ import { useState } from 'react';
 import { C } from './theme';
 import { Logo } from './components/Logo';
 import { NavItem } from './components/NavItem';
+import {
+  LayoutDashboard, Home, Receipt, Wrench, Users, FolderKanban, CalendarDays,
+  Handshake, ClipboardList, Boxes, Truck, Building2, Plug, Zap, FileText,
+  Hammer, Settings as SettingsIcon, ShieldCheck, Database, ChevronRight, ChevronDown,
+  Power,
+  type LucideIcon,
+} from 'lucide-react';
 import { ScreenOverview } from './screens/Overview';
 import { ScreenInvoices } from './screens/Invoices';
 import { ScreenInstallations } from './screens/Installations';
@@ -32,35 +39,35 @@ import {
 
 type ScreenId = ScreenKey;
 
-type NavLeaf  = { kind: 'leaf';  id: ScreenId; icon: string; label: string };
-type NavGroup = { kind: 'group'; key: string;  icon: string; label: string; children: NavLeaf[] };
+type NavLeaf  = { kind: 'leaf';  id: ScreenId; icon: LucideIcon; label: string };
+type NavGroup = { kind: 'group'; key: string;  icon: LucideIcon; label: string; children: NavLeaf[] };
 type NavEntry = NavLeaf | NavGroup;
 
 const NAV_ALL: NavEntry[] = [
-  { kind: 'leaf', id: 'charging_dashboard',icon: '▤', label: 'Charging Dashboard' },
-  { kind: 'leaf', id: 'overview',          icon: '⊞', label: 'Overview' },
-  { kind: 'leaf', id: 'orders',            icon: '◈', label: 'Invoices' },
-  { kind: 'leaf', id: 'installations',     icon: '◎', label: 'Installations' },
-  { kind: 'leaf', id: 'customers',         icon: '◉', label: 'Customers' },
-  { kind: 'leaf', id: 'projects',          icon: '◧', label: 'Projects' },
-  { kind: 'leaf', id: 'social',            icon: '◫', label: 'Social Media Planner' },
-  { kind: 'leaf', id: 'sales',             icon: '◐', label: 'Sales' },
-  { kind: 'leaf', id: 'purchaseorders',    icon: '◧', label: 'Purchase Orders' },
-  { kind: 'leaf', id: 'inventory',         icon: '▦', label: 'Inventory & Products' },
-  { kind: 'leaf', id: 'suppliers',         icon: '◑', label: 'Suppliers' },
-  { kind: 'leaf', id: 'corporatecrm',      icon: '◉', label: 'Corporate CRM' },
-  { kind: 'leaf', id: 'cpochargers',       icon: '▣', label: 'CPO Chargers' },
-  { kind: 'leaf', id: 'charging',          icon: '⚡', label: 'Charging Records' },
-  { kind: 'leaf', id: 'corporateinvoicing',icon: '◈', label: 'Corporate Invoicing' },
-  { kind: 'leaf', id: 'tsd_technician',     icon: '🛠', label: 'Technician' },
-  { kind: 'group', key: 'tsd_admin_group', icon: '◆', label: 'TSD Admin', children: [
-    { kind: 'leaf', id: 'tsd_workorders', icon: '◧', label: 'Work Orders' },
-    { kind: 'leaf', id: 'tsd_forms',      icon: '◫', label: 'Form Templates' },
-    { kind: 'leaf', id: 'tsd_pic',        icon: '◑', label: 'PIC Review' },
+  { kind: 'leaf', id: 'charging_dashboard',icon: LayoutDashboard, label: 'Charging Dashboard' },
+  { kind: 'leaf', id: 'overview',          icon: Home,            label: 'Overview' },
+  { kind: 'leaf', id: 'orders',            icon: Receipt,         label: 'Invoices' },
+  { kind: 'leaf', id: 'installations',     icon: Wrench,          label: 'Installations' },
+  { kind: 'leaf', id: 'customers',         icon: Users,           label: 'Customers' },
+  { kind: 'leaf', id: 'projects',          icon: FolderKanban,    label: 'Projects' },
+  { kind: 'leaf', id: 'social',            icon: CalendarDays,    label: 'Social Media Planner' },
+  { kind: 'leaf', id: 'sales',             icon: Handshake,       label: 'Sales' },
+  { kind: 'leaf', id: 'purchaseorders',    icon: ClipboardList,   label: 'Purchase Orders' },
+  { kind: 'leaf', id: 'inventory',         icon: Boxes,           label: 'Inventory & Products' },
+  { kind: 'leaf', id: 'suppliers',         icon: Truck,           label: 'Suppliers' },
+  { kind: 'leaf', id: 'corporatecrm',      icon: Building2,       label: 'Corporate CRM' },
+  { kind: 'leaf', id: 'cpochargers',       icon: Plug,            label: 'CPO Chargers' },
+  { kind: 'leaf', id: 'charging',          icon: Zap,             label: 'Charging Records' },
+  { kind: 'leaf', id: 'corporateinvoicing',icon: FileText,        label: 'Corporate Invoicing' },
+  { kind: 'leaf', id: 'tsd_technician',    icon: Hammer,          label: 'Technician' },
+  { kind: 'group', key: 'tsd_admin_group', icon: ClipboardList,   label: 'TSD Admin', children: [
+    { kind: 'leaf', id: 'tsd_workorders', icon: ClipboardList,    label: 'Work Orders' },
+    { kind: 'leaf', id: 'tsd_forms',      icon: FileText,         label: 'Form Templates' },
+    { kind: 'leaf', id: 'tsd_pic',        icon: ShieldCheck,      label: 'PIC Review' },
   ]},
-  { kind: 'group', key: 'settings_group', icon: '◆', label: 'Settings', children: [
-    { kind: 'leaf', id: 'settings', icon: '◉', label: 'Users & Permissions' },
-    { kind: 'leaf', id: 'dbhealth', icon: '◫', label: 'DB Health' },
+  { kind: 'group', key: 'settings_group', icon: SettingsIcon,     label: 'Settings', children: [
+    { kind: 'leaf', id: 'settings', icon: Users,                  label: 'Users & Permissions' },
+    { kind: 'leaf', id: 'dbhealth', icon: Database,               label: 'DB Health' },
   ]},
 ];
 
@@ -207,7 +214,9 @@ function Dashboard({ onSignOut }: DashboardProps) {
                     width: '100%', textAlign: 'left',
                   }}>
                   <span>{n.label}</span>
-                  <span style={{ marginLeft: 'auto', fontSize: 8, transition: 'transform .15s', transform: open ? 'rotate(0deg)' : 'rotate(-90deg)' }}>▼</span>
+                  <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center' }}>
+                    {open ? <ChevronDown size={12} strokeWidth={2.5} /> : <ChevronRight size={12} strokeWidth={2.5} />}
+                  </span>
                 </button>
                 {open && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -281,7 +290,7 @@ function Dashboard({ onSignOut }: DashboardProps) {
               e.currentTarget.style.borderColor = '#EBEBEB';
             }}
           >
-            ⏻
+            <Power size={14} strokeWidth={2.25} />
           </button>
         </div>
       </aside>

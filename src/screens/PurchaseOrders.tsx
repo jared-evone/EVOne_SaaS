@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
+import { Search } from 'lucide-react';
 
 const PO_STATUSES = ['Draft', 'Submitted', 'Approved', 'Received', 'Partial', 'Cancelled'] as const;
 type POStatus = (typeof PO_STATUSES)[number];
@@ -532,7 +533,7 @@ export function ScreenPurchaseOrders() {
             placeholder="Search…"
             style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white }}
           />
-          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}>⌕</span>
+          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}><Search size={14} /></span>
         </div>
 
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>

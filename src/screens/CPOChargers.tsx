@@ -5,6 +5,7 @@ import { BrandLogo, type Brand } from '../components/BrandLogo';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
 import { OneMapAutocomplete } from '../components/OneMapAutocomplete';
+import { Search, Download as DownloadIcon } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -1108,7 +1109,7 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
                                 <button onClick={() => downloadPdf(r.pdf_path!, r.pdf_filename)}
                                   title={r.pdf_filename ? `Download ${r.pdf_filename}` : 'Download PDF'}
                                   style={{ padding: '4px 10px', borderRadius: 6, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
-                                  ⬇ PDF
+                                  <DownloadIcon size={12} strokeWidth={2.25} style={{display:"inline",verticalAlign:"-2px",marginRight:4}}/> PDF
                                 </button>
                               </>
                             )}
@@ -1194,7 +1195,7 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
                           <button onClick={() => downloadPdf(m.pdf_path!, m.pdf_filename)}
                             title={m.pdf_filename ? `Download ${m.pdf_filename}` : 'Download PDF'}
                             style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-                            ⬇ PDF
+                            <DownloadIcon size={12} strokeWidth={2.25} style={{display:"inline",verticalAlign:"-2px",marginRight:4}}/> PDF
                           </button>
                         </>
                       )}
@@ -1738,7 +1739,7 @@ export function ScreenCPOChargers() {
         <div style={{ position: 'relative', width: 280 }}>
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search locations…"
             style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
-          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}>⌕</span>
+          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}><Search size={14} /></span>
         </div>
         {canEdit && (
           <button onClick={() => setAddingLocation(true)}

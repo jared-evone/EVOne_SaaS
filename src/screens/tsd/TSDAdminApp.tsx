@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { C } from '../../theme';
 import { Logo } from '../../components/Logo';
+import { Search, Power } from 'lucide-react';
 import {
   STATUS_COLORS,
   TECHNICIANS,
@@ -142,7 +143,7 @@ export function TSDAdminApp({ onBack, onSignOut }: TSDAdminAppProps) {
               textAlign: 'left',
             }}
           >
-            ⏻ Sign out
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Power size={12} strokeWidth={2.25} /> Sign out</span>
           </button>
         </div>
       </aside>
@@ -274,7 +275,7 @@ export function WorkOrdersAdmin() {
             placeholder="Search work orders…"
             style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white }}
           />
-          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}>⌕</span>
+          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}><Search size={14} /></span>
         </div>
         <button
           onClick={() => setModal('new')}
@@ -744,7 +745,7 @@ export function CustomersAdmin() {
               fontSize: 15,
             }}
           >
-            ⌕
+            <Search size={14} />
           </span>
         </div>
         <button
@@ -1509,7 +1510,7 @@ function TemplatePreview({ template }: { template: FormTemplate }) {
           >
             TSD · Tech
           </span>
-          <span style={{ marginLeft: 'auto', fontSize: 14, color: C.slate, opacity: 0.55 }}>⏻</span>
+          <span style={{ marginLeft: 'auto', color: C.slate, opacity: 0.55, display: 'inline-flex' }}><Power size={14} strokeWidth={2} /></span>
         </div>
 
         {/* Title block */}

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
+import { Search } from 'lucide-react';
 import {
   DEPARTMENT_LABELS, DEPARTMENT_SCREENS, SCREEN_LABELS, usePermissions,
   type ScreenKey, type ScreenCap, type Department,
@@ -131,7 +132,7 @@ function UsersTab({ users, roles, department, onRefresh }: UsersTabProps) {
         <div style={{ position: 'relative', width: 280 }}>
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name, email, role…"
             style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
-          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}>⌕</span>
+          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}><Search size={14} /></span>
         </div>
         <button onClick={() => setAdding(true)}
           style={{ marginLeft: 'auto', padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>

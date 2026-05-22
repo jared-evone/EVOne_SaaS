@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { C } from '../../theme';
 import { KPICard } from '../../components/KPICard';
 import { supabase } from '../../lib/supabase';
+import { Search } from 'lucide-react';
+import { FileText } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -527,7 +529,7 @@ function InstructionPdfBox({ title, path, filename, onUpload, onRemove, onView }
       <div style={{ fontSize: 12, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{title}</div>
       {path && filename ? (
         <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 16 }}>📄</span>
+          <FileText size={14} strokeWidth={1.75} style={{display:"inline-flex",color:"#5B6B7A"}}/>
           <div style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {filename}
           </div>
@@ -804,7 +806,7 @@ function ApplicationsView({ applications, template, onRefresh }: ApplicationsVie
         <div style={{ position: 'relative', width: 280, marginLeft: 'auto' }}>
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search company, email, token…"
             style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
-          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}>⌕</span>
+          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}><Search size={14} /></span>
         </div>
         <button onClick={() => setInviting(true)} disabled={!template}
           style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: template ? C.green : '#ccc', color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: template ? 'pointer' : 'default' }}>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
+import { Search } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -223,7 +224,7 @@ export function ScreenChargingDashboard() {
         <div style={{ position: 'relative', width: 280 }}>
           <input value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} placeholder="Search carpark…"
             style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
-          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}>⌕</span>
+          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}><Search size={14} /></span>
         </div>
         <div style={{ marginLeft: 'auto', fontSize: 12, color: C.slate }}>
           {filteredCarparks.length} carpark{filteredCarparks.length === 1 ? '' : 's'} shown

@@ -10,6 +10,7 @@ import {
   type WorkOrder,
 } from '../../workOrderStore';
 import { OverlayFormRenderer, isOverlay } from './OverlayForm';
+import { Power, Calendar } from 'lucide-react';
 
 interface TechAppProps {
   onBack?: () => void;
@@ -200,7 +201,7 @@ function Shell({
             cursor: 'pointer',
           }}
         >
-          ⏻
+          <Power size={14} strokeWidth={2.25} />
         </button>
         )}
       </header>
@@ -265,7 +266,7 @@ function WorkOrderCard({
         {wo.address}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4 }}>
-        <span style={{ fontSize: 11, color: C.slate }}>📅 {wo.scheduledDate}</span>
+        <span style={{ fontSize: 11, color: C.slate, display: 'inline-flex', alignItems: 'center', gap: 4 }}><Calendar size={11} strokeWidth={2} /> {wo.scheduledDate}</span>
         <button
           onClick={onAction}
           style={{

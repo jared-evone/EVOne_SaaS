@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Download as DownloadIcon } from 'lucide-react';
 import {
   Document,
   Page,
@@ -579,7 +580,7 @@ export function PDFPreviewModal({
               cursor: downloading ? 'progress' : 'pointer',
             }}
           >
-            {downloading ? 'Preparing…' : '⬇ Download PDF'}
+            {downloading ? 'Preparing…' : <><DownloadIcon size={12} strokeWidth={2.25} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }}/> Download PDF</>}
           </button>
         </div>
       </div>
