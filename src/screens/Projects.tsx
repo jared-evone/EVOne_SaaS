@@ -1368,7 +1368,7 @@ function warrantyTone(endDate: string | null): { label: string; bg: string; colo
   return { label: `In warranty · ${d}d left`, bg: '#E4F3E3', color: '#1B512D' };
 }
 
-type ChargerDetailTab = 'details' | 'installation' | 'maintenance' | 'warranty';
+type ChargerDetailTab = 'details' | 'maintenance' | 'warranty';
 
 function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, canDelete, onChanged }: {
   siteId: string;
@@ -1413,7 +1413,7 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
             Chargers {chargers.length > 0 && <span style={{ color: C.slate, marginLeft: 4 }}>· {chargers.length}</span>}
           </div>
           <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
-            Tap a card to open its Details, Installation, LTA Inspection, and Warranty tabs below.
+            Tap a card to open its Details, LTA Inspection, and Warranty tabs below.
           </div>
         </div>
         {canEdit && (
@@ -1444,9 +1444,9 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
       {selected && (
         <div style={{ border: '1px solid #EBEBEB', borderRadius: 12, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid #EBEBEB', padding: '6px 10px', gap: 4 }}>
-            {(['details', 'installation', 'maintenance', 'warranty'] as ChargerDetailTab[]).map((t) => (
+            {(['details', 'maintenance', 'warranty'] as ChargerDetailTab[]).map((t) => (
               <TabButton key={t} active={tab === t} onClick={() => setTab(t)}>
-                {t === 'details' ? 'Details' : t === 'installation' ? 'Installation' : t === 'maintenance' ? 'LTA Inspection' : 'Warranty'}
+                {t === 'details' ? 'Details' : t === 'maintenance' ? 'LTA Inspection' : 'Warranty'}
               </TabButton>
             ))}
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
@@ -1584,20 +1584,7 @@ function ChargerTabPanel({ charger, siteName, tab, onTabChange, canEdit, canDele
 }) {
   if (tab === 'details')     return <ChargerDetailsPanel charger={charger} siteName={siteName} onTabChange={onTabChange} />;
   if (tab === 'maintenance') return <LtaInspectionPanel  charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} onChargerChanged={onChargerChanged} />;
-  const hint =
-    tab === 'installation' ? 'Commissioning checklist + photos will live here once designed.' :
-                             'Warranty start / end dates, supplier T&Cs, and claims history will live here.';
-  const title = tab === 'installation' ? 'Installation' : 'Warranty';
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5 }}>
-        Showing <strong style={{ color: '#1a1a1a' }}>{title}</strong> for <strong style={{ color: '#1a1a1a' }}>{charger.asset_tag}</strong>.
-      </div>
-      <div style={{ background: C.seasalt, border: '1px dashed #EBEBEB', borderRadius: 10, padding: '20px 16px', textAlign: 'center', color: C.slate, fontSize: 12, lineHeight: 1.6 }}>
-        {hint}
-      </div>
-    </div>
-  );
+  return <WarrantyPanel charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} />;
 }
 
 function ChargerDetailsPanel({ charger, siteName, onTabChange }: {
@@ -1647,7 +1634,7 @@ function ChargerDetailsPanel({ charger, siteName, onTabChange }: {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
         <ChargerDetailRow label="Serial Number" value={charger.asset_tag} />
         <ChargerDetailRow label="Brand & Model" value={charger.brand_model ?? '—'} muted={!charger.brand_model} />
       </div>
@@ -1657,7 +1644,7 @@ function ChargerDetailsPanel({ charger, siteName, onTabChange }: {
           <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Turn-on &amp; Form 1</div>
           <div style={{ fontSize: 11, color: C.slate }}>Installation compliance form</div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, alignItems: 'stretch' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10, alignItems: 'stretch' }}>
           <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '10px 12px' }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Turn-on Date</div>
             <div style={{ fontSize: 16, fontWeight: 700, color: charger.turn_on_date ? C.green : C.slate, marginTop: 4, letterSpacing: '-0.01em' }}>
@@ -1728,7 +1715,7 @@ function ChargerDetailsPanel({ charger, siteName, onTabChange }: {
               </div>
             );
           })()}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10 }}>
             <FormStatusCard formType="A" period="6-month"  latest={latestA} latestDisplayName={latestA ? computeLtaFilename('A', charger.asset_tag, latestA.performed_at, siteName) : null} done={doneA} nextDate={formADate} nextDays={formA} onDownload={() => void openLtaRecord(latestA!)} />
             <FormStatusCard formType="D" period="12-month" latest={latestD} latestDisplayName={latestD ? computeLtaFilename('D', charger.asset_tag, latestD.performed_at, siteName) : null} done={doneD} nextDate={formDDate} nextDays={formD} onDownload={() => void openLtaRecord(latestD!)} />
           </div>
@@ -1747,7 +1734,7 @@ function ChargerDetailsPanel({ charger, siteName, onTabChange }: {
           <span style={{ alignSelf: 'flex-start', fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: tone.bg, color: tone.color, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
             {tone.label}
           </span>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
             <ChargerDetailRow label="Start" value={fmtDate(charger.warranty_start_date) ?? '—'} muted={!charger.warranty_start_date} />
             <ChargerDetailRow label="End"   value={fmtDate(charger.warranty_end_date)   ?? '—'} muted={!charger.warranty_end_date} />
           </div>
@@ -2205,6 +2192,399 @@ function LtaRecordRow({ record, displayName, canDelete, onChanged }: {
   );
 }
 
+// ── Warranty panel ───────────────────────────────────────────────
+
+interface WarrantyClaim {
+  id: string;
+  charger_id: string;
+  claim_date: string;
+  parts: string | null;
+  remarks: string | null;
+  storage_path: string | null;
+  filename: string | null;
+  created_at: string;
+}
+
+function computeWarrantyClaimFilename(assetTag: string | null | undefined, claimDate: string | null | undefined, siteName: string | null | undefined): string {
+  return composeChargerFilename('Warranty Claim', assetTag, claimDate, siteName);
+}
+
+function WarrantyPanel({ charger, siteName, canEdit, canDelete }: {
+  charger: SiteCharger;
+  siteName: string;
+  canEdit: boolean;
+  canDelete: boolean;
+}) {
+  const [claims, setClaims] = useState<WarrantyClaim[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  const refresh = async () => {
+    const { data } = await supabase.from('charger_warranty_claims')
+      .select('*')
+      .eq('charger_id', charger.id)
+      .order('claim_date', { ascending: false });
+    setClaims((data ?? []) as WarrantyClaim[]);
+    setLoading(false);
+  };
+
+  useEffect(() => { setLoading(true); void refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [charger.id]);
+
+  const tone = warrantyTone(charger.warranty_end_date);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+        <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: tone.bg, color: tone.color, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+          {tone.label}
+        </span>
+        <span style={{ fontSize: 12, color: C.slate }}>
+          {charger.warranty_start_date || charger.warranty_end_date ? (
+            <>
+              {charger.warranty_start_date && <>Start <strong style={{ color: '#1a1a1a' }}>{fmtDate(charger.warranty_start_date)}</strong></>}
+              {charger.warranty_start_date && charger.warranty_end_date && ' · '}
+              {charger.warranty_end_date && <>End <strong style={{ color: '#1a1a1a' }}>{fmtDate(charger.warranty_end_date)}</strong></>}
+            </>
+          ) : (
+            'No warranty dates recorded.'
+          )}
+        </span>
+      </div>
+
+      <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            Warranty Claims {claims.length > 0 && <span style={{ color: C.slate, marginLeft: 4 }}>· {claims.length}</span>}
+          </div>
+          {canEdit && !adding && (
+            <button onClick={() => { setAdding(true); setEditingId(null); }}
+              style={{ padding: '6px 12px', borderRadius: 8, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+              + Add Warranty Claim
+            </button>
+          )}
+        </div>
+
+        {adding && (
+          <WarrantyClaimForm
+            charger={charger}
+            siteName={siteName}
+            existing={null}
+            onCancel={() => setAdding(false)}
+            onSaved={async () => { setAdding(false); await refresh(); }}
+          />
+        )}
+
+        {loading ? (
+          <div style={{ fontSize: 12, color: C.slate, padding: '8px 4px' }}>Loading…</div>
+        ) : claims.length === 0 ? (
+          <div style={{ background: C.white, border: '1px dashed #EBEBEB', borderRadius: 10, padding: '14px 16px', fontSize: 12, color: C.slate, textAlign: 'center' }}>
+            No warranty claims logged yet.{canEdit && ' Click + Add Warranty Claim to log one.'}
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {claims.map((c) => (
+              editingId === c.id ? (
+                <WarrantyClaimForm
+                  key={c.id}
+                  charger={charger}
+                  siteName={siteName}
+                  existing={c}
+                  onCancel={() => setEditingId(null)}
+                  onSaved={async () => { setEditingId(null); await refresh(); }}
+                />
+              ) : (
+                <WarrantyClaimRow
+                  key={c.id}
+                  claim={c}
+                  charger={charger}
+                  siteName={siteName}
+                  canEdit={canEdit}
+                  canDelete={canDelete}
+                  onEdit={() => { setEditingId(c.id); setAdding(false); }}
+                  onChanged={refresh}
+                />
+              )
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WarrantyClaimForm({ charger, siteName, existing, onCancel, onSaved }: {
+  charger: SiteCharger;
+  siteName: string;
+  existing: WarrantyClaim | null;
+  onCancel: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const [claimDate, setClaimDate] = useState<string>(existing?.claim_date ?? new Date().toISOString().slice(0, 10));
+  const [parts, setParts] = useState<string>(existing?.parts ?? '');
+  const [remarks, setRemarks] = useState<string>(existing?.remarks ?? '');
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [removeExisting, setRemoveExisting] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileSelected = (file: File) => {
+    setError(null);
+    if (file.type && file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      setError('Upload must be a PDF.');
+      return;
+    }
+    setPendingFile(file);
+    setRemoveExisting(false);
+  };
+
+  const fmtSize = (n: number): string => {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const openExisting = async () => {
+    if (!existing?.storage_path) return;
+    const downloadName = computeWarrantyClaimFilename(charger.asset_tag, existing.claim_date, siteName);
+    const { data } = await supabase.storage.from(CHARGER_FORMS_BUCKET)
+      .createSignedUrl(existing.storage_path, 60, { download: downloadName });
+    if (data?.signedUrl) window.open(data.signedUrl, '_self');
+  };
+
+  const handleSubmit = async () => {
+    setError(null);
+    if (!claimDate) { setError('Pick a claim date.'); return; }
+    if (!pendingFile && (!existing?.storage_path || removeExisting)) {
+      setError('A warranty report PDF is required.');
+      return;
+    }
+    setBusy(true);
+
+    let storagePath: string | null = existing?.storage_path ?? null;
+    let storedFilename: string | null = existing?.filename ?? null;
+
+    if (pendingFile) {
+      const friendly = computeWarrantyClaimFilename(charger.asset_tag, claimDate, siteName);
+      const path = `warranty/${charger.id}/${crypto.randomUUID()}/${pathSafe(friendly)}`;
+      const up = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(path, pendingFile, { contentType: pendingFile.type || 'application/pdf' });
+      if (up.error) { setBusy(false); setError(up.error.message); return; }
+      if (existing?.storage_path) {
+        void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([existing.storage_path]);
+      }
+      storagePath = path;
+      storedFilename = friendly;
+    } else if (removeExisting && existing?.storage_path) {
+      void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([existing.storage_path]);
+      storagePath = null;
+      storedFilename = null;
+    }
+
+    const payload = {
+      charger_id:   charger.id,
+      claim_date:   claimDate,
+      parts:        parts.trim() || null,
+      remarks:      remarks.trim() || null,
+      storage_path: storagePath,
+      filename:     storedFilename,
+    };
+
+    const result = existing
+      ? await supabase.from('charger_warranty_claims').update(payload).eq('id', existing.id)
+      : await supabase.from('charger_warranty_claims').insert(payload);
+
+    setBusy(false);
+    if (result.error) { setError(result.error.message); return; }
+    await onSaved();
+  };
+
+  const hasFile = !!pendingFile || (!!existing?.storage_path && !removeExisting);
+
+  return (
+    <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+        <div>
+          <FieldLabel>Claim Date</FieldLabel>
+          <input type="date" value={claimDate} onChange={(e) => setClaimDate(e.target.value)} disabled={busy}
+            style={{ ...inputStyle(), background: C.white }} />
+        </div>
+      </div>
+      <div>
+        <FieldLabel>Parts / Items</FieldLabel>
+        <textarea value={parts} onChange={(e) => setParts(e.target.value)} disabled={busy} rows={2}
+          placeholder="e.g. LCD screen, charging gun cable"
+          style={{ ...inputStyle(), resize: 'vertical', lineHeight: 1.5 }} />
+      </div>
+      <div>
+        <FieldLabel>Remarks</FieldLabel>
+        <textarea value={remarks} onChange={(e) => setRemarks(e.target.value)} disabled={busy} rows={3}
+          placeholder="Resolution notes, supplier contact, RMA reference…"
+          style={{ ...inputStyle(), resize: 'vertical', lineHeight: 1.5 }} />
+      </div>
+      <div>
+        <FieldLabel>Warranty Report PDF</FieldLabel>
+        {hasFile ? (
+          <div style={{ background: C.seasalt, border: '1px solid #EBEBEB', borderRadius: 10, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <FileText size={16} strokeWidth={1.8} color={C.green} style={{ flexShrink: 0 }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              {pendingFile ? (
+                <>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pendingFile.name}</div>
+                  <div style={{ fontSize: 10, color: C.slate, marginTop: 1 }}>{fmtSize(pendingFile.size)} · ready to upload</div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{existing?.filename ?? 'warranty.pdf'}</div>
+                  <div style={{ fontSize: 10, color: C.slate, marginTop: 1 }}>Currently attached</div>
+                </>
+              )}
+            </div>
+            {!pendingFile && existing?.storage_path && (
+              <button type="button" onClick={() => void openExisting()} disabled={busy}
+                style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: busy ? 'default' : 'pointer', flexShrink: 0 }}>
+                View
+              </button>
+            )}
+            <button type="button" onClick={() => inputRef.current?.click()} disabled={busy}
+              style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: busy ? 'default' : 'pointer', flexShrink: 0 }}>
+              Change
+            </button>
+            <button type="button" onClick={() => { setPendingFile(null); setRemoveExisting(true); }} disabled={busy}
+              style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: busy ? 'default' : 'pointer', flexShrink: 0 }}>
+              Remove
+            </button>
+          </div>
+        ) : (
+          <button type="button" onClick={() => inputRef.current?.click()} disabled={busy}
+            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 14px', borderRadius: 10, border: '1px dashed #C8E6C9', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', width: '100%' }}>
+            <Upload size={14} strokeWidth={2} /> Choose Warranty Report PDF
+          </button>
+        )}
+        <input ref={inputRef} type="file" accept="application/pdf" style={{ display: 'none' }}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) handleFileSelected(file);
+            e.target.value = '';
+          }} />
+      </div>
+      {error && (
+        <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 8, padding: '6px 10px', fontSize: 11, fontWeight: 600 }}>{error}</div>
+      )}
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button onClick={onCancel} disabled={busy}
+          style={{ padding: '8px 16px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: busy ? 'default' : 'pointer' }}>
+          Cancel
+        </button>
+        <button onClick={() => void handleSubmit()} disabled={busy || !claimDate || !hasFile}
+          style={{ padding: '8px 18px', borderRadius: 10, border: 'none', background: (busy || !claimDate || !hasFile) ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: (busy || !claimDate || !hasFile) ? 'default' : 'pointer' }}>
+          {busy ? 'Saving…' : existing ? 'Save Claim' : 'Submit Claim'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function WarrantyClaimRow({ claim, charger, siteName, canEdit, canDelete, onEdit, onChanged }: {
+  claim: WarrantyClaim;
+  charger: SiteCharger;
+  siteName: string;
+  canEdit: boolean;
+  canDelete: boolean;
+  onEdit: () => void;
+  onChanged: () => Promise<void>;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const displayName = computeWarrantyClaimFilename(charger.asset_tag, claim.claim_date, siteName);
+
+  const open = async (mode: 'view' | 'download') => {
+    if (!claim.storage_path) return;
+    const { data } = await supabase.storage.from(CHARGER_FORMS_BUCKET)
+      .createSignedUrl(claim.storage_path, 60, mode === 'download' ? { download: displayName } : undefined);
+    if (data?.signedUrl) window.open(data.signedUrl, mode === 'download' ? '_self' : '_blank');
+  };
+
+  const handleDelete = async () => {
+    setDeleting(true);
+    if (claim.storage_path) {
+      void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([claim.storage_path]);
+    }
+    await supabase.from('charger_warranty_claims').delete().eq('id', claim.id);
+    setDeleting(false);
+    setConfirming(false);
+    await onChanged();
+  };
+
+  if (confirming) {
+    return (
+      <div style={{ background: '#FDEAEA', borderRadius: 10, padding: '10px 12px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#C0321A', flex: 1, lineHeight: 1.5, minWidth: 220 }}>
+          Delete the warranty claim from {fmtDate(claim.claim_date)}?
+        </div>
+        <button onClick={() => setConfirming(false)} disabled={deleting}
+          style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #FDEAEA', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: deleting ? 'default' : 'pointer' }}>
+          Cancel
+        </button>
+        <button onClick={() => void handleDelete()} disabled={deleting}
+          style={{ padding: '5px 10px', borderRadius: 6, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: deleting ? 'default' : 'pointer' }}>
+          {deleting ? 'Deleting…' : 'Yes, delete'}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: '#1a1a1a', letterSpacing: '-0.01em' }}>
+          {fmtDate(claim.claim_date)}
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {canEdit && (
+            <button onClick={onEdit}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+              <Pencil size={11} strokeWidth={2.25} /> Edit
+            </button>
+          )}
+          {canDelete && (
+            <button onClick={() => setConfirming(true)}
+              style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+              Delete
+            </button>
+          )}
+        </div>
+      </div>
+      {claim.parts && (
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Parts / Items</div>
+          <div style={{ fontSize: 12, color: '#1a1a1a', marginTop: 2, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{claim.parts}</div>
+        </div>
+      )}
+      {claim.remarks && (
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Remarks</div>
+          <div style={{ fontSize: 12, color: '#1a1a1a', marginTop: 2, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{claim.remarks}</div>
+        </div>
+      )}
+      {claim.storage_path && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+          <FileText size={14} strokeWidth={1.8} color={C.green} style={{ flexShrink: 0 }} />
+          <div style={{ fontSize: 11, color: C.slate, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</div>
+          <button onClick={() => void open('view')}
+            style={{ flexShrink: 0, padding: '5px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+            View
+          </button>
+          <button onClick={() => void open('download')}
+            style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+            <DownloadIcon size={11} strokeWidth={2.25} /> Download
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ReadOnlyField({ label, value, placeholder }: { label: string; value: string | null; placeholder: string }) {
   const has = !!value;
   return (
@@ -2259,16 +2639,16 @@ function FormStatusCard({ formType, period, latest, latestDisplayName, done, nex
         <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', letterSpacing: '-0.01em' }}>
           Inspected on {fmtDate(latest.performed_at)}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <FileText size={12} strokeWidth={1.8} color={C.slate} />
-          <div style={{ fontSize: 11, color: C.slate, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{latestDisplayName ?? latest.filename}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+          <FileText size={12} strokeWidth={1.8} color={C.slate} style={{ flexShrink: 0 }} />
+          <div style={{ fontSize: 11, color: C.slate, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{latestDisplayName ?? latest.filename}</div>
           <button onClick={onDownload} title="Download PDF"
-            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '4px 8px', borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+            style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '4px 8px', borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
             <DownloadIcon size={12} strokeWidth={2.25} />
           </button>
         </div>
         {nextDate && (
-          <div style={{ borderTop: '1px solid #EBEBEB', marginTop: 4, paddingTop: 6, display: 'flex', alignItems: 'baseline', gap: 6 }}>
+          <div style={{ borderTop: '1px solid #EBEBEB', marginTop: 4, paddingTop: 6, display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '4px 6px' }}>
             <span style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Next LTA Form {formType} Due</span>
             <span style={{ fontSize: 12, fontWeight: 700, color: '#1a1a1a' }}>{fmtDate(nextDate)}</span>
             {nextDays !== null && <span style={{ fontSize: 11, color: C.slate }}>· {relDays(nextDays)}</span>}
