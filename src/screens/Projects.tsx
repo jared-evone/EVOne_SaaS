@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
-import { Search, FolderClosed, Mail, Phone, Pencil } from 'lucide-react';
+import { Search, Mail, Phone, Pencil, FileText, Upload, Download as DownloadIcon } from 'lucide-react';
+import { OneMapAutocomplete } from '../components/OneMapAutocomplete';
 import {
   type Customer,
   type CustomerType,
@@ -360,9 +361,9 @@ interface CustomerContact {
   phone: string | null;
 }
 
-interface CustomerCharger {
+interface SiteCharger {
   id: string;
-  customer_id: string;
+  site_id: string;
   asset_tag: string;
   brand_model: string | null;
   turn_on_date: string | null;
@@ -370,10 +371,50 @@ interface CustomerCharger {
   form_d_next_date: string | null;
   warranty_start_date: string | null;
   warranty_end_date: string | null;
+  has_maintenance_package: boolean;
+  lta_contract_years: number | null;
+  lta_contract_start_date: string | null;
+  form_1_path: string | null;
+  form_1_filename: string | null;
   notes: string | null;
 }
 
-type DetailTab = 'overview' | 'files';
+const CHARGER_FORMS_BUCKET = 'charger-forms';
+
+interface ProjectSite {
+  id: string;
+  project_id: string;
+  name: string;
+  address: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  notes: string | null;
+  position: number;
+  site_chargers: SiteCharger[];
+}
+
+interface BrandModel {
+  id: string;
+  label: string;
+  position: number;
+}
+
+type ProjectFileSection = 'invoices' | 'others';
+
+interface ProjectFile {
+  id: string;
+  project_id: string;
+  section: ProjectFileSection;
+  filename: string;
+  storage_path: string;
+  mime_type: string | null;
+  size_bytes: number | null;
+  uploaded_at: string;
+}
+
+const PROJECT_FILES_BUCKET = 'project-files';
+
+type DetailTabId = 'overview' | 'files' | `site:${string}`;
 
 function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }: {
   projectId: string;
@@ -385,36 +426,54 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
   const [project, setProject]   = useState<Project | null>(null);
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [contacts, setContacts] = useState<CustomerContact[]>([]);
-  const [chargers, setChargers] = useState<CustomerCharger[]>([]);
+  const [sites, setSites]       = useState<ProjectSite[]>([]);
+  const [files, setFiles]       = useState<ProjectFile[]>([]);
+  const [brandModels, setBrandModels] = useState<BrandModel[]>([]);
   const [loading, setLoading]   = useState(true);
-  const [tab, setTab]           = useState<DetailTab>('overview');
+  const [tab, setTab]           = useState<DetailTabId>('overview');
+  const [addingSite, setAddingSite] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   const fetchAll = async () => {
-    const { data: p } = await supabase.from('projects').select('*').eq('id', projectId).maybeSingle();
+    const [{ data: p }, { data: f }, { data: s }, { data: bm }] = await Promise.all([
+      supabase.from('projects').select('*').eq('id', projectId).maybeSingle(),
+      supabase.from('project_files').select('*').eq('project_id', projectId).order('uploaded_at', { ascending: false }),
+      supabase.from('project_sites').select('*, site_chargers(*)').eq('project_id', projectId).order('position').order('created_at'),
+      supabase.from('charger_brand_models').select('*').order('position').order('label'),
+    ]);
     const proj = (p as Project | null) ?? null;
     setProject(proj);
+    setFiles((f ?? []) as ProjectFile[]);
+    setSites((s ?? []) as ProjectSite[]);
+    setBrandModels((bm ?? []) as BrandModel[]);
     if (proj?.customer_id) {
-      const [{ data: c }, { data: cc }, { data: ch }] = await Promise.all([
+      const [{ data: c }, { data: cc }] = await Promise.all([
         supabase.from('customers').select('*').eq('id', proj.customer_id).maybeSingle(),
         supabase.from('customer_contacts').select('id, customer_id, name, email, phone').eq('customer_id', proj.customer_id).order('position').order('created_at'),
-        supabase.from('customer_chargers').select('*').eq('customer_id', proj.customer_id).order('position').order('created_at'),
       ]);
       setCustomer((c as Customer | null) ?? null);
       setContacts((cc ?? []) as CustomerContact[]);
-      setChargers((ch ?? []) as CustomerCharger[]);
     } else {
       setCustomer(null);
       setContacts([]);
-      setChargers([]);
     }
     setLoading(false);
   };
   useEffect(() => { void fetchAll(); }, [projectId]);
 
+  // If the currently-active site tab disappears (delete / reload), fall back to overview.
+  useEffect(() => {
+    if (tab.startsWith('site:') && !sites.find((s) => `site:${s.id}` === tab)) {
+      setTab('overview');
+    }
+  }, [sites, tab]);
+
   const handleDelete = async () => {
     setDeleting(true);
+    // Clean storage objects before the cascade-deletes the project_files rows.
+    const paths = files.map((f) => f.storage_path).filter(Boolean);
+    if (paths.length) await supabase.storage.from(PROJECT_FILES_BUCKET).remove(paths);
     await supabase.from('projects').delete().eq('id', projectId);
     setDeleting(false);
     await onBack();
@@ -495,38 +554,79 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
         </div>
 
         {/* Right column */}
-        <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', display: 'flex', flexDirection: 'column' }}>
-          <div style={{ display: 'flex', borderBottom: '1px solid #EBEBEB', padding: '8px 12px', gap: 4 }}>
-            {(['overview', 'files'] as DetailTab[]).map((t) => {
-              const active = tab === t;
+        <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+          <div style={{ display: 'flex', borderBottom: '1px solid #EBEBEB', padding: '8px 12px', gap: 4, overflowX: 'auto', flexWrap: 'nowrap' }}>
+            <TabButton active={tab === 'overview'} onClick={() => setTab('overview')}>Overview</TabButton>
+            <TabButton active={tab === 'files'}    onClick={() => setTab('files')}>
+              Files{files.length > 0 && <span style={{ color: C.slate, marginLeft: 4, fontWeight: 600 }}>· {files.length}</span>}
+            </TabButton>
+            {sites.map((s) => {
+              const id: DetailTabId = `site:${s.id}`;
               return (
-                <button key={t} onClick={() => setTab(t)}
-                  style={{ padding: '8px 16px', borderRadius: 10, border: 'none', fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer',
-                    background: active ? C.honeydew : 'transparent',
-                    color: active ? C.green : C.slate,
-                    borderBottom: active ? `2px solid ${C.green}` : '2px solid transparent',
-                    marginBottom: -1,
-                  }}>
-                  {t === 'overview' ? 'Overview' : 'Files'}
-                </button>
+                <TabButton key={s.id} active={tab === id} onClick={() => setTab(id)}>
+                  {s.name}{s.site_chargers.length > 0 && <span style={{ color: C.slate, marginLeft: 4, fontWeight: 600 }}>· {s.site_chargers.length}</span>}
+                </TabButton>
               );
             })}
+            {canEdit && (
+              <button onClick={() => setAddingSite(true)}
+                style={{ marginLeft: 'auto', padding: '8px 14px', borderRadius: 10, border: `1px dashed ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                + Site
+              </button>
+            )}
           </div>
           <div style={{ padding: 22 }}>
             {tab === 'overview' && (
               <OverviewTab
                 project={project}
-                customer={customer}
                 contacts={contacts}
-                chargers={chargers}
+                sites={sites}
+                onPickSite={(id) => setTab(`site:${id}`)}
                 canEdit={canEdit}
-                canDelete={canDelete}
-                onChargersChanged={fetchAll}
+                onAddSite={() => setAddingSite(true)}
               />
             )}
-            {tab === 'files' && <FilesTab />}
+            {tab === 'files' && (
+              <FilesTab
+                projectId={project.id}
+                files={files}
+                canEdit={canEdit}
+                canDelete={canDelete}
+                onChanged={fetchAll}
+              />
+            )}
+            {tab.startsWith('site:') && (() => {
+              const site = sites.find((s) => `site:${s.id}` === tab);
+              if (!site) return null;
+              return (
+                <SiteTab
+                  site={site}
+                  brandModels={brandModels}
+                  canEdit={canEdit}
+                  canDelete={canDelete}
+                  onChanged={fetchAll}
+                  onDeleted={() => setTab('overview')}
+                />
+              );
+            })()}
           </div>
         </div>
+        {addingSite && (
+          <SiteModal
+            title="New Site"
+            initial={{ name: '', address: null, latitude: null, longitude: null, notes: null }}
+            canDelete={false}
+            onSave={async (data) => {
+              const { data: created } = await supabase.from('project_sites')
+                .insert({ ...data, project_id: project.id })
+                .select()
+                .single();
+              await fetchAll();
+              if (created) setTab(`site:${created.id}`);
+            }}
+            onClose={() => setAddingSite(false)}
+          />
+        )}
       </div>
     </div>
   );
@@ -756,34 +856,71 @@ function LinkedCustomerCard({ customer, contacts, hasLink }: { customer: Custome
 
 // ── Right column: Overview tab ────────────────────────────────────
 
-function OverviewTab({ project, customer, contacts, chargers, canEdit, canDelete, onChargersChanged }: {
+function OverviewTab({ project, contacts, sites, onPickSite, canEdit, onAddSite }: {
   project: Project;
-  customer: Customer | null;
   contacts: CustomerContact[];
-  chargers: CustomerCharger[];
+  sites: ProjectSite[];
+  onPickSite: (id: string) => void;
   canEdit: boolean;
-  canDelete: boolean;
-  onChargersChanged: () => Promise<void>;
+  onAddSite: () => void;
 }) {
-  const emailCount = contacts.filter((c) => !!c.email).length;
-  const phoneCount = contacts.filter((c) => !!c.phone).length;
+  const emailCount   = contacts.filter((c) => !!c.email).length;
+  const phoneCount   = contacts.filter((c) => !!c.phone).length;
+  const chargerCount = sites.reduce((n, s) => n + s.site_chargers.length, 0);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
-        <SummaryStat label="Chargers"       value={String(chargers.length)} />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
+        <SummaryStat label="Sites"          value={String(sites.length)} />
+        <SummaryStat label="Chargers"       value={String(chargerCount)} />
         <SummaryStat label="Contacts"       value={String(contacts.length)} />
         <SummaryStat label="Emails on file" value={String(emailCount)} />
         <SummaryStat label="Phones on file" value={String(phoneCount)} />
       </div>
 
-      <ChargersCard
-        customerId={customer?.id ?? null}
-        chargers={chargers}
-        canEdit={canEdit && !!customer}
-        canDelete={canDelete}
-        onChanged={onChargersChanged}
-        noCustomer={!customer}
-      />
+      <div style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              Sites{sites.length > 0 && <span style={{ color: C.slate, marginLeft: 4 }}>· {sites.length}</span>}
+            </div>
+            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+              One tab per site — chargers, address, and notes live inside each site.
+            </div>
+          </div>
+          {canEdit && (
+            <button onClick={onAddSite}
+              style={{ padding: '7px 14px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              + Add Site
+            </button>
+          )}
+        </div>
+        {sites.length === 0 ? (
+          <div style={{ background: C.seasalt, border: '1px dashed #EBEBEB', borderRadius: 10, padding: '14px 16px', fontSize: 12, color: C.slate, textAlign: 'center', lineHeight: 1.6 }}>
+            No sites yet.{canEdit && ' Click + Add Site to add the first one.'}
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {sites.map((s) => (
+              <div key={s.id}
+                onClick={() => onPickSite(s.id)}
+                style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}
+                onMouseEnter={(e) => (e.currentTarget.style.borderColor = '#C8E6C9')}
+                onMouseLeave={(e) => (e.currentTarget.style.borderColor = '#EBEBEB')}>
+                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{s.name}</div>
+                  {s.address && (
+                    <div style={{ fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.address}</div>
+                  )}
+                </div>
+                <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, background: C.honeydew, color: C.green, whiteSpace: 'nowrap', flexShrink: 0 }}>
+                  {s.site_chargers.length} charger{s.site_chargers.length === 1 ? '' : 's'}
+                </span>
+                <span style={{ color: C.green, fontWeight: 700, fontSize: 12 }}>Open →</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 6 }}>
         <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Created</div>
@@ -792,6 +929,21 @@ function OverviewTab({ project, customer, contacts, chargers, canEdit, canDelete
         </div>
       </div>
     </div>
+  );
+}
+
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button onClick={onClick}
+      style={{ padding: '8px 16px', borderRadius: 10, border: 'none', fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer',
+        background: active ? C.honeydew : 'transparent',
+        color: active ? C.green : C.slate,
+        borderBottom: active ? `2px solid ${C.green}` : '2px solid transparent',
+        marginBottom: -1,
+        whiteSpace: 'nowrap',
+      }}>
+      {children}
+    </button>
   );
 }
 
@@ -804,24 +956,403 @@ function SummaryStat({ label, value }: { label: string; value: string }) {
   );
 }
 
-// ── Right column: Files tab ───────────────────────────────────────
+// ── Site tab (one per site) ───────────────────────────────────────
 
-function FilesTab() {
+function SiteTab({ site, brandModels, canEdit, canDelete, onChanged, onDeleted }: {
+  site: ProjectSite;
+  brandModels: BrandModel[];
+  canEdit: boolean;
+  canDelete: boolean;
+  onChanged: () => Promise<void>;
+  onDeleted: () => void;
+}) {
+  const [editingSite, setEditingSite] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDelete = async () => {
+    setDeleting(true);
+    await supabase.from('project_sites').delete().eq('id', site.id);
+    setDeleting(false);
+    onDeleted();
+    await onChanged();
+  };
+
   return (
-    <div style={{ background: C.seasalt, border: '1px dashed #EBEBEB', borderRadius: 12, padding: 40, textAlign: 'center', color: C.slate, fontSize: 13, lineHeight: 1.6 }}>
-      <div style={{ marginBottom: 8, display: 'inline-flex', justifyContent: 'center' }}><FolderClosed size={32} color={C.slate} strokeWidth={1.5} /></div>
-      No files yet. File uploads will live here once the integration is built.
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Site header */}
+      <div style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#1a1a1a' }}>{site.name}</div>
+            {site.address && (
+              <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>{site.address}</div>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {canEdit && (
+              <button onClick={() => setEditingSite(true)}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                <Pencil size={11} strokeWidth={2.25} /> Edit
+              </button>
+            )}
+            {canDelete && (
+              <button onClick={() => setConfirmDelete(true)}
+                style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                Delete site
+              </button>
+            )}
+          </div>
+        </div>
+        {site.notes && (
+          <div style={{ background: C.seasalt, borderRadius: 10, padding: '10px 12px', fontSize: 12, color: '#1a1a1a', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+            {site.notes}
+          </div>
+        )}
+        {confirmDelete && (
+          <div style={{ background: '#FDEAEA', borderRadius: 10, padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#C0321A', flex: 1 }}>
+              Delete <strong>{site.name}</strong>? All {site.site_chargers.length} charger{site.site_chargers.length === 1 ? '' : 's'} under this site will go with it.
+            </div>
+            <button onClick={() => setConfirmDelete(false)} disabled={deleting}
+              style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #FDEAEA', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+            <button onClick={() => void handleDelete()} disabled={deleting}
+              style={{ padding: '5px 10px', borderRadius: 6, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+              {deleting ? 'Deleting…' : 'Yes, delete'}
+            </button>
+          </div>
+        )}
+      </div>
+
+      <SiteChargersCard
+        siteId={site.id}
+        siteName={site.name}
+        chargers={site.site_chargers}
+        brandModels={brandModels}
+        canEdit={canEdit}
+        canDelete={canDelete}
+        onChanged={onChanged}
+      />
+
+      {editingSite && (
+        <SiteModal
+          title="Edit Site"
+          initial={{ name: site.name, address: site.address, latitude: site.latitude, longitude: site.longitude, notes: site.notes }}
+          canDelete={false}
+          onSave={async (data) => {
+            await supabase.from('project_sites').update(data).eq('id', site.id);
+            await onChanged();
+          }}
+          onClose={() => setEditingSite(false)}
+        />
+      )}
     </div>
   );
 }
 
-// ── Chargers card + modal (customer-scoped, surfaced on the project) ──
-
-function fmtDate(s: string | null): string {
-  if (!s) return '—';
-  const d = new Date(s);
-  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+interface SiteFormData {
+  name: string;
+  address: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  notes: string | null;
 }
+
+function SiteModal({ title, initial, onSave, onClose }: {
+  title: string;
+  initial: SiteFormData;
+  canDelete: boolean;
+  onSave: (data: SiteFormData) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [form, setForm] = useState<SiteFormData>(initial);
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    await onSave({
+      name:      form.name.trim(),
+      address:   form.address && form.address.trim() ? form.address.trim() : null,
+      latitude:  form.latitude,
+      longitude: form.longitude,
+      notes:     form.notes && form.notes.trim() ? form.notes.trim() : null,
+    });
+    setSaving(false);
+    onClose();
+  };
+
+  const canSave = form.name.trim().length > 0 && (form.address ?? '').trim().length > 0 && !saving;
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 520, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{title}</div>
+          <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
+        </div>
+        <div>
+          <FieldLabel>Site Name</FieldLabel>
+          <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+            placeholder="Main building, Block A, Carpark Level B2 …" style={inputStyle()} autoFocus />
+        </div>
+        <div>
+          <FieldLabel>Address</FieldLabel>
+          <OneMapAutocomplete
+            value={form.address ?? ''}
+            onChange={(t) => setForm((f) => ({ ...f, address: t || null }))}
+            onPick={(r) => setForm((f) => ({ ...f, address: r.address, latitude: r.latitude, longitude: r.longitude }))}
+            placeholder="Start typing — pick a Singapore address to auto-fill lat/lng"
+          />
+          <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.4 }}>
+            Powered by <a href="https://www.onemap.gov.sg" target="_blank" rel="noreferrer" style={{ color: C.green, textDecoration: 'none', fontWeight: 600 }}>OneMap</a> (data.gov.sg). Picking a suggestion saves latitude &amp; longitude alongside the address.
+          </div>
+        </div>
+        <div>
+          <FieldLabel>Notes (optional)</FieldLabel>
+          <textarea value={form.notes ?? ''} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value || null }))}
+            rows={3} placeholder="Access details, key contacts, install quirks…"
+            style={{ ...inputStyle(), resize: 'vertical', lineHeight: 1.5 }} />
+        </div>
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <button onClick={onClose}
+            style={{ padding: '9px 20px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+          <button onClick={() => void handleSave()} disabled={!canSave}
+            style={{ padding: '9px 24px', borderRadius: 10, border: 'none', background: canSave ? C.green : '#ccc', color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: canSave ? 'pointer' : 'default' }}>
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Right column: Files tab ───────────────────────────────────────
+
+function FilesTab({ projectId, files, canEdit, canDelete, onChanged }: {
+  projectId: string;
+  files: ProjectFile[];
+  canEdit: boolean;
+  canDelete: boolean;
+  onChanged: () => Promise<void>;
+}) {
+  const invoices = files.filter((f) => f.section === 'invoices');
+  const others   = files.filter((f) => f.section === 'others');
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <FileSection title="Invoices" section="invoices" files={invoices}
+        projectId={projectId} canEdit={canEdit} canDelete={canDelete} onChanged={onChanged} />
+      <FileSection title="Others" section="others" files={others}
+        projectId={projectId} canEdit={canEdit} canDelete={canDelete} onChanged={onChanged} />
+    </div>
+  );
+}
+
+function FileSection({ title, section, files, projectId, canEdit, canDelete, onChanged }: {
+  title: string;
+  section: ProjectFileSection;
+  files: ProjectFile[];
+  projectId: string;
+  canEdit: boolean;
+  canDelete: boolean;
+  onChanged: () => Promise<void>;
+}) {
+  const [dragging, setDragging] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const uploadFiles = async (list: FileList) => {
+    if (!canEdit) return;
+    setError(null);
+    setUploading(true);
+    const failures: string[] = [];
+    for (const file of Array.from(list)) {
+      const id = crypto.randomUUID();
+      const ext = file.name.match(/\.[^.]+$/)?.[0] ?? '';
+      const path = `${projectId}/${section}/${id}${ext}`;
+      const { error: upErr } = await supabase.storage.from(PROJECT_FILES_BUCKET).upload(path, file, {
+        contentType: file.type || 'application/octet-stream',
+      });
+      if (upErr) { failures.push(`${file.name}: ${upErr.message}`); continue; }
+      const { error: rowErr } = await supabase.from('project_files').insert({
+        project_id: projectId,
+        section,
+        filename: file.name,
+        storage_path: path,
+        mime_type: file.type || null,
+        size_bytes: file.size,
+      });
+      if (rowErr) {
+        // Roll back the storage upload so we don't leave orphans.
+        await supabase.storage.from(PROJECT_FILES_BUCKET).remove([path]);
+        failures.push(`${file.name}: ${rowErr.message}`);
+      }
+    }
+    setUploading(false);
+    if (failures.length) setError(failures.join(' · '));
+    await onChanged();
+  };
+
+  const onDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!canEdit) return;
+    e.preventDefault();
+    setDragging(true);
+  };
+  const onDragLeave = () => setDragging(false);
+  const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!canEdit) return;
+    e.preventDefault();
+    setDragging(false);
+    if (e.dataTransfer.files.length > 0) void uploadFiles(e.dataTransfer.files);
+  };
+  const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) void uploadFiles(e.target.files);
+    e.target.value = '';
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+          {title}{files.length > 0 && <span style={{ color: C.slate, marginLeft: 4 }}>· {files.length}</span>}
+        </div>
+        {canEdit && (
+          <button onClick={() => inputRef.current?.click()} disabled={uploading}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: uploading ? 'default' : 'pointer' }}>
+            <Upload size={12} strokeWidth={2.25} /> {uploading ? 'Uploading…' : 'Upload'}
+          </button>
+        )}
+      </div>
+
+      {canEdit && (
+        <div
+          onClick={() => inputRef.current?.click()}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+          style={{
+            background: dragging ? C.honeydew : C.seasalt,
+            border: `2px dashed ${dragging ? C.green : '#EBEBEB'}`,
+            borderRadius: 12, padding: '20px 16px', textAlign: 'center', cursor: 'pointer',
+            transition: 'background .15s, border-color .15s', display: 'flex',
+            flexDirection: 'column', alignItems: 'center', gap: 6,
+          }}>
+          <input ref={inputRef} type="file" multiple onChange={onPick} style={{ display: 'none' }} />
+          <Upload size={26} color={dragging ? C.green : C.slate} strokeWidth={1.5} />
+          <div style={{ fontSize: 13, fontWeight: 600, color: dragging ? C.green : C.slate }}>
+            {dragging ? `Drop files into ${title}` : `Drag & drop or click to upload`}
+          </div>
+          <div style={{ fontSize: 11, color: C.slate }}>Any file type · multiple at once</div>
+        </div>
+      )}
+
+      {error && (
+        <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '8px 12px', fontSize: 12, fontWeight: 600 }}>
+          {error}
+        </div>
+      )}
+
+      {files.length === 0 ? (
+        !canEdit && (
+          <div style={{ background: C.seasalt, border: '1px dashed #EBEBEB', borderRadius: 10, padding: '14px 16px', fontSize: 12, color: C.slate, textAlign: 'center' }}>
+            No {title.toLowerCase()} yet.
+          </div>
+        )
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {files.map((f) => (
+            <FileRow key={f.id} file={f} canDelete={canDelete} onChanged={onChanged} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FileRow({ file, canDelete, onChanged }: { file: ProjectFile; canDelete: boolean; onChanged: () => Promise<void> }) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const view = async () => {
+    const { data, error } = await supabase.storage.from(PROJECT_FILES_BUCKET).createSignedUrl(file.storage_path, 60);
+    if (error || !data) { alert(`Could not open: ${error?.message ?? 'unknown'}`); return; }
+    window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
+  };
+
+  const download = async () => {
+    const { data, error } = await supabase.storage.from(PROJECT_FILES_BUCKET)
+      .createSignedUrl(file.storage_path, 60, { download: file.filename });
+    if (error || !data) { alert(`Could not download: ${error?.message ?? 'unknown'}`); return; }
+    const a = document.createElement('a');
+    a.href = data.signedUrl; a.rel = 'noreferrer';
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    await supabase.storage.from(PROJECT_FILES_BUCKET).remove([file.storage_path]);
+    await supabase.from('project_files').delete().eq('id', file.id);
+    setBusy(false);
+    await onChanged();
+  };
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', border: '1px solid #EBEBEB', borderRadius: 10, background: C.white }}>
+      <FileText size={18} strokeWidth={1.75} color={C.slate} style={{ flexShrink: 0 }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div title={file.filename} style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {file.filename}
+        </div>
+        <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+          {fmtSize(file.size_bytes)} · uploaded {fmtUploadedAt(file.uploaded_at)}
+        </div>
+      </div>
+      {confirmDelete ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#FDEAEA', borderRadius: 8, padding: '4px 8px' }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: '#C0321A' }}>Delete?</span>
+          <button onClick={() => setConfirmDelete(false)} disabled={busy}
+            style={{ padding: '3px 8px', borderRadius: 6, border: '1px solid #FDEAEA', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+          <button onClick={() => void remove()} disabled={busy}
+            style={{ padding: '3px 8px', borderRadius: 6, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+            {busy ? '…' : 'Yes'}
+          </button>
+        </div>
+      ) : (
+        <>
+          <button onClick={() => void view()}
+            title={`View ${file.filename}`}
+            style={{ padding: '5px 12px', borderRadius: 6, border: `1px solid ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+            View
+          </button>
+          <button onClick={() => void download()}
+            title={`Download ${file.filename}`}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 12px', borderRadius: 6, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+            <DownloadIcon size={11} strokeWidth={2.25} /> PDF
+          </button>
+          {canDelete && (
+            <button onClick={() => setConfirmDelete(true)}
+              style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+              Delete
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function fmtSize(bytes: number | null): string {
+  if (bytes == null) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function fmtUploadedAt(s: string): string {
+  return new Date(s).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+// ── Chargers card + modal (site-scoped) ───────────────────────────
 
 function daysFromToday(s: string | null): number | null {
   if (!s) return null;
@@ -837,26 +1368,52 @@ function warrantyTone(endDate: string | null): { label: string; bg: string; colo
   return { label: `In warranty · ${d}d left`, bg: '#E4F3E3', color: '#1B512D' };
 }
 
-function ChargersCard({ customerId, chargers, canEdit, canDelete, onChanged, noCustomer }: {
-  customerId: string | null;
-  chargers: CustomerCharger[];
+type ChargerDetailTab = 'details' | 'installation' | 'maintenance' | 'warranty';
+
+function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, canDelete, onChanged }: {
+  siteId: string;
+  siteName: string;
+  chargers: SiteCharger[];
+  brandModels: BrandModel[];
   canEdit: boolean;
   canDelete: boolean;
   onChanged: () => Promise<void>;
-  noCustomer: boolean;
 }) {
   const [adding, setAdding] = useState(false);
-  const [editing, setEditing] = useState<CustomerCharger | null>(null);
+  const [editing, setEditing] = useState<SiteCharger | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [tab, setTab] = useState<ChargerDetailTab>('details');
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  // If the selected charger disappears (deleted / reload) drop the selection.
+  useEffect(() => {
+    if (selectedId && !chargers.find((c) => c.id === selectedId)) setSelectedId(null);
+  }, [chargers, selectedId]);
+
+  // Clear the confirmation when the user switches chargers.
+  useEffect(() => { setConfirmingDelete(false); }, [selectedId]);
+
+  const selected = chargers.find((c) => c.id === selectedId) ?? null;
+
+  const handleDeleteSelected = async () => {
+    if (!selected) return;
+    setDeleting(true);
+    await supabase.from('site_chargers').delete().eq('id', selected.id);
+    await onChanged();
+    setDeleting(false);
+    setConfirmingDelete(false);
+  };
 
   return (
-    <div style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: 16, display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
         <div>
           <div style={{ fontSize: 13, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-            Chargers Purchased {chargers.length > 0 && <span style={{ color: C.slate, marginLeft: 4 }}>· {chargers.length}</span>}
+            Chargers {chargers.length > 0 && <span style={{ color: C.slate, marginLeft: 4 }}>· {chargers.length}</span>}
           </div>
           <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
-            Track units sold to this customer — turn-on date, Form A / D schedules, and warranty windows.
+            Tap a card to open its Details, Installation, LTA Inspection, and Warranty tabs below.
           </div>
         </div>
         {canEdit && (
@@ -867,55 +1424,80 @@ function ChargersCard({ customerId, chargers, canEdit, canDelete, onChanged, noC
         )}
       </div>
 
-      {noCustomer ? (
+      {chargers.length === 0 ? (
         <div style={{ background: C.seasalt, border: '1px dashed #EBEBEB', borderRadius: 10, padding: '14px 16px', fontSize: 12, color: C.slate, textAlign: 'center', lineHeight: 1.6 }}>
-          Link a customer first to manage chargers.
-        </div>
-      ) : chargers.length === 0 ? (
-        <div style={{ background: C.seasalt, border: '1px dashed #EBEBEB', borderRadius: 10, padding: '14px 16px', fontSize: 12, color: C.slate, textAlign: 'center', lineHeight: 1.6 }}>
-          No chargers logged yet.{canEdit && ' Click + Add Charger to start.'}
+          No chargers logged at this site yet.{canEdit && ' Click + Add Charger to start.'}
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {chargers.map((ch) => {
-            const tone = warrantyTone(ch.warranty_end_date);
-            const cellCursor = canEdit ? 'pointer' : 'default';
-            return (
-              <div key={ch.id}
-                onClick={() => { if (canEdit) setEditing(ch); }}
-                style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 8, cursor: cellCursor }}
-                onMouseEnter={(e) => { if (canEdit) e.currentTarget.style.borderColor = '#C8E6C9'; }}
-                onMouseLeave={(e) => (e.currentTarget.style.borderColor = '#EBEBEB')}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{ch.asset_tag}</div>
-                  {ch.brand_model && <div style={{ fontSize: 11, color: C.slate }}>{ch.brand_model}</div>}
-                  <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: tone.bg, color: tone.color, whiteSpace: 'nowrap' }}>
-                    {tone.label}
-                  </span>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
-                  <ChargerMeta label="Turn-on"     value={fmtDate(ch.turn_on_date)} />
-                  <ChargerMeta label="Form A next" value={fmtDate(ch.form_a_next_date)} />
-                  <ChargerMeta label="Form D next" value={fmtDate(ch.form_d_next_date)} />
-                  <ChargerMeta label="Warranty"    value={ch.warranty_start_date || ch.warranty_end_date
-                    ? `${fmtDate(ch.warranty_start_date)} → ${fmtDate(ch.warranty_end_date)}`
-                    : '—'} />
-                </div>
-              </div>
-            );
-          })}
+        <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
+          {chargers.map((ch) => (
+            <ChargerCard
+              key={ch.id}
+              charger={ch}
+              selected={selectedId === ch.id}
+              onClick={() => setSelectedId(selectedId === ch.id ? null : ch.id)}
+            />
+          ))}
         </div>
       )}
 
-      {adding && customerId && (
+      {selected && (
+        <div style={{ border: '1px solid #EBEBEB', borderRadius: 12, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid #EBEBEB', padding: '6px 10px', gap: 4 }}>
+            {(['details', 'installation', 'maintenance', 'warranty'] as ChargerDetailTab[]).map((t) => (
+              <TabButton key={t} active={tab === t} onClick={() => setTab(t)}>
+                {t === 'details' ? 'Details' : t === 'installation' ? 'Installation' : t === 'maintenance' ? 'LTA Inspection' : 'Warranty'}
+              </TabButton>
+            ))}
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+              {canEdit && (
+                <button onClick={() => setEditing(selected)} disabled={confirmingDelete || deleting}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: (confirmingDelete || deleting) ? 'default' : 'pointer', opacity: (confirmingDelete || deleting) ? 0.5 : 1 }}>
+                  <Pencil size={11} strokeWidth={2.25} /> Edit
+                </button>
+              )}
+              {canDelete && !confirmingDelete && (
+                <button onClick={() => setConfirmingDelete(true)}
+                  style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                  Delete
+                </button>
+              )}
+            </div>
+          </div>
+          {confirmingDelete && (
+            <div style={{ background: '#FDEAEA', padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10, borderBottom: '1px solid #EBEBEB' }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#C0321A', flex: 1, lineHeight: 1.5 }}>
+                Delete charger <strong>{selected.asset_tag}</strong>? This action is permanent.
+              </div>
+              <button onClick={() => setConfirmingDelete(false)} disabled={deleting}
+                style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #FDEAEA', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: deleting ? 'default' : 'pointer' }}>
+                Cancel
+              </button>
+              <button onClick={() => void handleDeleteSelected()} disabled={deleting}
+                style={{ padding: '6px 12px', borderRadius: 8, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: deleting ? 'default' : 'pointer' }}>
+                {deleting ? 'Deleting…' : 'Yes, delete'}
+              </button>
+            </div>
+          )}
+          <div style={{ padding: 18 }}>
+            <ChargerTabPanel charger={selected} siteName={siteName} tab={tab} onTabChange={setTab} canEdit={canEdit} canDelete={canDelete} onChargerChanged={onChanged} />
+          </div>
+        </div>
+      )}
+
+      {adding && (
         <ChargerModal
           title="New Charger"
           initial={blankCharger()}
+          siteName={siteName}
+          brandModels={brandModels}
           canDelete={false}
+          canManageBrandModels={canDelete}
           onSave={async (data) => {
-            await supabase.from('customer_chargers').insert({ ...data, customer_id: customerId });
+            await supabase.from('site_chargers').insert({ ...data, site_id: siteId });
             await onChanged();
           }}
+          onBrandModelsChanged={onChanged}
           onClose={() => setAdding(false)}
         />
       )}
@@ -923,6 +1505,7 @@ function ChargersCard({ customerId, chargers, canEdit, canDelete, onChanged, noC
         <ChargerModal
           key={editing.id}
           title="Edit Charger"
+          siteName={siteName}
           initial={{
             asset_tag: editing.asset_tag,
             brand_model: editing.brand_model,
@@ -931,15 +1514,20 @@ function ChargersCard({ customerId, chargers, canEdit, canDelete, onChanged, noC
             form_d_next_date: editing.form_d_next_date,
             warranty_start_date: editing.warranty_start_date,
             warranty_end_date: editing.warranty_end_date,
+            form_1_path: editing.form_1_path,
+            form_1_filename: editing.form_1_filename,
             notes: editing.notes,
           }}
+          brandModels={brandModels}
           canDelete={canDelete}
+          canManageBrandModels={canDelete}
           onSave={async (data) => {
-            await supabase.from('customer_chargers').update(data).eq('id', editing.id);
+            await supabase.from('site_chargers').update(data).eq('id', editing.id);
             await onChanged();
           }}
+          onBrandModelsChanged={onChanged}
           onDelete={async () => {
-            await supabase.from('customer_chargers').delete().eq('id', editing.id);
+            await supabase.from('site_chargers').delete().eq('id', editing.id);
             await onChanged();
           }}
           onClose={() => setEditing(null)}
@@ -949,13 +1537,821 @@ function ChargersCard({ customerId, chargers, canEdit, canDelete, onChanged, noC
   );
 }
 
-function ChargerMeta({ label, value }: { label: string; value: string }) {
+function ChargerCard({ charger, selected, onClick }: { charger: SiteCharger; selected: boolean; onClick: () => void }) {
+  const tone = warrantyTone(charger.warranty_end_date);
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-      <div style={{ fontSize: 9, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
-      <div style={{ fontSize: 12, color: value === '—' ? C.slate : '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</div>
+    <div
+      onClick={onClick}
+      style={{
+        background: selected ? C.honeydew : C.white,
+        border: `${selected ? 2 : 1}px solid ${selected ? C.green : '#EBEBEB'}`,
+        borderRadius: 12,
+        padding: '12px 14px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        cursor: 'pointer',
+        minWidth: 200,
+        maxWidth: 240,
+        flexShrink: 0,
+        transition: 'background .15s, border-color .15s',
+      }}
+      onMouseEnter={(e) => { if (!selected) e.currentTarget.style.borderColor = '#C8E6C9'; }}
+      onMouseLeave={(e) => { if (!selected) e.currentTarget.style.borderColor = '#EBEBEB'; }}>
+      <div style={{ fontSize: 14, fontWeight: 700, color: selected ? C.green : '#1a1a1a', letterSpacing: '-0.01em' }}>
+        {charger.asset_tag}
+      </div>
+      {charger.brand_model ? (
+        <div style={{ fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{charger.brand_model}</div>
+      ) : (
+        <div style={{ fontSize: 11, color: C.slate, fontStyle: 'italic' }}>No model</div>
+      )}
+      <span style={{ alignSelf: 'flex-start', fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: tone.bg, color: tone.color, whiteSpace: 'nowrap' }}>
+        {tone.label}
+      </span>
     </div>
   );
+}
+
+function ChargerTabPanel({ charger, siteName, tab, onTabChange, canEdit, canDelete, onChargerChanged }: {
+  charger: SiteCharger;
+  siteName: string;
+  tab: ChargerDetailTab;
+  onTabChange: (t: ChargerDetailTab) => void;
+  canEdit: boolean;
+  canDelete: boolean;
+  onChargerChanged: () => Promise<void>;
+}) {
+  if (tab === 'details')     return <ChargerDetailsPanel charger={charger} siteName={siteName} onTabChange={onTabChange} />;
+  if (tab === 'maintenance') return <LtaInspectionPanel  charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} onChargerChanged={onChargerChanged} />;
+  const hint =
+    tab === 'installation' ? 'Commissioning checklist + photos will live here once designed.' :
+                             'Warranty start / end dates, supplier T&Cs, and claims history will live here.';
+  const title = tab === 'installation' ? 'Installation' : 'Warranty';
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5 }}>
+        Showing <strong style={{ color: '#1a1a1a' }}>{title}</strong> for <strong style={{ color: '#1a1a1a' }}>{charger.asset_tag}</strong>.
+      </div>
+      <div style={{ background: C.seasalt, border: '1px dashed #EBEBEB', borderRadius: 10, padding: '20px 16px', textAlign: 'center', color: C.slate, fontSize: 12, lineHeight: 1.6 }}>
+        {hint}
+      </div>
+    </div>
+  );
+}
+
+function ChargerDetailsPanel({ charger, siteName, onTabChange }: {
+  charger: SiteCharger;
+  siteName: string;
+  onTabChange: (t: ChargerDetailTab) => void;
+}) {
+  const [ltaRecords, setLtaRecords] = useState<LtaRecord[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const { data } = await supabase.from('charger_lta_records')
+        .select('*')
+        .eq('charger_id', charger.id)
+        .order('performed_at', { ascending: false });
+      if (!cancelled) setLtaRecords((data ?? []) as LtaRecord[]);
+    })();
+    return () => { cancelled = true; };
+  }, [charger.id]);
+
+  const form1DisplayName = computeForm1Filename(charger.asset_tag, charger.turn_on_date, siteName);
+
+  const openForm1 = async (mode: 'view' | 'download') => {
+    if (!charger.form_1_path) return;
+    const { data } = await supabase.storage.from(CHARGER_FORMS_BUCKET)
+      .createSignedUrl(charger.form_1_path, 60, mode === 'download' ? { download: form1DisplayName } : undefined);
+    if (data?.signedUrl) window.open(data.signedUrl, mode === 'download' ? '_self' : '_blank');
+  };
+
+  const openLtaRecord = async (record: LtaRecord) => {
+    const downloadName = computeLtaFilename(record.form_type, charger.asset_tag, record.performed_at, siteName);
+    const { data } = await supabase.storage.from(CHARGER_FORMS_BUCKET)
+      .createSignedUrl(record.storage_path, 60, { download: downloadName });
+    if (data?.signedUrl) window.open(data.signedUrl, '_self');
+  };
+
+  const tone = warrantyTone(charger.warranty_end_date);
+  const formADate = nextCycleDate(charger.turn_on_date, 6);
+  const formDDate = nextCycleDate(charger.turn_on_date, 12);
+  const formA = daysFromToday(formADate);
+  const formD = daysFromToday(formDDate);
+  const latestA = ltaRecords.find((r) => r.form_type === 'A') ?? null;
+  const latestD = ltaRecords.find((r) => r.form_type === 'D') ?? null;
+  const doneA = isInspectedWithin(latestA, 6);
+  const doneD = isInspectedWithin(latestD, 12);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <ChargerDetailRow label="Serial Number" value={charger.asset_tag} />
+        <ChargerDetailRow label="Brand & Model" value={charger.brand_model ?? '—'} muted={!charger.brand_model} />
+      </div>
+
+      <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Turn-on &amp; Form 1</div>
+          <div style={{ fontSize: 11, color: C.slate }}>Installation compliance form</div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, alignItems: 'stretch' }}>
+          <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '10px 12px' }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Turn-on Date</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: charger.turn_on_date ? C.green : C.slate, marginTop: 4, letterSpacing: '-0.01em' }}>
+              {fmtDate(charger.turn_on_date) ?? 'Not recorded'}
+            </div>
+          </div>
+          <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Form 1 PDF</div>
+            {charger.form_1_path ? (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                  <FileText size={14} strokeWidth={1.8} color={C.green} />
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {form1DisplayName}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button onClick={() => void openForm1('view')}
+                    style={{ flex: 1, padding: '5px 8px', borderRadius: 6, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                    View
+                  </button>
+                  <button onClick={() => void openForm1('download')}
+                    style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '5px 8px', borderRadius: 6, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                    <DownloadIcon size={11} strokeWidth={2.25} /> Download
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div style={{ fontSize: 12, color: C.slate, fontStyle: 'italic' }}>No Form 1 attached yet. Edit the charger to upload one.</div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>LTA Inspection Records</div>
+          <button onClick={() => onTabChange('maintenance')}
+            style={{ padding: 0, border: 'none', background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+            View LTA inspection →
+          </button>
+        </div>
+        <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {(() => {
+            const years = charger.lta_contract_years ?? 0;
+            const start = charger.lta_contract_start_date ?? charger.turn_on_date;
+            const endDate = years > 0 && start ? addYears(start, years) : null;
+            const daysLeft = endDate ? daysFromToday(endDate) : null;
+            const active = years > 0 && (daysLeft === null || daysLeft >= 0);
+            if (active) {
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: '#E4F3E3', color: '#1B512D', letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                    Contract active · {years} yr{years === 1 ? '' : 's'}
+                  </span>
+                  <span style={{ fontSize: 12, color: C.slate }}>
+                    {endDate ? <>Ends <strong style={{ color: '#1a1a1a' }}>{fmtDate(endDate)}</strong>{daysLeft !== null && <> · {relDays(daysLeft)} left</>}.</> : 'Contract active.'}
+                  </span>
+                </div>
+              );
+            }
+            return (
+              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: '#FFF0E0', color: '#B45309', letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                  No contract
+                </span>
+                <span style={{ fontSize: 12, color: C.slate }}>Use the cards below to call &amp; pitch an LTA inspection contract.</span>
+              </div>
+            );
+          })()}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <FormStatusCard formType="A" period="6-month"  latest={latestA} latestDisplayName={latestA ? computeLtaFilename('A', charger.asset_tag, latestA.performed_at, siteName) : null} done={doneA} nextDate={formADate} nextDays={formA} onDownload={() => void openLtaRecord(latestA!)} />
+            <FormStatusCard formType="D" period="12-month" latest={latestD} latestDisplayName={latestD ? computeLtaFilename('D', charger.asset_tag, latestD.performed_at, siteName) : null} done={doneD} nextDate={formDDate} nextDays={formD} onDownload={() => void openLtaRecord(latestD!)} />
+          </div>
+        </div>
+      </div>
+
+      <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Warranty Records</div>
+          <button onClick={() => onTabChange('warranty')}
+            style={{ padding: 0, border: 'none', background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+            View warranty →
+          </button>
+        </div>
+        <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <span style={{ alignSelf: 'flex-start', fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: tone.bg, color: tone.color, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+            {tone.label}
+          </span>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <ChargerDetailRow label="Start" value={fmtDate(charger.warranty_start_date) ?? '—'} muted={!charger.warranty_start_date} />
+            <ChargerDetailRow label="End"   value={fmtDate(charger.warranty_end_date)   ?? '—'} muted={!charger.warranty_end_date} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── LTA Inspection panel ─────────────────────────────────────────
+
+type LtaFormType = 'A' | 'D';
+
+interface LtaRecord {
+  id: string;
+  charger_id: string;
+  form_type: LtaFormType;
+  performed_at: string;
+  storage_path: string;
+  filename: string;
+  notes: string | null;
+  created_at: string;
+}
+
+function LtaInspectionPanel({ charger, siteName, canEdit, canDelete, onChargerChanged }: {
+  charger: SiteCharger;
+  siteName: string;
+  canEdit: boolean;
+  canDelete: boolean;
+  onChargerChanged: () => Promise<void>;
+}) {
+  const [records, setRecords] = useState<LtaRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = async () => {
+    const { data } = await supabase.from('charger_lta_records')
+      .select('*')
+      .eq('charger_id', charger.id)
+      .order('performed_at', { ascending: false });
+    setRecords((data ?? []) as LtaRecord[]);
+    setLoading(false);
+  };
+
+  useEffect(() => { setLoading(true); void refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [charger.id]);
+
+  const formA = records.filter((r) => r.form_type === 'A');
+  const formD = records.filter((r) => r.form_type === 'D');
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5 }}>
+        Upload completed Form A (6-month) and Form D (12-month) inspection PDFs for <strong style={{ color: '#1a1a1a' }}>{charger.asset_tag}</strong>. Each upload is dated for when the inspection was performed.
+      </div>
+      <ContractCard charger={charger} canEdit={canEdit} onChargerChanged={onChargerChanged} />
+      <LtaSection formType="A" title="Form A · 6-month inspection"  records={formA} charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} loading={loading} onChanged={refresh} />
+      <LtaSection formType="D" title="Form D · 12-month inspection" records={formD} charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} loading={loading} onChanged={refresh} />
+    </div>
+  );
+}
+
+function ContractCard({ charger, canEdit, onChargerChanged }: {
+  charger: SiteCharger;
+  canEdit: boolean;
+  onChargerChanged: () => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [years, setYears] = useState<number | null>(charger.lta_contract_years);
+  const [startDate, setStartDate] = useState<string | null>(charger.lta_contract_start_date);
+  const [active, setActive] = useState<boolean>(!!charger.lta_contract_years && charger.lta_contract_years > 0);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setYears(charger.lta_contract_years);
+    setStartDate(charger.lta_contract_start_date);
+    setActive(!!charger.lta_contract_years && charger.lta_contract_years > 0);
+  }, [charger.id, charger.lta_contract_years, charger.lta_contract_start_date]);
+
+  const storedYears = charger.lta_contract_years ?? 0;
+  const storedStart = charger.lta_contract_start_date ?? charger.turn_on_date;
+  const endDate     = storedYears > 0 && storedStart ? addYears(storedStart, storedYears) : null;
+  const daysLeft    = endDate ? daysFromToday(endDate) : null;
+  const isActive    = storedYears > 0 && (daysLeft === null || daysLeft >= 0);
+  const isExpired   = storedYears > 0 && daysLeft !== null && daysLeft < 0;
+
+  // Auto-clear an expired contract so the UI cleanly returns to "No contract".
+  // Runs once per charger; after the clear, the refreshed charger has no years and the effect won't re-fire.
+  const autoClearedRef = useRef(false);
+  useEffect(() => {
+    autoClearedRef.current = false;
+  }, [charger.id]);
+  useEffect(() => {
+    if (autoClearedRef.current) return;
+    if (!isExpired) return;
+    autoClearedRef.current = true;
+    void (async () => {
+      const { error: err } = await supabase.from('site_chargers').update({
+        lta_contract_years: null,
+        lta_contract_start_date: null,
+        has_maintenance_package: false,
+      }).eq('id', charger.id);
+      if (!err) await onChargerChanged();
+    })();
+  }, [charger.id, isExpired, onChargerChanged]);
+
+  const onToggleActive = (next: boolean) => {
+    setActive(next);
+    if (next) {
+      if (!years) setYears(3);
+      if (!startDate) setStartDate(new Date().toISOString().slice(0, 10));
+    }
+  };
+
+  const startEdit = () => {
+    setYears(charger.lta_contract_years);
+    setStartDate(charger.lta_contract_start_date);
+    setActive(!!charger.lta_contract_years && charger.lta_contract_years > 0);
+    setError(null);
+    setEditing(true);
+  };
+  const cancelEdit = () => {
+    setEditing(false);
+    setError(null);
+  };
+
+  const handleSave = async () => {
+    setError(null);
+    const finalYears = active && years && years > 0 ? Math.max(1, Math.min(20, Math.floor(years))) : null;
+    const finalStart = finalYears ? (startDate || new Date().toISOString().slice(0, 10)) : null;
+    setSaving(true);
+    const { error: err } = await supabase.from('site_chargers').update({
+      lta_contract_years: finalYears,
+      lta_contract_start_date: finalStart,
+      has_maintenance_package: finalYears !== null,
+    }).eq('id', charger.id);
+    setSaving(false);
+    if (err) { setError(err.message); return; }
+    setEditing(false);
+    await onChargerChanged();
+  };
+
+  return (
+    <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+          LTA Inspection Contract
+        </div>
+        {canEdit && !editing && (
+          <button onClick={startEdit}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+            <Pencil size={11} strokeWidth={2.25} /> Edit
+          </button>
+        )}
+      </div>
+
+      {editing ? (
+        <>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+            <input type="checkbox" checked={active} onChange={(e) => onToggleActive(e.target.checked)}
+              style={{ width: 16, height: 16, accentColor: C.green, cursor: 'pointer' }} />
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a' }}>LTA inspection contract is active</div>
+              <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+                1 year of contract covers <strong>2 Form A</strong> inspections + <strong>1 Form D</strong> inspection.
+              </div>
+            </div>
+          </label>
+          {active && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignItems: 'start' }}>
+              <div>
+                <FieldLabel>Start Date</FieldLabel>
+                <input type="date" value={startDate ?? ''} onChange={(e) => setStartDate(e.target.value || null)}
+                  style={{ ...inputStyle(), background: C.white }} />
+              </div>
+              <div>
+                <FieldLabel>Contract Years</FieldLabel>
+                <input type="number" min={1} max={20} step={1}
+                  value={years ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === '') { setYears(null); return; }
+                    const n = parseInt(v, 10);
+                    setYears(isNaN(n) ? null : Math.max(1, Math.min(20, n)));
+                  }}
+                  style={{ ...inputStyle(), background: C.white }} />
+              </div>
+              <ReadOnlyField
+                label="Contract ends (auto)"
+                value={startDate && years && years > 0 ? fmtDate(addYears(startDate, years)) : null}
+                placeholder={startDate ? 'Enter contract years' : 'Pick a start date'} />
+            </div>
+          )}
+          {error && (
+            <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 8, padding: '6px 10px', fontSize: 11, fontWeight: 600 }}>{error}</div>
+          )}
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button onClick={cancelEdit} disabled={saving}
+              style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: saving ? 'default' : 'pointer' }}>
+              Cancel
+            </button>
+            <button onClick={() => void handleSave()} disabled={saving || (active && (!years || years <= 0))}
+              style={{ padding: '7px 16px', borderRadius: 8, border: 'none', background: (saving || (active && (!years || years <= 0))) ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: (saving || (active && (!years || years <= 0))) ? 'default' : 'pointer' }}>
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </>
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+          {isActive ? (
+            <>
+              <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: '#E4F3E3', color: '#1B512D', letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                Active · {storedYears} yr{storedYears === 1 ? '' : 's'}
+              </span>
+              <span style={{ fontSize: 12, color: C.slate }}>
+                {endDate ? <>Ends <strong style={{ color: '#1a1a1a' }}>{fmtDate(endDate)}</strong>{daysLeft !== null && <> · {relDays(daysLeft)} left</>}.</> : 'Contract active.'}
+              </span>
+            </>
+          ) : (
+            <>
+              <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: '#FFF0E0', color: '#B45309', letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                No contract
+              </span>
+              <span style={{ fontSize: 12, color: C.slate }}>
+                {canEdit ? 'Click Edit to mark this charger as covered by an LTA inspection contract.' : 'No active LTA inspection contract.'}
+              </span>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LtaSection({ formType, title, records, charger, siteName, canEdit, canDelete, loading, onChanged }: {
+  formType: LtaFormType;
+  title: string;
+  records: LtaRecord[];
+  charger: SiteCharger;
+  siteName: string;
+  canEdit: boolean;
+  canDelete: boolean;
+  loading: boolean;
+  onChanged: () => Promise<void>;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [date, setDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const resetForm = () => {
+    setAdding(false);
+    setPendingFile(null);
+    setDate(new Date().toISOString().slice(0, 10));
+    setError(null);
+  };
+
+  const handleFileSelected = (file: File) => {
+    setError(null);
+    if (file.type && file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      setError('Upload must be a PDF.');
+      return;
+    }
+    setPendingFile(file);
+  };
+
+  const handleSubmit = async () => {
+    setError(null);
+    if (!pendingFile) { setError('Pick a PDF file first.'); return; }
+    if (!date)        { setError('Pick the inspection date first.'); return; }
+    setBusy(true);
+    const friendly = computeLtaFilename(formType, charger.asset_tag, date, siteName);
+    const path = `lta/${charger.id}/${crypto.randomUUID()}/${pathSafe(friendly)}`;
+    const up = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(path, pendingFile, { contentType: pendingFile.type || 'application/pdf' });
+    if (up.error) { setBusy(false); setError(up.error.message); return; }
+    const ins = await supabase.from('charger_lta_records').insert({
+      charger_id: charger.id,
+      form_type:  formType,
+      performed_at: date,
+      storage_path: path,
+      filename: computeLtaFilename(formType, charger.asset_tag, date, siteName),
+    });
+    setBusy(false);
+    if (ins.error) {
+      void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([path]);
+      setError(ins.error.message);
+      return;
+    }
+    resetForm();
+    await onChanged();
+  };
+
+  const fmtSize = (n: number): string => {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const canSubmit = !!pendingFile && !!date && !busy;
+
+  return (
+    <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+          {title} {records.length > 0 && <span style={{ color: C.slate, marginLeft: 4 }}>· {records.length}</span>}
+        </div>
+        {canEdit && !adding && (
+          <button onClick={() => setAdding(true)}
+            style={{ padding: '6px 12px', borderRadius: 8, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+            + Add Form {formType}
+          </button>
+        )}
+      </div>
+
+      {adding && (
+        <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '180px 1fr', gap: 10, alignItems: 'end' }}>
+            <div>
+              <FieldLabel>Performed on</FieldLabel>
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} disabled={busy} style={{ ...inputStyle(), background: C.white }} />
+            </div>
+            <div>
+              <FieldLabel>PDF file</FieldLabel>
+              {pendingFile ? (
+                <div style={{ background: C.seasalt, border: '1px solid #EBEBEB', borderRadius: 10, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <FileText size={16} strokeWidth={1.8} color={C.green} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pendingFile.name}</div>
+                    <div style={{ fontSize: 10, color: C.slate, marginTop: 1 }}>{fmtSize(pendingFile.size)} · ready to upload</div>
+                  </div>
+                  <button type="button" onClick={() => inputRef.current?.click()} disabled={busy}
+                    style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: busy ? 'default' : 'pointer' }}>
+                    Change
+                  </button>
+                </div>
+              ) : (
+                <button type="button" onClick={() => inputRef.current?.click()} disabled={busy}
+                  style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 14px', borderRadius: 10, border: '1px dashed #C8E6C9', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', width: '100%' }}>
+                  <Upload size={14} strokeWidth={2} /> Choose PDF
+                </button>
+              )}
+            </div>
+          </div>
+          <input ref={inputRef} type="file" accept="application/pdf" style={{ display: 'none' }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleFileSelected(file);
+              e.target.value = '';
+            }} />
+          {error && (
+            <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 8, padding: '6px 10px', fontSize: 11, fontWeight: 600 }}>{error}</div>
+          )}
+          {pendingFile && !busy && !error && (
+            <div style={{ background: C.honeydew, color: '#1B512D', borderRadius: 8, padding: '6px 10px', fontSize: 11, fontWeight: 600, lineHeight: 1.5 }}>
+              Review the file and inspection date above, then click <strong>Submit Form {formType}</strong> to save this record.
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button onClick={resetForm} disabled={busy}
+              style={{ padding: '8px 16px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: busy ? 'default' : 'pointer' }}>
+              Cancel
+            </button>
+            <button onClick={() => void handleSubmit()} disabled={!canSubmit}
+              style={{ padding: '8px 18px', borderRadius: 10, border: 'none', background: canSubmit ? C.green : '#ccc', color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: canSubmit ? 'pointer' : 'default' }}>
+              {busy ? 'Uploading…' : `Submit Form ${formType}`}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div style={{ fontSize: 12, color: C.slate, padding: '8px 4px' }}>Loading…</div>
+      ) : records.length === 0 ? (
+        <div style={{ background: C.white, border: '1px dashed #EBEBEB', borderRadius: 10, padding: '14px 16px', fontSize: 12, color: C.slate, textAlign: 'center' }}>
+          No Form {formType} records yet.{canEdit && ' Click + Add Form ' + formType + ' to upload one.'}
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {records.map((r) => (
+            <LtaRecordRow key={r.id} record={r} displayName={computeLtaFilename(r.form_type, charger.asset_tag, r.performed_at, siteName)} canDelete={canDelete} onChanged={onChanged} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LtaRecordRow({ record, displayName, canDelete, onChanged }: {
+  record: LtaRecord;
+  displayName: string;
+  canDelete: boolean;
+  onChanged: () => Promise<void>;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const open = async (mode: 'view' | 'download') => {
+    const { data } = await supabase.storage.from(CHARGER_FORMS_BUCKET)
+      .createSignedUrl(record.storage_path, 60, mode === 'download' ? { download: displayName } : undefined);
+    if (data?.signedUrl) window.open(data.signedUrl, mode === 'download' ? '_self' : '_blank');
+  };
+
+  const handleDelete = async () => {
+    setDeleting(true);
+    void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([record.storage_path]);
+    await supabase.from('charger_lta_records').delete().eq('id', record.id);
+    setDeleting(false);
+    setConfirming(false);
+    await onChanged();
+  };
+
+  if (confirming) {
+    return (
+      <div style={{ background: '#FDEAEA', borderRadius: 10, padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#C0321A', flex: 1, lineHeight: 1.5 }}>
+          Delete this Form {record.form_type} record from {fmtDate(record.performed_at)}?
+        </div>
+        <button onClick={() => setConfirming(false)} disabled={deleting}
+          style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #FDEAEA', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: deleting ? 'default' : 'pointer' }}>
+          Cancel
+        </button>
+        <button onClick={() => void handleDelete()} disabled={deleting}
+          style={{ padding: '5px 10px', borderRadius: 6, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: deleting ? 'default' : 'pointer' }}>
+          {deleting ? 'Deleting…' : 'Yes, delete'}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10 }}>
+      <FileText size={16} strokeWidth={1.8} color={C.green} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', letterSpacing: '-0.01em' }}>
+          {fmtDate(record.performed_at)}
+        </div>
+        <div style={{ fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</div>
+      </div>
+      <button onClick={() => void open('view')}
+        style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+        View
+      </button>
+      <button onClick={() => void open('download')}
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+        <DownloadIcon size={11} strokeWidth={2.25} /> Download
+      </button>
+      {canDelete && (
+        <button onClick={() => setConfirming(true)}
+          style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+          Delete
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ReadOnlyField({ label, value, placeholder }: { label: string; value: string | null; placeholder: string }) {
+  const has = !!value;
+  return (
+    <div>
+      <FieldLabel>{label}</FieldLabel>
+      <div style={{ ...inputStyle(), background: '#F3F3F3', color: has ? '#1a1a1a' : C.slate, fontStyle: has ? 'normal' : 'italic', display: 'flex', alignItems: 'center' }}>
+        {has ? value : placeholder}
+      </div>
+    </div>
+  );
+}
+
+function ChargerDetailRow({ label, value, muted }: { label: string; value: string; muted?: boolean }) {
+  return (
+    <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '10px 12px' }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
+      <div style={{ fontSize: 14, fontWeight: 700, color: muted ? C.slate : '#1a1a1a', marginTop: 4, letterSpacing: '-0.01em', fontStyle: muted ? 'italic' : 'normal' }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function isInspectedWithin(record: LtaRecord | null, months: number): boolean {
+  if (!record) return false;
+  const cutoff = new Date();
+  cutoff.setHours(0, 0, 0, 0);
+  cutoff.setMonth(cutoff.getMonth() - months);
+  const performed = new Date(record.performed_at + 'T00:00:00');
+  return !isNaN(performed.getTime()) && performed >= cutoff;
+}
+
+function FormStatusCard({ formType, period, latest, latestDisplayName, done, nextDate, nextDays, onDownload }: {
+  formType: LtaFormType;
+  period: string;
+  latest: LtaRecord | null;
+  latestDisplayName: string | null;
+  done: boolean;
+  nextDate: string | null;
+  nextDays: number | null;
+  onDownload: () => void;
+}) {
+  if (done && latest) {
+    return (
+      <div style={{ background: C.seasalt, border: '1px solid #EBEBEB', borderRadius: 8, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: '#E4F3E3', color: '#1B512D', letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+            Done
+          </span>
+          <span style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Form {formType} · {period}</span>
+        </div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', letterSpacing: '-0.01em' }}>
+          Inspected on {fmtDate(latest.performed_at)}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <FileText size={12} strokeWidth={1.8} color={C.slate} />
+          <div style={{ fontSize: 11, color: C.slate, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{latestDisplayName ?? latest.filename}</div>
+          <button onClick={onDownload} title="Download PDF"
+            style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '4px 8px', borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+            <DownloadIcon size={12} strokeWidth={2.25} />
+          </button>
+        </div>
+        {nextDate && (
+          <div style={{ borderTop: '1px solid #EBEBEB', marginTop: 4, paddingTop: 6, display: 'flex', alignItems: 'baseline', gap: 6 }}>
+            <span style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Next LTA Form {formType} Due</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#1a1a1a' }}>{fmtDate(nextDate)}</span>
+            {nextDays !== null && <span style={{ fontSize: 11, color: C.slate }}>· {relDays(nextDays)}</span>}
+          </div>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div style={{ background: C.seasalt, border: '1px solid #EBEBEB', borderRadius: 8, padding: '10px 12px' }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+        Next LTA Form {formType} Due
+      </div>
+      <div style={{ fontSize: 13, fontWeight: 700, color: nextDate ? '#1a1a1a' : C.slate, marginTop: 6, fontStyle: nextDate ? 'normal' : 'italic' }}>
+        {fmtDate(nextDate) ?? 'Not scheduled'}
+      </div>
+      {nextDays !== null && (
+        <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>{relDays(nextDays)}</div>
+      )}
+    </div>
+  );
+}
+
+function fmtDate(s: string | null): string | null {
+  if (!s) return null;
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s;
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function relDays(days: number): string {
+  if (days < 0) return `${Math.abs(days)}d overdue`;
+  if (days === 0) return 'Due today';
+  if (days <= 30) return `Due in ${days}d`;
+  return `In ${days}d`;
+}
+
+function computeForm1Filename(assetTag: string | null | undefined, turnOnDate: string | null | undefined, siteName: string | null | undefined): string {
+  return composeChargerFilename('Form 1', assetTag, turnOnDate, siteName);
+}
+
+function computeLtaFilename(formType: 'A' | 'D', assetTag: string | null | undefined, performedAt: string | null | undefined, siteName: string | null | undefined): string {
+  return composeChargerFilename(`Form ${formType}`, assetTag, performedAt, siteName);
+}
+
+function composeChargerFilename(prefix: string, assetTag: string | null | undefined, date: string | null | undefined, siteName: string | null | undefined): string {
+  const parts: string[] = [prefix];
+  const tag = (assetTag ?? '').trim();
+  if (tag) parts.push(tag);
+  const dateLabel = fmtDate(date ?? null);
+  if (dateLabel) parts.push(dateLabel);
+  const site = (siteName ?? '').trim();
+  if (site) parts.push(site);
+  return parts.join(' - ') + '.pdf';
+}
+
+function pathSafe(name: string): string {
+  return name.replace(/[^a-zA-Z0-9 \-_.]/g, '_').replace(/\s+/g, ' ').trim();
+}
+
+function nextCycleDate(turnOn: string | null, intervalMonths: number): string | null {
+  if (!turnOn) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const next = new Date(turnOn + 'T00:00:00');
+  if (isNaN(next.getTime())) return null;
+  while (next < today) next.setMonth(next.getMonth() + intervalMonths);
+  return next.toISOString().slice(0, 10);
+}
+
+function addYears(dateStr: string, years: number): string {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setFullYear(d.getFullYear() + years);
+  return d.toISOString().slice(0, 10);
+}
+
+function deriveWarrantyYears(start: string | null, end: string | null): number | null {
+  if (!start || !end) return null;
+  const s = new Date(start + 'T00:00:00').getTime();
+  const e = new Date(end   + 'T00:00:00').getTime();
+  if (isNaN(s) || isNaN(e) || e < s) return null;
+  const years = Math.round((e - s) / (1000 * 60 * 60 * 24 * 365.25));
+  return years > 0 ? years : null;
 }
 
 interface ChargerFormData {
@@ -966,6 +2362,8 @@ interface ChargerFormData {
   form_d_next_date: string | null;
   warranty_start_date: string | null;
   warranty_end_date: string | null;
+  form_1_path: string | null;
+  form_1_filename: string | null;
   notes: string | null;
 }
 
@@ -973,37 +2371,96 @@ function blankCharger(): ChargerFormData {
   return {
     asset_tag: '', brand_model: null,
     turn_on_date: null, form_a_next_date: null, form_d_next_date: null,
-    warranty_start_date: null, warranty_end_date: null, notes: null,
+    warranty_start_date: null, warranty_end_date: null,
+    form_1_path: null, form_1_filename: null,
+    notes: null,
   };
 }
 
-function ChargerModal({ title, initial, canDelete, onSave, onDelete, onClose }: {
+function ChargerModal({ title, initial, siteName, brandModels, canDelete, canManageBrandModels, onSave, onDelete, onBrandModelsChanged, onClose }: {
   title: string;
   initial: ChargerFormData;
+  siteName: string;
+  brandModels: BrandModel[];
   canDelete: boolean;
+  canManageBrandModels: boolean;
   onSave: (data: ChargerFormData) => Promise<void>;
   onDelete?: () => Promise<void>;
+  onBrandModelsChanged: () => Promise<void>;
   onClose: () => void;
 }) {
   const [form, setForm] = useState<ChargerFormData>(initial);
+  const [warrantyYears, setWarrantyYears] = useState<number | null>(
+    deriveWarrantyYears(initial.warranty_start_date, initial.warranty_end_date),
+  );
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
+  const [form1Busy, setForm1Busy] = useState(false);
+  const [form1Error, setForm1Error] = useState<string | null>(null);
+  const form1InputRef = useRef<HTMLInputElement>(null);
+
+  const handleForm1Upload = async (file: File) => {
+    setForm1Error(null);
+    if (file.type && file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      setForm1Error('Form 1 must be a PDF.');
+      return;
+    }
+    setForm1Busy(true);
+    const friendly = computeForm1Filename(form.asset_tag, form.turn_on_date, siteName);
+    const path = `form-1/${crypto.randomUUID()}/${pathSafe(friendly)}`;
+    const { error } = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(path, file, { contentType: file.type || 'application/pdf' });
+    setForm1Busy(false);
+    if (error) { setForm1Error(error.message); return; }
+    if (form.form_1_path) {
+      void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([form.form_1_path]);
+    }
+    setForm((f) => ({ ...f, form_1_path: path, form_1_filename: computeForm1Filename(f.asset_tag, f.turn_on_date, siteName) }));
+  };
+
+  const form1DisplayName = computeForm1Filename(form.asset_tag, form.turn_on_date, siteName);
+
+  const openForm1 = async (mode: 'view' | 'download') => {
+    if (!form.form_1_path) return;
+    const { data } = await supabase.storage.from(CHARGER_FORMS_BUCKET)
+      .createSignedUrl(form.form_1_path, 60, mode === 'download' ? { download: form1DisplayName } : undefined);
+    if (data?.signedUrl) window.open(data.signedUrl, mode === 'download' ? '_self' : '_blank');
+  };
+
+  const removeForm1 = async () => {
+    if (form.form_1_path) {
+      void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([form.form_1_path]);
+    }
+    setForm((f) => ({ ...f, form_1_path: null, form_1_filename: null }));
+  };
+
+  // If the existing brand_model isn't in the catalogue yet (legacy data),
+  // include it as a selectable option so editing doesn't lose the value.
+  const allLabels = (() => {
+    const set = new Set(brandModels.map((b) => b.label));
+    if (form.brand_model && !set.has(form.brand_model)) set.add(form.brand_model);
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  })();
 
   const set = <K extends keyof ChargerFormData>(k: K, v: ChargerFormData[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
 
   const handleSave = async () => {
     setSaving(true);
+    const turnOn = form.turn_on_date || null;
+    const yrs    = warrantyYears && warrantyYears > 0 ? warrantyYears : null;
     await onSave({
-      asset_tag:           form.asset_tag.trim(),
-      brand_model:         form.brand_model && form.brand_model.trim() ? form.brand_model.trim() : null,
-      turn_on_date:        form.turn_on_date || null,
-      form_a_next_date:    form.form_a_next_date || null,
-      form_d_next_date:    form.form_d_next_date || null,
-      warranty_start_date: form.warranty_start_date || null,
-      warranty_end_date:   form.warranty_end_date || null,
-      notes:               form.notes && form.notes.trim() ? form.notes.trim() : null,
+      asset_tag:               form.asset_tag.trim(),
+      brand_model:             form.brand_model && form.brand_model.trim() ? form.brand_model.trim() : null,
+      turn_on_date:            turnOn,
+      form_a_next_date:        nextCycleDate(turnOn, 6),
+      form_d_next_date:        nextCycleDate(turnOn, 12),
+      warranty_start_date:     turnOn ? turnOn : null,
+      warranty_end_date:       turnOn && yrs  ? addYears(turnOn, yrs) : null,
+      form_1_path:             form.form_1_path || null,
+      form_1_filename:         form.form_1_path ? computeForm1Filename(form.asset_tag, form.turn_on_date, siteName) : null,
+      notes:                   form.notes && form.notes.trim() ? form.notes.trim() : null,
     });
     setSaving(false);
     onClose();
@@ -1028,45 +2485,120 @@ function ChargerModal({ title, initial, canDelete, onSave, onDelete, onClose }: 
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <div>
-            <FieldLabel>Asset Tag / Serial</FieldLabel>
+            <FieldLabel>Serial Number</FieldLabel>
             <input value={form.asset_tag} onChange={(e) => set('asset_tag', e.target.value)} placeholder="CHG-001" style={inputStyle()} autoFocus />
           </div>
           <div>
-            <FieldLabel>Brand & Model</FieldLabel>
-            <input value={form.brand_model ?? ''} onChange={(e) => set('brand_model', e.target.value || null)} placeholder="ABB Terra 54 CJG" style={inputStyle()} />
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+              <FieldLabel>Brand & Model</FieldLabel>
+              {canManageBrandModels && (
+                <button type="button" onClick={() => setManageOpen(true)}
+                  style={{ marginBottom: 6, padding: 0, border: 'none', background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                  Manage list
+                </button>
+              )}
+            </div>
+            <select value={form.brand_model ?? ''} onChange={(e) => set('brand_model', e.target.value || null)}
+              style={{ ...inputStyle(), background: C.white, cursor: 'pointer' }}>
+              <option value="">— None —</option>
+              {allLabels.map((label) => (
+                <option key={label} value={label}>{label}</option>
+              ))}
+            </select>
+            {allLabels.length === 0 && (
+              <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
+                {canManageBrandModels
+                  ? <>No models yet. Click <strong>Manage list</strong> above to add one.</>
+                  : 'No models available. Ask a Department Admin to add some.'}
+              </div>
+            )}
           </div>
         </div>
 
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Service Dates</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-            <div>
-              <FieldLabel>Turn-on</FieldLabel>
-              <input type="date" value={form.turn_on_date ?? ''} onChange={(e) => set('turn_on_date', e.target.value || null)} style={{ ...inputStyle(), background: C.white }} />
+          <div>
+            <FieldLabel>Turn-on Date</FieldLabel>
+            <input type="date" value={form.turn_on_date ?? ''} onChange={(e) => set('turn_on_date', e.target.value || null)} style={{ ...inputStyle(), background: C.white }} />
+            <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
+              Form A repeats every <strong>6 months</strong>, Form D every <strong>12 months</strong> from turn-on. The system always shows the <strong>next upcoming</strong> date so cold calls stay on track.
             </div>
-            <div>
-              <FieldLabel>Form A Next</FieldLabel>
-              <input type="date" value={form.form_a_next_date ?? ''} onChange={(e) => set('form_a_next_date', e.target.value || null)} style={{ ...inputStyle(), background: C.white }} />
-            </div>
-            <div>
-              <FieldLabel>Form D Next</FieldLabel>
-              <input type="date" value={form.form_d_next_date ?? ''} onChange={(e) => set('form_d_next_date', e.target.value || null)} style={{ ...inputStyle(), background: C.white }} />
-            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <ReadOnlyField label="Next Form A (auto)" value={fmtDate(nextCycleDate(form.turn_on_date, 6))}  placeholder="Set turn-on date" />
+            <ReadOnlyField label="Next Form D (auto)" value={fmtDate(nextCycleDate(form.turn_on_date, 12))} placeholder="Set turn-on date" />
           </div>
         </div>
 
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Warranty</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, alignItems: 'start' }}>
             <div>
-              <FieldLabel>Start Date</FieldLabel>
-              <input type="date" value={form.warranty_start_date ?? ''} onChange={(e) => set('warranty_start_date', e.target.value || null)} style={{ ...inputStyle(), background: C.white }} />
+              <FieldLabel>Years</FieldLabel>
+              <input type="number" min={0} max={20} step={1}
+                value={warrantyYears ?? ''}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === '') { setWarrantyYears(null); return; }
+                  const n = parseInt(v, 10);
+                  setWarrantyYears(isNaN(n) ? null : Math.max(0, Math.min(20, n)));
+                }}
+                placeholder="e.g. 2"
+                style={{ ...inputStyle(), background: C.white }} />
             </div>
-            <div>
-              <FieldLabel>End Date</FieldLabel>
-              <input type="date" value={form.warranty_end_date ?? ''} onChange={(e) => set('warranty_end_date', e.target.value || null)} style={{ ...inputStyle(), background: C.white }} />
-            </div>
+            <ReadOnlyField
+              label="Ends on (auto)"
+              value={form.turn_on_date && warrantyYears ? fmtDate(addYears(form.turn_on_date, warrantyYears)) : null}
+              placeholder={form.turn_on_date ? 'Enter warranty years' : 'Set turn-on date'} />
           </div>
+          <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5 }}>
+            Warranty starts on the turn-on date. Enter the warranty length in years — the end date is computed automatically.
+          </div>
+        </div>
+
+        <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Form 1 (Installation Compliance)</div>
+          {form.form_1_path ? (
+            <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <FileText size={18} strokeWidth={1.8} color={C.green} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {form1DisplayName}
+                </div>
+                <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>PDF attached</div>
+              </div>
+              <button type="button" onClick={() => void openForm1('view')}
+                style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                View
+              </button>
+              <button type="button" onClick={() => void openForm1('download')}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                <DownloadIcon size={11} strokeWidth={2.25} /> Download
+              </button>
+              <button type="button" onClick={() => form1InputRef.current?.click()} disabled={form1Busy}
+                style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                {form1Busy ? 'Uploading…' : 'Replace'}
+              </button>
+              <button type="button" onClick={() => void removeForm1()}
+                style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                Remove
+              </button>
+            </div>
+          ) : (
+            <button type="button" onClick={() => form1InputRef.current?.click()} disabled={form1Busy}
+              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 14px', borderRadius: 10, border: '1px dashed #C8E6C9', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+              <Upload size={14} strokeWidth={2} /> {form1Busy ? 'Uploading…' : 'Upload Form 1 PDF'}
+            </button>
+          )}
+          <input ref={form1InputRef} type="file" accept="application/pdf" style={{ display: 'none' }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void handleForm1Upload(file);
+              e.target.value = '';
+            }} />
+          {form1Error && (
+            <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 8, padding: '6px 10px', fontSize: 11, fontWeight: 600 }}>{form1Error}</div>
+          )}
         </div>
 
         <div>
@@ -1110,6 +2642,141 @@ function ChargerModal({ title, initial, canDelete, onSave, onDelete, onClose }: 
           </div>
         </div>
       </div>
+      {manageOpen && (
+        <BrandModelsModal
+          brandModels={brandModels}
+          onClose={() => setManageOpen(false)}
+          onChanged={onBrandModelsChanged}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Brand & model catalogue (gated by can_delete admin) ────────────
+
+function BrandModelsModal({ brandModels, onClose, onChanged }: {
+  brandModels: BrandModel[];
+  onClose: () => void;
+  onChanged: () => Promise<void>;
+}) {
+  const [rows, setRows] = useState<BrandModel[]>(brandModels);
+  const [newLabel, setNewLabel] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = async () => {
+    const { data } = await supabase.from('charger_brand_models').select('*').order('position').order('label');
+    setRows((data ?? []) as BrandModel[]);
+    await onChanged();
+  };
+
+  const add = async () => {
+    const label = newLabel.trim();
+    if (!label) return;
+    setBusy(true);
+    setError(null);
+    const { error: err } = await supabase.from('charger_brand_models').insert({ label });
+    setBusy(false);
+    if (err) { setError(err.message); return; }
+    setNewLabel('');
+    await refresh();
+  };
+
+  const rename = async (id: string, label: string) => {
+    const trimmed = label.trim();
+    if (!trimmed) return;
+    setBusy(true);
+    setError(null);
+    const { error: err } = await supabase.from('charger_brand_models').update({ label: trimmed }).eq('id', id);
+    setBusy(false);
+    if (err) { setError(err.message); return; }
+    await refresh();
+  };
+
+  const remove = async (id: string) => {
+    if (!confirm('Delete this brand / model? Chargers already tagged with it keep the text — they just won\'t auto-resolve to a list entry until you re-add it.')) return;
+    setBusy(true);
+    setError(null);
+    const { error: err } = await supabase.from('charger_brand_models').delete().eq('id', id);
+    setBusy(false);
+    if (err) { setError(err.message); return; }
+    await refresh();
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 520, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>Brand &amp; Model List</div>
+            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+              Edit the dropdown options used by every charger in this department.
+            </div>
+          </div>
+          <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
+        </div>
+
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input value={newLabel} onChange={(e) => setNewLabel(e.target.value)}
+            placeholder="e.g. ABB Terra 54 CJG"
+            onKeyDown={(e) => { if (e.key === 'Enter') void add(); }}
+            style={{ ...inputStyle(), background: C.white }} />
+          <button onClick={() => void add()} disabled={busy || !newLabel.trim()}
+            style={{ padding: '8px 16px', borderRadius: 10, border: 'none', background: (busy || !newLabel.trim()) ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: (busy || !newLabel.trim()) ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>
+            + Add
+          </button>
+        </div>
+
+        {error && (
+          <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '8px 12px', fontSize: 12, fontWeight: 600 }}>
+            {error}
+          </div>
+        )}
+
+        {rows.length === 0 ? (
+          <div style={{ background: C.seasalt, border: '1px dashed #EBEBEB', borderRadius: 10, padding: '14px 16px', fontSize: 12, color: C.slate, textAlign: 'center' }}>
+            No brand / model entries yet — add the first one above.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {rows.map((r) => (
+              <BrandModelRow key={r.id} row={r} onRename={(v) => rename(r.id, v)} onRemove={() => remove(r.id)} busy={busy} />
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button onClick={onClose}
+            style={{ padding: '9px 20px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BrandModelRow({ row, onRename, onRemove, busy }: {
+  row: BrandModel;
+  onRename: (label: string) => Promise<void>;
+  onRemove: () => Promise<void>;
+  busy: boolean;
+}) {
+  const [value, setValue] = useState(row.label);
+  const dirty = value.trim() !== row.label && value.trim().length > 0;
+  return (
+    <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+      <input value={value} onChange={(e) => setValue(e.target.value)}
+        style={{ ...inputStyle(), background: C.white }} />
+      <button onClick={() => void onRename(value)} disabled={!dirty || busy}
+        style={{ padding: '6px 12px', borderRadius: 8, border: 'none', background: (dirty && !busy) ? C.green : '#ccc', color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: (dirty && !busy) ? 'pointer' : 'default' }}>
+        Save
+      </button>
+      <button onClick={() => void onRemove()} disabled={busy}
+        style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+        Delete
+      </button>
     </div>
   );
 }

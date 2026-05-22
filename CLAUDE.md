@@ -5,10 +5,41 @@
 ## Stack
 
 - **Vite + React 18 + TypeScript** (strict). Inline styles only — **no** Tailwind, no CSS-in-JS library, no shadcn/MUI/Chakra. Don't add one.
+- **Data**: Supabase (Postgres + Storage + RLS). Client in [src/lib/supabase.ts](src/lib/supabase.ts); every screen queries via `supabase.from('table')`. No ORM, no codegen.
+- **Auth + permissions**: per-department `app_users` / `app_roles` / `app_role_permissions` tables, loaded into a React Context by [src/permissions.tsx](src/permissions.tsx). See § Permissions below.
+- **Icons**: `lucide-react`. The old Unicode-glyph identity (`⌕ ⏻ ⬇` etc.) has been retired across the app — render a `LucideIcon` component, not a string.
 - **One CSS file**: [src/styles.css](src/styles.css) — global reset + scrollbar only. Don't grow it.
 - **One font**: Figtree (loaded from Google Fonts in [index.html](index.html)). Don't add fonts.
-- **State**: `useState` + React Context. No Redux/Zustand. The Work Order module's store lives in [src/workOrderStore.tsx](src/workOrderStore.tsx).
-- **Routing**: role-based switch in [src/App.tsx](src/App.tsx). No react-router.
+- **State**: `useState` + React Context. No Redux/Zustand. Module stores: [src/workOrderStore.tsx](src/workOrderStore.tsx) for TSD.
+- **Routing**: permission-gated screen-key switch in [src/App.tsx](src/App.tsx) (`NAV_ALL` → `DEPARTMENT_SCREENS` → `can(key, 'can_view')`). No react-router.
+- **File export / heavy deps**: `@react-pdf/renderer` for PDFs; `xlsx` for spreadsheet import. Leaflet is loaded on demand from a CDN by [ChargerLocationMap](src/components/ChargerLocationMap.tsx) (no npm dep needed). No date library — use `Date` + `toLocaleDateString`. No chart library — see [charts.tsx](src/components/charts.tsx).
+
+## Permissions
+
+Every navigable screen is a `ScreenKey` in [src/permissions.tsx](src/permissions.tsx). Two filters compose to decide what a user sees:
+
+- `DEPARTMENT_SCREENS[department]` — which keys a department even exposes in its sidebar.
+- `app_role_permissions` — `can_view` / `can_edit` / `can_delete` per role, loaded into the `PermissionsContext` on sign-in.
+
+Inside a screen, call `usePermissions()` and gate every action:
+
+```tsx
+const { can } = usePermissions();
+const canEdit   = can('customers', 'can_edit');
+const canDelete = can('customers', 'can_delete');
+{canEdit && <button>+ New Customer</button>}
+```
+
+**Sub-screen permission keys** are real `ScreenKey`s that don't render a top-level component — they exist purely to gate tabs / nested views. Examples: `charging_cpo_carparks` and `charging_sp_price` gate the two tabs inside Charging Records; `tsd_workorders` / `tsd_forms` / `tsd_pic` show up in the TSD Admin group. They live in `ScreenKey` + `SCREEN_LABELS` (so they appear in the Settings permission matrix) but are deliberately absent from `App.tsx`'s `screens` map when they don't render directly.
+
+Adding a new top-level screen = touch four places:
+
+1. `ScreenKey` + `SCREEN_LABELS` in [src/permissions.tsx](src/permissions.tsx).
+2. `DEPARTMENT_SCREENS[department]` — list the key for any department that should see it.
+3. `NAV_ALL` + `SCREEN_TITLES` + `screens` map in [src/App.tsx](src/App.tsx).
+4. An `app_role_permissions` row for any role that should access it (the Settings UI does this for you per-role).
+
+**Storage buckets** for binary files: `cpo-maintenance-pdfs` (charger meter / maintenance reports), `crm-contracts` (corporate company contracts), `crm-instructions` (account-opening instruction PDFs + master service agreement). All use the same anon read / insert / delete RLS pattern — auth is enforced application-side by `usePermissions()`.
 
 ## Brand tokens — use these, don't hardcode
 
@@ -71,15 +102,22 @@ Located in [src/components/](src/components/):
 
 - **[KPICard](src/components/KPICard.tsx)** — stat tile. Has `accent` variant (filled green) for the lead KPI. Always 4-up in `repeat(4, 1fr)` grid with 14-16 gap.
 - **[Badge](src/components/Badge.tsx)** — generic status pill. Add new status keys to its map; don't duplicate the pill shape.
-- **[NavItem](src/components/NavItem.tsx)** — sidebar nav row. Active = honeydew bg + green text + 6×6 green dot on the right.
-- **[Logo](src/components/Logo.tsx)** — official EVOne PNG. Use this, never `<img>` directly. Default height 36; use 26-34 in headers and 44 on splash screens.
+- **[NavItem](src/components/NavItem.tsx)** — sidebar nav row. Takes a `LucideIcon` component, not a string. Active = honeydew bg + green text + 6×6 green dot on the right.
+- **[Logo](src/components/Logo.tsx)** — official EVOne marque PNG. Use this for the main brand mark, never `<img>` directly. Default height 36; use 26-34 in headers and 44 on splash screens.
+- **[BrandLogo](src/components/BrandLogo.tsx)** — secondary brand / platform PNGs (`evone`, `eve`, `goparkin`, `sp`). Use `<BrandLogo brand="eve" height={26} />` instead of importing the asset by hand.
 - **[charts.tsx](src/components/charts.tsx)** — `Sparkline`, `MiniBar`, `Donut`, `LineChart`, `BarChart`. SVG-based, no chart library. Grid line colour is `#E4F3E3`. Default chart colour is `C.green`, secondary is `C.opal`.
+- **[ChargerLocationMap](src/components/ChargerLocationMap.tsx)** — Leaflet (lazy-loaded from a CDN, no npm dep) over CartoDB Positron tiles, with brand-coloured SVG pins. Reuse for any SG map view.
+- **[OneMapAutocomplete](src/components/OneMapAutocomplete.tsx)** — Singapore address typeahead over OneMap's free Elastic-search endpoint (`src/lib/onemap.ts`). Auto-fills lat/lng on pick.
 
-If you need a new primitive, add it here. Don't rebuild a KPI card inline in a screen.
+If you need a new primitive, add it here. Don't rebuild a KPI card inline in a screen. For one-off icon spans (search glyph, mailto/tel link prefix, download-arrow chip) just render Lucide inline — don't make a wrapper component.
 
 ### Form rendering is shared too
 
-[src/screens/tsd/TechApp.tsx](src/screens/tsd/TechApp.tsx) exports `FormPaper`, `FormHeader`, `FieldList` (the A4-styled report renderer). The PIC view reuses these. Don't fork — extend the shared renderer if a new field type is needed.
+[src/screens/tsd/TechApp.tsx](src/screens/tsd/TechApp.tsx) exports `FormPaper`, `FormHeader`, `FieldList` (the A4-styled report renderer). [PICApp.tsx](src/screens/tsd/PICApp.tsx) reuses these. Don't fork — extend the shared renderer if a new field type is needed.
+
+### Tech department lives in the main Dashboard
+
+There is no longer a TSDWorkspace sub-role chooser. Tech users see standard sidebar entries — `Technician` as a leaf plus a `TSD Admin` group (Work Orders / Form Templates / PIC Review). `TechApp` accepts an embedded mode (no `onBack` / `onSignOut`) so its internal Shell hides its own chrome when rendered inside the Dashboard.
 
 ## Repeated UI patterns (recipes)
 
@@ -104,12 +142,16 @@ See [Suppliers.tsx](src/screens/Suppliers.tsx) or [Invoices.tsx](src/screens/Inv
 ### Search input (pill-shaped)
 
 ```tsx
+import { Search } from 'lucide-react';
+
 <div style={{ position: 'relative', width: 220 }}>
   <input value={search} onChange={e => setSearch(e.target.value)} placeholder="…"
     style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB',
              fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white }}/>
   <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)',
-                 color: C.slate, fontSize: 15 }}>⌕</span>
+                 color: C.slate, display: 'inline-flex' }}>
+    <Search size={14} />
+  </span>
 </div>
 ```
 
@@ -132,10 +174,11 @@ Outline variant: swap `background: 'transparent', color: C.green, border: '1px s
 ### Modal
 
 - Overlay: `position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center'`
-- Click on overlay (not card) closes: `onClick={e => { if (e.target === e.currentTarget) onClose(); }}`
+- **Close ONLY via the X button.** Do not wire close-on-overlay-click — we had it, users dismissed forms by accident, so it was removed app-wide.
 - Card: `borderRadius: 20, padding: 28, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)'`
-- Close button: 32×32, `background: '#F3F3F3'`, glyph `×`
-- Grouped subsection inside modal (e.g. "Bill To"): wrap in `background: C.seasalt, borderRadius: 12, padding: 16`
+- Close button: 32×32, `background: '#F3F3F3'`, glyph `×` (one place a literal `×` survives — every other glyph is Lucide).
+- Grouped subsection inside modal (e.g. "Bill To"): wrap in `background: C.seasalt, borderRadius: 12, padding: 16`.
+- Destructive actions inside a modal use an inline confirm banner (red bg `#FDEAEA`, red copy, Cancel / "Yes, Delete" buttons) — never a second nested modal.
 
 See [InvoiceModal](src/screens/Invoices.tsx) for the full pattern.
 
@@ -151,27 +194,59 @@ See [InvoiceModal](src/screens/Invoices.tsx) for the full pattern.
 
 ## Icons
 
-Use the geometric Unicode glyphs already in the design (`⊞ ◈ ◎ ◉ ◫ ◐ ◧ ▦ ◑`) for nav, status emojis sparingly (`📅 ⌕ ⬇ ⏻ ⚡ ★`). **Do not** add lucide, react-icons, or any icon library — the prototype's identity comes partly from these geometric glyphs.
+Use `lucide-react`. The prior Unicode-glyph identity is gone. Map a screen / action to a semantically close Lucide icon (Customers → `Users`, Projects → `FolderKanban`, Invoices → `Receipt`, Charging → `Zap`, Sign-out → `Power`, Search → `Search`, Download → `Download`, Mail → `Mail`, Phone → `Phone`, Edit → `Pencil`, Folder/empty → `FolderClosed`, etc.).
+
+**Action button / inline label** — Lucide inline with `display: 'inline'` + `verticalAlign` so it sits centred with the text:
+
+```tsx
+import { Download } from 'lucide-react';
+
+<button>
+  <Download size={12} strokeWidth={2.25}
+    style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }}/>
+  PDF
+</button>
+```
+
+**Sidebar** — `NavItem` takes a `LucideIcon` component reference (the type, not an instance). Set it in `NAV_ALL` inside [App.tsx](src/App.tsx).
+
+**Empty states** — center a larger Lucide icon (`size={32}`, `strokeWidth={1.5}`, `color={C.slate}`) above the placeholder copy.
+
+**Only literal glyph that survived:** the modal close button still renders `×`. Everything else — `⌕ ⏻ ⬇ ✉ ☎ 📁 📄 📅 🛠` — is Lucide now.
 
 ## File / directory conventions
 
 ```
 src/
   theme.ts                  brand tokens (C)
-  data.ts                   shared static data for the global dashboard
-  workOrderStore.tsx        Context + types for the Work Order module
+  data.ts                   demo/static data used by a few legacy screens
+  workOrderStore.tsx        Context + types for the TSD Work Order module
+  permissions.tsx           Departments, ScreenKeys, PermissionsProvider, can()
   main.tsx                  root + provider mounting
-  App.tsx                   role-based routing only — no UI here
+  App.tsx                   permission-gated screen routing only — no UI here
   styles.css                global reset + scrollbar; do not grow
-  components/               small primitives shared across screens
+  assets/                   brand PNGs (evone-logo, eve-logo, goparkin-logo, sp-logo)
+  lib/                      supabase.ts (client), onemap.ts (SG geocoder)
+  components/               KPICard, Badge, NavItem, Logo, BrandLogo,
+                            charts, ChargerLocationMap, OneMapAutocomplete
   screens/
-    Overview.tsx, Invoices.tsx, … one file per top-level screen
-    Login.tsx               login + sub-role helpers
-    tsd/                    Technical Service Dept. workflow module
-      TSDWorkspace.tsx      sub-role chooser (Tech / PIC / Admin)
-      TechApp.tsx           technician mobile-style app + shared FormPaper/FieldList
-      PICApp.tsx            review queue + editable PDF view
-      TSDAdminApp.tsx       work-order management + form builder
+    Overview.tsx, Invoices.tsx, Customers.tsx, Projects.tsx, …
+                            one file per top-level screen; export `ScreenFoo`
+    Login.tsx               department picker + email/password sign-in
+    Settings.tsx, DBHealth.tsx
+                            in-app admin (Users & Permissions matrix + DB health)
+    charging/               sub-tabs for ChargingRecords (CarparksTab, …)
+    crm/                    Corporate CRM onboarding —
+                            AccountOpening (admin) + PublicApplication (customer)
+    portal/                 customer-facing invoice / statement portal
+    tsd/                    Technical Service Dept. workflow:
+                            TechApp.tsx      (mobile-style tech app +
+                                              shared FormPaper / FormHeader /
+                                              FieldList)
+                            PICApp.tsx       (review queue + editable PDF view,
+                                              exports PICReviewBoard)
+                            TSDAdminApp.tsx  (Work Orders + FormBuilder)
+                            OverlayForm.tsx, PDFExport.tsx
 ```
 
 **Rules:**
@@ -188,7 +263,9 @@ src/
 - **No default exports** except top-level pages bound by tooling (`App.tsx`, `main.tsx`). Everything else is named.
 - **No comments** unless explaining a non-obvious WHY. Don't write `// component for X` above an obvious component.
 - **No new dependencies** without a clear reason. Bundle-size matters for a self-contained dashboard. If you're tempted to add a date library — use `Date` + `toLocaleDateString`. If you're tempted to add a UI library — re-read this file.
-- **PDF / file export** is a placeholder. When wiring real PDF generation, use `react-pdf` or browser `react-to-print`; don't bring in a backend just for this.
+- **PDF generation**: `@react-pdf/renderer`. Canonical use: [PDFExport.tsx](src/screens/tsd/PDFExport.tsx), [CorporateInvoicing.tsx](src/screens/CorporateInvoicing.tsx), [PublicApplication.tsx](src/screens/crm/PublicApplication.tsx). Don't bring in a server-side PDF service.
+- **CSV / Excel import**: `xlsx`. See the GoParkin + SP parsers in [CorporateInvoicing.tsx](src/screens/CorporateInvoicing.tsx) and [ChargingRecords.tsx](src/screens/ChargingRecords.tsx).
+- **Storage uploads**: Supabase Storage. Sign URLs with `createSignedUrl(path, 60)` for view; pass `{ download: filename }` to force download. See the meter-reading / maintenance flows in [CPOChargers.tsx](src/screens/CPOChargers.tsx).
 - **Hover** is done via `onMouseEnter` / `onMouseLeave` on the element itself (mutates `e.currentTarget.style.…`). It's verbose but consistent with inline styling.
 - **Lists with selection** (Suppliers, PIC review queue, Form Builder templates) all use the same pattern: list-left + detail-right grid (`'1fr 340px'` or `'280px 1fr'`), selected item gets `1.5px solid C.green` border.
 - **Editing a record when switching selection**: pass `key={item.id}` to the editor component so internal `useState` resets. See [PICReportEditor](src/screens/tsd/PICApp.tsx) for the canonical example.
@@ -197,10 +274,10 @@ src/
 
 - Don't centralise styles into a shared `styles.ts`.
 - Don't introduce Tailwind, CSS Modules, styled-components, emotion, or a UI library.
-- Don't add a logo PNG anywhere except via `<Logo />`.
+- Don't use `<img>` for any logo PNG. Use `<Logo />` for the EVOne marque and `<BrandLogo brand="evone|eve|goparkin|sp" />` for everything else — the asset paths are encapsulated there.
 - Don't change the global `body { overflow: hidden }` rule — screens manage their own scrolling via `overflowY: 'auto'` on their root.
 - Don't hardcode the brand green `#2A9A47` (or any token colour) in a component. Always `C.green`.
-- Don't introduce a router. Role-switch + sub-screen state lives in component state in [App.tsx](src/App.tsx) and module entry points.
+- Don't introduce a router. Screen-switch + sub-screen state lives in component state in [App.tsx](src/App.tsx) (a `useState<ScreenKey>`) and module entry points.
 - Don't add comments restating what the code does. Don't add JSDoc to every function.
 - Don't replace inline styles with a className refactor "for cleanliness". The whole codebase is inline-style — partial migration is worse than either pole.
 - Don't add new top-level brand colours. Add a token to `C` in [theme.ts](src/theme.ts) if you really need a new shade; explain why in the commit.
