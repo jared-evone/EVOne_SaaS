@@ -4,7 +4,7 @@ import { PDFDownloadLink, Document, Page, View, Text, Image as PdfImage, pdf } f
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import evoneLogoUrl from '../assets/evone-logo.png';
-import { Download as DownloadIcon } from 'lucide-react';
+import { Download as DownloadIcon, Upload as UploadIcon } from 'lucide-react';
 import {
   pdfGreen, pdfHoneydew, pdfSlate, pdfBorderW,
   bRight, bBottom, bAll,
@@ -580,8 +580,6 @@ export function ScreenCorporateInvoicing() {
   const [spDrivers, setSpDrivers] = useState<CRMDriver[]>([]);
   const [goparkinRecords, setGoparkinRecords] = useState<GoParkinRow[]>([]);
   const [spCorpRecords, setSpCorpRecords] = useState<SpCorpRecord[]>([]);
-  const [managedCarparks, setManagedCarparks] = useState<string[]>([]);
-  const [cpoOnly, setCpoOnly] = useState(true);
   const [pulling, setPulling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedStatement, setSelectedStatement] = useState<CompanyStatement | null>(null);
@@ -592,16 +590,14 @@ export function ScreenCorporateInvoicing() {
 
   useEffect(() => {
     const load = async () => {
-      const [{ data: co }, { data: ve }, { data: dr }, { data: cp }] = await Promise.all([
+      const [{ data: co }, { data: ve }, { data: dr }] = await Promise.all([
         supabase.from('crm_companies').select('*').order('name'),
         supabase.from('crm_vehicles').select('id, vehicle_plate, company_id'),
         supabase.from('crm_sp_drivers').select('id, driver_email, company_id'),
-        supabase.from('cpo_managed_carparks').select('carpark_name'),
       ]);
       setCompanies((co as CRMCompany[]) ?? []);
       setVehicles((ve as CRMVehicle[]) ?? []);
       setSpDrivers((dr as CRMDriver[]) ?? []);
-      setManagedCarparks(((cp as { carpark_name: string }[]) ?? []).map((r) => r.carpark_name));
     };
     load();
   }, []);
@@ -615,17 +611,15 @@ export function ScreenCorporateInvoicing() {
     const all: GoParkinRow[] = [];
     let from = 0;
     while (true) {
-      let q = supabase
+      const q = supabase
         .from('crm_charging_records')
         .select('vehicle_plate_number, carpark_code, start_date_time, end_date_time, total_energy_supplied_kwh')
         .eq('source', 'goparkin')
         .eq('transaction_type', 'Corporate')
         .eq('payment_status', 'Success')
         .gte('end_date_time', start)
-        .lt('end_date_time', end);
-      if (cpoOnly && managedCarparks.length > 0) {
-        q = q.in('carpark_code', managedCarparks);
-      }
+        .lt('end_date_time', end)
+        .order('id', { ascending: true });
       const { data, error: err } = await q.range(from, from + PAGE - 1);
       if (err) { setError(err.message); break; }
       if (!data || data.length === 0) break;
@@ -860,7 +854,7 @@ export function ScreenCorporateInvoicing() {
       )}
 
       {/* Top bar */}
-      <div style={{ background: C.white, borderRadius: 16, padding: '16px 20px', border: '1px solid #EBEBEB', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+      <div style={{ background: C.white, borderRadius: 16, padding: '16px 20px', border: '1px solid #EBEBEB', display: 'flex', alignItems: 'flex-end', gap: 14, flexWrap: 'wrap' }}>
         <div>
           <FieldLabel>Billing Month</FieldLabel>
           <input
@@ -875,25 +869,17 @@ export function ScreenCorporateInvoicing() {
             <button
               onClick={pullGoParkin}
               disabled={pulling}
-              style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: pulling ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: pulling ? 'default' : 'pointer' }}>
-              {pulling ? 'Pulling…' : <><DownloadIcon size={12} strokeWidth={2.25} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }}/> Pull GoParkin Data</>}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 20px', borderRadius: 10, border: 'none', background: pulling ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: pulling ? 'default' : 'pointer' }}>
+              <DownloadIcon size={14} strokeWidth={2.25} />
+              {pulling ? 'Pulling…' : 'Pull GoParkin Data'}
             </button>
           )}
-          <label title={managedCarparks.length === 0 ? 'No carparks marked CPO yet — go to Charging Records → CPO Carparks to tag them.' : ''}
-            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', borderRadius: 10,
-              border: `1px solid ${cpoOnly ? C.green : '#EBEBEB'}`,
-              background: cpoOnly ? C.honeydew : C.white,
-              color: cpoOnly ? C.green : C.slate,
-              fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-            <input type="checkbox" checked={cpoOnly} onChange={(e) => setCpoOnly(e.target.checked)}
-              style={{ width: 14, height: 14, accentColor: C.green, cursor: 'pointer' }} />
-            CPO carparks only <span style={{ opacity: 0.6, fontWeight: 600 }}>· {managedCarparks.length}</span>
-          </label>
           {canEdit && (
             <button
               onClick={() => fileRef.current?.click()}
-              style={{ padding: '9px 20px', borderRadius: 10, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-              ⬆ Upload SP Corporate (.xlsx)
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 20px', borderRadius: 10, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              <UploadIcon size={14} strokeWidth={2.25} />
+              Upload SP Corporate (.xlsx)
             </button>
           )}
           <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleFileSelect} />

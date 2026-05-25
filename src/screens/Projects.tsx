@@ -486,7 +486,7 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div>Project not found.</div>
             <button onClick={() => void onBack()}
-              style={{ alignSelf: 'center', padding: '8px 18px', borderRadius: 10, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+              style={{ alignSelf: 'center', padding: '9px 20px', borderRadius: 10, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
               ← Back to Projects
             </button>
           </div>

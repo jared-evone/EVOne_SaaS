@@ -124,7 +124,7 @@ export function Login({ onLogin }: LoginProps) {
           )}
 
           <button type="submit" disabled={busy}
-            style={{ padding: '13px 24px', borderRadius: 12, border: 'none', background: busy ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 14, fontWeight: 700, cursor: busy ? 'default' : 'pointer', marginTop: 4 }}>
+            style={{ padding: '10px 24px', borderRadius: 10, border: 'none', background: busy ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 14, fontWeight: 700, cursor: busy ? 'default' : 'pointer', marginTop: 4 }}>
             {busy ? 'Signing in…' : `Sign in to ${DEPARTMENT_LABELS[department]}`}
           </button>
         </form>

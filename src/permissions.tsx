@@ -11,14 +11,17 @@ export const DEPARTMENT_LABELS: Record<Department, string> = {
 };
 
 export type ScreenKey =
+  | 'dashboard'
   | 'overview' | 'orders' | 'installations' | 'customers' | 'projects' | 'social' | 'sales'
   | 'purchaseorders' | 'inventory' | 'suppliers'
-  | 'corporatecrm' | 'cpochargers' | 'charging' | 'corporateinvoicing' | 'charging_dashboard'
+  | 'corporatecrm' | 'corporatecrm_invoicing'
+  | 'cpochargers' | 'charging' | 'corporateinvoicing' | 'charging_dashboard'
   | 'charging_cpo_carparks' | 'charging_sp_price'
   | 'tsd_technician' | 'tsd_workorders' | 'tsd_forms' | 'tsd_pic'
   | 'settings' | 'dbhealth';
 
 export const SCREEN_LABELS: Record<ScreenKey, string> = {
+  dashboard:             'Dashboard',
   overview:              'Overview',
   orders:                'Invoices',
   installations:         'Installations',
@@ -30,6 +33,7 @@ export const SCREEN_LABELS: Record<ScreenKey, string> = {
   inventory:             'Inventory & Products',
   suppliers:             'Suppliers',
   corporatecrm:          'Corporate CRM',
+  corporatecrm_invoicing:'Corporate CRM › Invoicing & CC only',
   cpochargers:           'CPO Chargers',
   charging:              'Charging Records',
   charging_cpo_carparks: 'Charging Records › CPO Carparks tab',
@@ -46,12 +50,12 @@ export const SCREEN_LABELS: Record<ScreenKey, string> = {
 
 // Each department exposes only its own screens in the NAV + Settings matrix.
 export const DEPARTMENT_SCREENS: Record<Department, ScreenKey[]> = {
-  cpo:   ['charging_dashboard', 'corporatecrm', 'cpochargers', 'charging',
+  cpo:   ['charging_dashboard', 'corporatecrm', 'corporatecrm_invoicing', 'cpochargers', 'charging',
           'charging_cpo_carparks', 'charging_sp_price',
           'corporateinvoicing', 'settings', 'dbhealth'],
-  sales: ['customers', 'projects', 'settings', 'dbhealth'],
-  tech:  ['tsd_technician', 'tsd_workorders', 'tsd_forms', 'tsd_pic', 'customers', 'projects', 'settings', 'dbhealth'],
-  pm:    ['customers', 'projects', 'settings', 'dbhealth'],
+  sales: ['dashboard', 'customers', 'projects', 'settings', 'dbhealth'],
+  tech:  ['dashboard', 'tsd_technician', 'tsd_workorders', 'tsd_forms', 'tsd_pic', 'customers', 'projects', 'settings', 'dbhealth'],
+  pm:    ['dashboard', 'customers', 'projects', 'settings', 'dbhealth'],
 };
 
 export interface ScreenCap {

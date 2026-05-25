@@ -575,7 +575,7 @@ function WorkOrderModal({
           <button
             onClick={handleSave}
             style={{
-              padding: '10px 24px',
+              padding: '9px 24px',
               borderRadius: 10,
               border: 'none',
               background: C.green,
@@ -1078,7 +1078,7 @@ function CustomerModal({
             onClick={handleSave}
             disabled={!form.name.trim()}
             style={{
-              padding: '10px 24px',
+              padding: '9px 24px',
               borderRadius: 10,
               border: 'none',
               background: form.name.trim() ? C.green : '#A5D6A7',

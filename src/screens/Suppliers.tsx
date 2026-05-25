@@ -335,7 +335,7 @@ function SupplierModal({ supplier, onClose, onSave, onDelete }: SupplierModalPro
           </button>
           <button
             onClick={() => onSave({ ...form, id: form.id || `supp-${Date.now()}` })}
-            style={{ padding: '10px 24px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+            style={{ padding: '9px 24px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
           >
             {isNew ? 'Add Supplier' : 'Save Changes'}
           </button>
@@ -445,7 +445,7 @@ export function ScreenSuppliers() {
           />
           <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}><Search size={14} /></span>
         </div>
-        <button onClick={() => setModal('new')} style={{ marginLeft: 'auto', padding: '8px 18px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+        <button onClick={() => setModal('new')} style={{ marginLeft: 'auto', padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
           + Add Supplier
         </button>
       </div>

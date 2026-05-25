@@ -26,6 +26,7 @@ import { ScreenCPOChargers } from './screens/CPOChargers';
 import { ScreenSettings } from './screens/Settings';
 import { ScreenDBHealth } from './screens/DBHealth';
 import { ScreenChargingDashboard } from './screens/ChargingDashboard';
+import { ScreenDashboard } from './screens/Dashboard';
 import { Login } from './screens/Login';
 import { TechApp } from './screens/tsd/TechApp';
 import { WorkOrdersAdmin, FormBuilder } from './screens/tsd/TSDAdminApp';
@@ -44,6 +45,7 @@ type NavGroup = { kind: 'group'; key: string;  icon: LucideIcon; label: string; 
 type NavEntry = NavLeaf | NavGroup;
 
 const NAV_ALL: NavEntry[] = [
+  { kind: 'leaf', id: 'dashboard',         icon: LayoutDashboard, label: 'Dashboard' },
   { kind: 'leaf', id: 'charging_dashboard',icon: LayoutDashboard, label: 'Charging Dashboard' },
   { kind: 'leaf', id: 'overview',          icon: Home,            label: 'Overview' },
   { kind: 'leaf', id: 'orders',            icon: Receipt,         label: 'Invoices' },
@@ -74,6 +76,7 @@ const NAV_ALL: NavEntry[] = [
 // Only top-level navigable screens get titles + components. Sub-screen permission
 // keys (e.g. charging_cpo_carparks) live in the matrix but never render directly.
 const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
+  dashboard:      'Dashboard',
   overview:       'Overview',
   orders:         'Invoices',
   installations:  'Installations',
@@ -98,6 +101,7 @@ const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
 };
 
 const screens: Partial<Record<ScreenId, JSX.Element>> = {
+  dashboard:      <ScreenDashboard />,
   overview:       <ScreenOverview />,
   orders:         <ScreenInvoices />,
   installations:  <ScreenInstallations />,

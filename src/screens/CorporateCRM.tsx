@@ -261,12 +261,13 @@ interface CompanyModalProps {
   initial: Omit<CRMCompany, 'id'>;
   title: string;
   canDelete: boolean;
+  invoicingOnly?: boolean;
   onSave: (data: Omit<CRMCompany, 'id'>) => Promise<void>;
   onDelete?: () => Promise<void>;
   onClose: () => void;
 }
 
-function CompanyModal({ initial, title, canDelete, onSave, onDelete, onClose }: CompanyModalProps) {
+function CompanyModal({ initial, title, canDelete, invoicingOnly = false, onSave, onDelete, onClose }: CompanyModalProps) {
   const [form, setForm] = useState(initial);
   const [ccText, setCcText] = useState((initial.invoice_cc_emails ?? []).join(', '));
   const [contractFile, setContractFile] = useState<File | null>(null);
@@ -296,24 +297,28 @@ function CompanyModal({ initial, title, canDelete, onSave, onDelete, onClose }: 
     a.remove();
   };
 
-  const textField = (label: string, key: 'name' | 'base_rate' | 'threshold_kwh' | 'discounted_rate' | 'invoice_email', type = 'text', placeholder?: string) => (
-    <div>
-      <FieldLabel>{label}</FieldLabel>
-      <input
-        type={type}
-        step={type === 'number' ? '0.001' : undefined}
-        placeholder={placeholder}
-        value={form[key] == null ? '' : String(form[key])}
-        onChange={(e) => setForm((f) => ({
-          ...f,
-          [key]: type === 'number'
-            ? Number(e.target.value)
-            : (key === 'invoice_email' ? (e.target.value || null) : e.target.value),
-        }))}
-        style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }}
-      />
-    </div>
-  );
+  const textField = (label: string, key: 'name' | 'base_rate' | 'threshold_kwh' | 'discounted_rate' | 'invoice_email', type = 'text', placeholder?: string) => {
+    const locked = invoicingOnly && key !== 'invoice_email';
+    return (
+      <div>
+        <FieldLabel>{label}</FieldLabel>
+        <input
+          type={type}
+          step={type === 'number' ? '0.001' : undefined}
+          placeholder={placeholder}
+          disabled={locked}
+          value={form[key] == null ? '' : String(form[key])}
+          onChange={(e) => setForm((f) => ({
+            ...f,
+            [key]: type === 'number'
+              ? Number(e.target.value)
+              : (key === 'invoice_email' ? (e.target.value || null) : e.target.value),
+          }))}
+          style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box', background: locked ? C.seasalt : C.white, color: locked ? C.slate : '#1a1a1a', cursor: locked ? 'not-allowed' : 'text' }}
+        />
+      </div>
+    );
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -399,6 +404,7 @@ function CompanyModal({ initial, title, canDelete, onSave, onDelete, onClose }: 
             </div>
           </div>
         </div>
+        {!invoicingOnly && (
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Contract</div>
           {initial.contract_path && initial.contract_filename && !removeContract && !contractFile && (
@@ -457,6 +463,12 @@ function CompanyModal({ initial, title, canDelete, onSave, onDelete, onClose }: 
             )}
           </div>
         </div>
+        )}
+        {invoicingOnly && (
+          <div style={{ background: C.honeydew, color: C.green, borderRadius: 10, padding: '8px 12px', fontSize: 11, fontWeight: 600, lineHeight: 1.5 }}>
+            You can only update the invoice email and CC list. Other fields are locked by your role.
+          </div>
+        )}
 
         {confirmDelete && (
           <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -656,6 +668,9 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
   const { can } = usePermissions();
   const canEdit   = can('corporatecrm', 'can_edit');
   const canDelete = can('corporatecrm', 'can_delete');
+  const canEditInvoicing  = can('corporatecrm_invoicing', 'can_edit');
+  const canOpenEdit       = canEdit || canEditInvoicing;
+  const invoicingOnlyMode = !canEdit && canEditInvoicing;
 
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
@@ -781,8 +796,8 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
                 const base = Number(c.base_rate), disc = Number(c.discounted_rate);
                 const hasSaving = base > 0 && disc < base;
                 const isSelected = selected.has(c.id);
-                const cellCursor = canEdit ? 'pointer' : 'default';
-                const openEdit = () => { if (canEdit) setEditing(c); };
+                const cellCursor = canOpenEdit ? 'pointer' : 'default';
+                const openEdit = () => { if (canOpenEdit) setEditing(c); };
                 return (
                   <tr key={c.id} style={{ borderBottom: '1px solid #F3F3F3', background: isSelected ? '#FFF8F8' : 'transparent' }}
                     onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = '#FAFAFA'; }}
@@ -834,7 +849,9 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
           onSave={addCompany} onClose={() => setAdding(false)} />
       )}
       {editing && (
-        <CompanyModal key={editing.id} title="Edit Company" canDelete={canDelete}
+        <CompanyModal key={editing.id} title="Edit Company"
+          canDelete={canDelete && !invoicingOnlyMode}
+          invoicingOnly={invoicingOnlyMode}
           initial={{
             name: editing.name,
             base_rate: editing.base_rate,
@@ -845,8 +862,20 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
             contract_path: editing.contract_path,
             contract_filename: editing.contract_filename,
           }}
-          onSave={(data) => updateCompany(editing.id, data)}
-          onDelete={canDelete ? () => deleteCompany(editing.id, editing.contract_path) : undefined}
+          onSave={async (data) => {
+            // Invoicing-only role can ONLY patch the two invoicing fields. Everything else stays unchanged
+            // even if the modal somehow surfaces stale form values for them.
+            if (invoicingOnlyMode) {
+              await supabase.from('crm_companies').update({
+                invoice_email:     data.invoice_email,
+                invoice_cc_emails: data.invoice_cc_emails,
+              }).eq('id', editing.id);
+              await onRefresh();
+            } else {
+              await updateCompany(editing.id, data);
+            }
+          }}
+          onDelete={canDelete && !invoicingOnlyMode ? () => deleteCompany(editing.id, editing.contract_path) : undefined}
           onClose={() => setEditing(null)} />
       )}
     </div>

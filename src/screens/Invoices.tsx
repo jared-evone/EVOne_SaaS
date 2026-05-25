@@ -358,7 +358,7 @@ function InvoiceModal({ invoice, onClose, onSave, onDelete }: InvoiceModalProps)
                 .join(', ');
               onSave({ ...form, id, amount, product });
             }}
-            style={{ padding: '10px 24px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+            style={{ padding: '9px 24px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
           >
             {isNew ? 'Create Invoice' : 'Save Changes'}
           </button>
@@ -445,7 +445,7 @@ export function ScreenInvoices() {
         </div>
         <button
           onClick={() => setModal('new')}
-          style={{ marginLeft: 'auto', padding: '8px 18px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontSize: 13, fontWeight: 700, fontFamily: 'Figtree', cursor: 'pointer' }}
+          style={{ marginLeft: 'auto', padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontSize: 13, fontWeight: 700, fontFamily: 'Figtree', cursor: 'pointer' }}
         >
           + New Invoice
         </button>

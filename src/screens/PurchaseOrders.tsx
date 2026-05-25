@@ -367,7 +367,7 @@ function POModal({ po, direction, onClose, onSave, onDelete }: POModalProps) {
                   `PO-${direction === 'outgoing' ? 'OUT' : 'IN'}-2026-${String(Date.now()).slice(-4)}`,
               })
             }
-            style={{ padding: '10px 24px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+            style={{ padding: '9px 24px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
           >
             {isNew ? 'Create PO' : 'Save Changes'}
           </button>
@@ -560,7 +560,7 @@ export function ScreenPurchaseOrders() {
 
         <button
           onClick={() => setModal('new')}
-          style={{ marginLeft: 'auto', padding: '8px 18px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+          style={{ marginLeft: 'auto', padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
         >
           + New PO
         </button>

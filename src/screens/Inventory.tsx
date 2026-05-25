@@ -244,7 +244,7 @@ function ProductModal({ item, onClose, onSave, onDelete }: ProductModalProps) {
                   `SKU-${String(INITIAL_INVENTORY.length + Date.now()).slice(-3)}`,
               })
             }
-            style={{ padding: '10px 24px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+            style={{ padding: '9px 24px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
           >
             {isNew ? 'Add Product' : 'Save Changes'}
           </button>
@@ -380,7 +380,7 @@ export function ScreenInventory() {
               </button>
             ))}
           </div>
-          <button onClick={() => setModal('new')} style={{ padding: '8px 18px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+          <button onClick={() => setModal('new')} style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
             + Add Product
           </button>
         </div>

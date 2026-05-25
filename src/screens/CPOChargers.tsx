@@ -42,6 +42,7 @@ interface Charger {
   next_maintenance_date: string | null;
   form_a_next_date: string | null;
   form_d_next_date: string | null;
+  warranty_expiry_date: string | null;
   meter_reading_day: number | null;  // day-of-month (1-31), fixed monthly schedule
   notes: string | null;
 }
@@ -164,12 +165,31 @@ function nextLocationMeterReading(chargers: Charger[]): { chargerCode: string; d
   return entries.reduce((min, e) => (e.date < min.date ? e : min));
 }
 
-function nextLocationFormDue(chargers: Charger[]): { form: 'A' | 'D'; chargerCode: string; date: string } | null {
-  const entries: { form: 'A' | 'D'; chargerCode: string; date: string }[] = [];
-  for (const c of chargers) {
-    if (c.form_a_next_date) entries.push({ form: 'A', chargerCode: c.charger_code, date: c.form_a_next_date });
-    if (c.form_d_next_date) entries.push({ form: 'D', chargerCode: c.charger_code, date: c.form_d_next_date });
-  }
+function warrantyStatus(date: string | null): { label: string; color: string } {
+  if (!date) return { label: '—', color: '#767B77' };
+  const dayMs = 86_400_000;
+  const todayMid = new Date(new Date().toDateString());
+  const target = new Date(`${date}T00:00:00`);
+  const days = Math.round((target.getTime() - todayMid.getTime()) / dayMs);
+  const formatted = fmtDate(date);
+  if (days < 0)   return { label: `${formatted} · expired ${Math.abs(days)}d ago`, color: '#C0321A' };
+  if (days === 0) return { label: `${formatted} · expires today`,                   color: '#B07D00' };
+  if (days <= 30) return { label: `${formatted} · ${days}d left`,                   color: '#B07D00' };
+  return            { label: `${formatted} · ${days}d left`,                        color: '#1B512D' };
+}
+
+function nextLocationFormA(chargers: Charger[]): { chargerCode: string; date: string } | null {
+  const entries = chargers
+    .filter((c) => !!c.form_a_next_date)
+    .map((c) => ({ chargerCode: c.charger_code, date: c.form_a_next_date as string }));
+  if (!entries.length) return null;
+  return entries.reduce((min, e) => (e.date < min.date ? e : min));
+}
+
+function nextLocationFormD(chargers: Charger[]): { chargerCode: string; date: string } | null {
+  const entries = chargers
+    .filter((c) => !!c.form_d_next_date)
+    .map((c) => ({ chargerCode: c.charger_code, date: c.form_d_next_date as string }));
   if (!entries.length) return null;
   return entries.reduce((min, e) => (e.date < min.date ? e : min));
 }
@@ -425,6 +445,7 @@ function makeBlankCharger(locationId: string | null): ChargerForm {
     next_maintenance_date: null,
     form_a_next_date: null,
     form_d_next_date: null,
+    warranty_expiry_date: null,
     meter_reading_day: null,
     notes: '',
   };
@@ -561,6 +582,29 @@ function ChargerModal({ initial, title, locations, lockLocation, onSave, onDelet
           </div>
           <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5 }}>
             "Next PM" indicators across the app use whichever of these two dates comes first. Logging a Form A or Form D in the Maintenance tab rolls the matching date forward automatically.
+          </div>
+        </div>
+
+        {/* Warranty */}
+        <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.green }}>Warranty</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'start' }}>
+            <div>
+              <FieldLabel>Warranty Expiry Date</FieldLabel>
+              <input type="date" value={form.warranty_expiry_date ?? ''}
+                onChange={(e) => set('warranty_expiry_date', e.target.value || null)} style={inputStyle()} />
+            </div>
+            <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5, paddingTop: 24 }}>
+              {form.warranty_expiry_date
+                ? (() => {
+                    const days = Math.round((new Date(form.warranty_expiry_date + 'T00:00:00').getTime() - new Date(new Date().toDateString()).getTime()) / 86_400_000);
+                    if (days < 0)  return <>Expired <strong style={{ color: '#C0321A' }}>{Math.abs(days)} day{Math.abs(days) === 1 ? '' : 's'} ago</strong>.</>;
+                    if (days === 0) return <>Expires <strong style={{ color: '#B07D00' }}>today</strong>.</>;
+                    if (days <= 30) return <>Expires in <strong style={{ color: '#B07D00' }}>{days} day{days === 1 ? '' : 's'}</strong>.</>;
+                    return <>In warranty · <strong style={{ color: '#1B512D' }}>{days} day{days === 1 ? '' : 's'} left</strong>.</>;
+                  })()
+                : 'Leave blank if the charger is out of warranty or the date is unknown.'}
+            </div>
           </div>
         </div>
 
@@ -738,7 +782,7 @@ function MeterReadingForm({ chargerId, numConnectors, onAdded }: MeterReadingFor
         )}
       </div>
       <button onClick={submit} disabled={!canSave}
-        style={{ alignSelf: 'flex-end', padding: '8px 18px', borderRadius: 10, border: 'none',
+        style={{ alignSelf: 'flex-end', padding: '9px 20px', borderRadius: 10, border: 'none',
           background: canSave ? C.green : '#ccc', color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: canSave ? 'pointer' : 'default' }}>
         {saving ? 'Saving…' : '+ Add Reading'}
       </button>
@@ -871,7 +915,7 @@ function MaintenanceForm({ chargerId, onAdded }: MaintenanceFormProps) {
         )}
       </div>
       <button onClick={submit} disabled={!canSave}
-        style={{ alignSelf: 'flex-end', padding: '8px 18px', borderRadius: 10, border: 'none',
+        style={{ alignSelf: 'flex-end', padding: '9px 20px', borderRadius: 10, border: 'none',
           background: canSave ? C.green : '#ccc', color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: canSave ? 'pointer' : 'default' }}>
         {saving ? 'Saving…' : '+ Add Record'}
       </button>
@@ -1022,6 +1066,10 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
             <InfoRow label="Latest Reading"    value={latestKwh !== null ? `${Number(latestKwh).toLocaleString()} kWh` : '—'} />
             <InfoRow label="Form A · Next"     value={fmtDate(charger.form_a_next_date)} />
             <InfoRow label="Form D · Next"     value={fmtDate(charger.form_d_next_date)} />
+            {(() => {
+              const w = warrantyStatus(charger.warranty_expiry_date);
+              return <InfoRow label="Warranty" value={w.label} valueColor={charger.warranty_expiry_date ? w.color : undefined} />;
+            })()}
             <InfoRow label="Meter Reading"     value={charger.meter_reading_day ? `${charger.meter_reading_day}${ordinalSuffix(charger.meter_reading_day)} of each month` : '—'} />
 
             {charger.notes && (
@@ -1240,11 +1288,11 @@ function DetailStat({ label, value, valueColor }: { label: string; value: string
   );
 }
 
-function InfoRow({ label, value }: { label: string; value: string }) {
+function InfoRow({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, borderBottom: '1px solid #F3F3F3', paddingBottom: 8 }}>
       <span style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0 }}>{label}</span>
-      <span style={{ fontSize: 13, color: '#1a1a1a', textAlign: 'right' }}>{value}</span>
+      <span style={{ fontSize: 13, color: valueColor ?? '#1a1a1a', textAlign: 'right', fontWeight: valueColor ? 700 : 400 }}>{value}</span>
     </div>
   );
 }
@@ -1255,19 +1303,43 @@ interface LocationCardProps {
   location: Location;
   chargers: Charger[];
   brand: Brand | null;
+  latestReadings: Map<string, MeterReading>;
   onClick: () => void;
 }
 
-function LocationCard({ location, chargers, brand, onClick }: LocationCardProps) {
+function LocationCard({ location, chargers, brand, latestReadings, onClick }: LocationCardProps) {
   const meterNext = nextLocationMeterReading(chargers);
-  const formNext  = nextLocationFormDue(chargers);
+  const formANext = nextLocationFormA(chargers);
+  const formDNext = nextLocationFormD(chargers);
   const meterTone = meterNext ? pmUrgency(meterNext.date) : { label: '—', bg: '#F3F3F3', color: '#767B77' };
-  const formTone  = formNext  ? pmUrgency(formNext.date)  : { label: '—', bg: '#F3F3F3', color: '#767B77' };
+  const formATone = formANext ? pmUrgency(formANext.date) : { label: '—', bg: '#F3F3F3', color: '#767B77' };
+  const formDTone = formDNext ? pmUrgency(formDNext.date) : { label: '—', bg: '#F3F3F3', color: '#767B77' };
+
+  // This-month meter-reading completion: counts chargers that have a monthly schedule
+  // and asks whether each has been read in the current calendar month.
+  const monthStatus = (() => {
+    const scheduled = chargers.filter((c) => c.meter_reading_day !== null);
+    if (scheduled.length === 0) return null;
+    const now = new Date();
+    const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const done = scheduled.filter((c) => {
+      const last = latestReadings.get(c.id);
+      return !!last && last.reading_date.slice(0, 7) === ym;
+    }).length;
+    return { done, total: scheduled.length };
+  })();
+  const monthTone: { bg: string; color: string; label: string } | null = monthStatus ? (
+    monthStatus.done === monthStatus.total
+      ? { bg: '#E4F3E3', color: '#1B512D', label: `✓ Read this month (${monthStatus.done}/${monthStatus.total})` }
+      : monthStatus.done === 0
+        ? { bg: '#FDEAEA', color: '#C0321A', label: `Not read this month (0/${monthStatus.total})` }
+        : { bg: '#FFF8E1', color: '#B07D00', label: `Partially read this month (${monthStatus.done}/${monthStatus.total})` }
+  ) : null;
 
   return (
     <div
       onClick={onClick}
-      style={{ background: C.white, borderRadius: 16, padding: '18px 20px', border: '1px solid #EBEBEB', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 14, transition: 'border-color .15s, box-shadow .15s' }}
+      style={{ background: C.white, borderRadius: 16, padding: '22px 24px', border: '1px solid #EBEBEB', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 16, transition: 'border-color .15s, box-shadow .15s' }}
       onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#C8E6C9'; e.currentTarget.style.boxShadow = '0 6px 24px rgba(0,0,0,.06)'; }}
       onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#EBEBEB'; e.currentTarget.style.boxShadow = 'none'; }}
     >
@@ -1308,17 +1380,28 @@ function LocationCard({ location, chargers, brand, onClick }: LocationCardProps)
         </div>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <div style={{ background: meterTone.bg, color: meterTone.color, borderRadius: 10, padding: '8px 12px', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ background: meterTone.bg, color: meterTone.color, borderRadius: 10, padding: '10px 14px', fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
           <span style={{ flexShrink: 0 }}>Next Meter Reading</span>
           <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'right' }}>
             {meterNext ? `${meterNext.chargerCode} · ${fmtDate(meterNext.date)}` : 'None scheduled'}
           </span>
         </div>
-        <div style={{ background: formTone.bg, color: formTone.color, borderRadius: 10, padding: '8px 12px', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-          <span style={{ flexShrink: 0 }}>Next Form {formNext?.form ?? 'A/D'}</span>
+        {monthTone && (
+          <div style={{ background: monthTone.bg, color: monthTone.color, borderRadius: 10, padding: '6px 14px', fontSize: 11, fontWeight: 700, textAlign: 'right' }}>
+            {monthTone.label}
+          </div>
+        )}
+        <div style={{ background: formATone.bg, color: formATone.color, borderRadius: 10, padding: '10px 14px', fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+          <span style={{ flexShrink: 0 }}>Next Form A</span>
           <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'right' }}>
-            {formNext ? `${formNext.chargerCode} · ${fmtDate(formNext.date)}` : 'None scheduled'}
+            {formANext ? `${formANext.chargerCode} · ${fmtDate(formANext.date)}` : 'None scheduled'}
+          </span>
+        </div>
+        <div style={{ background: formDTone.bg, color: formDTone.color, borderRadius: 10, padding: '10px 14px', fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+          <span style={{ flexShrink: 0 }}>Next Form D</span>
+          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'right' }}>
+            {formDNext ? `${formDNext.chargerCode} · ${fmtDate(formDNext.date)}` : 'None scheduled'}
           </span>
         </div>
       </div>
@@ -1756,7 +1839,7 @@ export function ScreenCPOChargers() {
             : 'No locations match the current search.'}
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 16 }}>
           {visibleLocations.map((l) => {
             const linkedCarpark = managedCarparks.find((m) => m.location_id === l.id);
             const brand: Brand | null =
@@ -1769,6 +1852,7 @@ export function ScreenCPOChargers() {
                 location={l}
                 chargers={chargersByLocation.get(l.id) ?? []}
                 brand={brand}
+                latestReadings={latestByCharger}
                 onClick={() => setViewLocationId(l.id)}
               />
             );
@@ -1826,6 +1910,7 @@ export function ScreenCPOChargers() {
             next_maintenance_date: editingCharger.next_maintenance_date,
             form_a_next_date: editingCharger.form_a_next_date,
             form_d_next_date: editingCharger.form_d_next_date,
+            warranty_expiry_date: editingCharger.warranty_expiry_date,
             meter_reading_day: editingCharger.meter_reading_day,
             notes: editingCharger.notes,
           }}

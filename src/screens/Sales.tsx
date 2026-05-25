@@ -315,7 +315,7 @@ function QuoteModal({ quote, onClose, onSave, onDelete }: QuoteModalProps) {
           </button>
           <button
             onClick={() => onSave({ ...form, id: form.id || `QT-2026-${String(Date.now()).slice(-4)}` })}
-            style={{ padding: '10px 24px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+            style={{ padding: '9px 24px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
           >
             {isNew ? 'Create' : 'Save Changes'}
           </button>
@@ -455,7 +455,7 @@ export function ScreenSales() {
               </button>
             ))}
           </div>
-          <button onClick={() => setModal('new')} style={{ padding: '8px 18px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+          <button onClick={() => setModal('new')} style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
             + New Quote
           </button>
         </div>

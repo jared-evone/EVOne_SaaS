@@ -460,7 +460,7 @@ export function CsvImportTab({ onUploaded }: CsvImportTabProps) {
                     </span>}
               </div>
               <button onClick={handleUpload} disabled={uploading || checkingDupes || rowsWithFlags.filter((r) => !r.isDupe).length === 0}
-                style={{ padding: '10px 24px', borderRadius: 10, border: 'none',
+                style={{ padding: '9px 24px', borderRadius: 10, border: 'none',
                   background: uploading || checkingDupes || rowsWithFlags.filter((r) => !r.isDupe).length === 0 ? '#ccc' : C.green,
                   color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700,
                   cursor: uploading || checkingDupes || rowsWithFlags.filter((r) => !r.isDupe).length === 0 ? 'default' : 'pointer', flexShrink: 0 }}>

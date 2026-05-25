@@ -558,7 +558,7 @@ function SpPriceTab({ prices, onRefresh }: SpPriceTabProps) {
         </div>
         {!addMode && (
           <button onClick={() => setAddMode(true)}
-            style={{ padding: '8px 18px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', flexShrink: 0 }}>
+            style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', flexShrink: 0 }}>
             + Add Carpark
           </button>
         )}
