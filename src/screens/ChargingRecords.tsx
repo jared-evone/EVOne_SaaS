@@ -5,7 +5,7 @@ import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
 import { CarparksTab, type ManagedCarpark, type CpoLocationLite, type CarparkAgg } from './charging/CarparksTab';
-import { Search, Download as DownloadIcon } from 'lucide-react';
+import { Search, Download as DownloadIcon, Loader2, Upload as UploadIcon } from 'lucide-react';
 import { FileText } from 'lucide-react';
 // CsvImportTab is archived in src/screens/charging/CsvImportTab.tsx — left on disk
 // in case we want to re-enable the temporary preview tab later.
@@ -1281,6 +1281,18 @@ export function ScreenChargingRecords() {
     missingCarparks: string[];
   } | null>(null);
 
+  const [parseStatus, setParseStatus] = useState<string | null>(null);
+
+  // One-time keyframe inject for the loading spinner — inline-style codebase, no global CSS.
+  useEffect(() => {
+    const id = 'evone-spin-kf';
+    if (document.getElementById(id)) return;
+    const s = document.createElement('style');
+    s.id = id;
+    s.textContent = '@keyframes evone-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }';
+    document.head.appendChild(s);
+  }, []);
+
   const [downloadOpen, setDownloadOpen] = useState(false);
 
   const gpRef = useRef<HTMLInputElement>(null);
@@ -1364,72 +1376,86 @@ export function ScreenChargingRecords() {
     if (files.length === 0) return;
     e.target.value = '';
 
-    if (source === 'sp') {
-      // Bulk: parse every selected CSV, merge rows, accumulate warnings (prefixed with file name).
-      const allRows: ChargingRow[] = [];
-      const allWarnings: string[] = [];
-      for (const f of files) {
-        const text = await f.text();
-        const { rows, warnings } = parseSpCSV(text);
-        allRows.push(...rows);
-        for (const w of warnings) allWarnings.push(`${f.name}: ${w}`);
+    try {
+      if (source === 'sp') {
+        setParseStatus(files.length === 1 ? 'Parsing SP CSV…' : `Parsing ${files.length} SP CSVs…`);
+        // Bulk: parse every selected CSV, merge rows, accumulate warnings (prefixed with file name).
+        const allRows: ChargingRow[] = [];
+        const allWarnings: string[] = [];
+        for (const f of files) {
+          const text = await f.text();
+          const { rows, warnings } = parseSpCSV(text);
+          allRows.push(...rows);
+          for (const w of warnings) allWarnings.push(`${f.name}: ${w}`);
+        }
+        const fileLabel = files.length === 1
+          ? files[0].name
+          : `${files.length} SP files (${files.map((f) => f.name).join(', ')})`;
+
+        const uniqueCarparks = [...new Set(
+          allRows.map((r) => r.carpark_code).filter((c): c is string => !!c)
+        )];
+        const knownCodes = new Set(carparkPrices.map((p) => p.carpark_code));
+        const missing = uniqueCarparks.filter((c) => !knownCodes.has(c));
+
+        if (missing.length > 0) {
+          setPendingSpUpload({ fileName: fileLabel, rows: allRows, warnings: allWarnings, missingCarparks: missing });
+          return;
+        }
+
+        setParseStatus('Checking for duplicates…');
+        const priced = applySpPrices(allRows, carparkPrices);
+        const chargerIds = [...new Set(priced.map((r) => r.charger_id).filter((c): c is string => !!c))];
+        const existingKeys = await fetchExistingKeys(chargerIds);
+        const { clean, dupeCount } = filterDupes(priced, existingKeys);
+        setUploadModal({ source: 'sp', fileName: fileLabel, rows: clean, warnings: allWarnings, dupeCount });
+      } else {
+        setParseStatus('Parsing GoParkin XLSX…');
+        const file = files[0];
+        const { rows, warnings } = await parseXLSXFile(file);
+        setParseStatus('Checking for duplicates…');
+        const chargerIds = [...new Set(rows.map((r) => r.charger_id).filter((c): c is string => !!c))];
+        const existingKeys = await fetchExistingKeys(chargerIds);
+        const { clean, dupeCount } = filterDupes(rows, existingKeys);
+        setUploadModal({ source, fileName: file.name, rows: clean, warnings, dupeCount });
       }
-      const fileLabel = files.length === 1
-        ? files[0].name
-        : `${files.length} SP files (${files.map((f) => f.name).join(', ')})`;
-
-      const uniqueCarparks = [...new Set(
-        allRows.map((r) => r.carpark_code).filter((c): c is string => !!c)
-      )];
-      const knownCodes = new Set(carparkPrices.map((p) => p.carpark_code));
-      const missing = uniqueCarparks.filter((c) => !knownCodes.has(c));
-
-      if (missing.length > 0) {
-        setPendingSpUpload({ fileName: fileLabel, rows: allRows, warnings: allWarnings, missingCarparks: missing });
-        return;
-      }
-
-      const priced = applySpPrices(allRows, carparkPrices);
-      const chargerIds = [...new Set(priced.map((r) => r.charger_id).filter((c): c is string => !!c))];
-      const existingKeys = await fetchExistingKeys(chargerIds);
-      const { clean, dupeCount } = filterDupes(priced, existingKeys);
-      setUploadModal({ source: 'sp', fileName: fileLabel, rows: clean, warnings: allWarnings, dupeCount });
-    } else {
-      const file = files[0];
-      const { rows, warnings } = await parseXLSXFile(file);
-      const chargerIds = [...new Set(rows.map((r) => r.charger_id).filter((c): c is string => !!c))];
-      const existingKeys = await fetchExistingKeys(chargerIds);
-      const { clean, dupeCount } = filterDupes(rows, existingKeys);
-      setUploadModal({ source, fileName: file.name, rows: clean, warnings, dupeCount });
+    } finally {
+      setParseStatus(null);
     }
   };
 
   const handleNewPricesSave = async (priceMap: Record<string, number>) => {
-    const inserts = Object.entries(priceMap).map(([carpark_code, price_per_kwh]) => ({ carpark_code, price_per_kwh }));
-    await supabase.from('sp_carpark_prices').insert(inserts);
+    try {
+      setParseStatus('Saving new carpark prices…');
+      const inserts = Object.entries(priceMap).map(([carpark_code, price_per_kwh]) => ({ carpark_code, price_per_kwh }));
+      await supabase.from('sp_carpark_prices').insert(inserts);
 
-    const newEntries: SpCarparkPrice[] = inserts.map((i) => ({
-      id: '',
-      carpark_code: i.carpark_code,
-      price_per_kwh: i.price_per_kwh,
-      updated_at: new Date().toISOString(),
-    }));
-    const allPrices = [...carparkPrices, ...newEntries];
-    setCarparkPrices(allPrices);
+      const newEntries: SpCarparkPrice[] = inserts.map((i) => ({
+        id: '',
+        carpark_code: i.carpark_code,
+        price_per_kwh: i.price_per_kwh,
+        updated_at: new Date().toISOString(),
+      }));
+      const allPrices = [...carparkPrices, ...newEntries];
+      setCarparkPrices(allPrices);
 
-    if (pendingSpUpload) {
-      const priced = applySpPrices(pendingSpUpload.rows, allPrices);
-      const chargerIds = [...new Set(priced.map((r) => r.charger_id).filter((c): c is string => !!c))];
-      const existingKeys = await fetchExistingKeys(chargerIds);
-      const { clean, dupeCount } = filterDupes(priced, existingKeys);
-      setUploadModal({
-        source: 'sp',
-        fileName: pendingSpUpload.fileName,
-        rows: clean,
-        warnings: pendingSpUpload.warnings,
-        dupeCount,
-      });
-      setPendingSpUpload(null);
+      if (pendingSpUpload) {
+        setParseStatus('Checking for duplicates…');
+        const priced = applySpPrices(pendingSpUpload.rows, allPrices);
+        const chargerIds = [...new Set(priced.map((r) => r.charger_id).filter((c): c is string => !!c))];
+        const existingKeys = await fetchExistingKeys(chargerIds);
+        const { clean, dupeCount } = filterDupes(priced, existingKeys);
+        setUploadModal({
+          source: 'sp',
+          fileName: pendingSpUpload.fileName,
+          rows: clean,
+          warnings: pendingSpUpload.warnings,
+          dupeCount,
+        });
+        setPendingSpUpload(null);
+      }
+    } finally {
+      setParseStatus(null);
     }
   };
 
@@ -1575,23 +1601,26 @@ export function ScreenChargingRecords() {
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
               {canEdit && (
                 <button onClick={() => gpRef.current?.click()}
-                  style={{ padding: '9px 18px', borderRadius: 10, border: `1px solid ${SOURCE_COLORS.goparkin.color}`, background: SOURCE_COLORS.goparkin.bg,
-                    color: SOURCE_COLORS.goparkin.color, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-                  ⬆ GoParkin (.xlsx)
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 18px', borderRadius: 10, border: `1px solid ${SOURCE_COLORS.goparkin.color}`, background: SOURCE_COLORS.goparkin.bg,
+                    color: SOURCE_COLORS.goparkin.color, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', lineHeight: 1 }}>
+                  <UploadIcon size={14} strokeWidth={2.25} />
+                  GoParkin (.xlsx)
                 </button>
               )}
               {canEdit && (
                 <button onClick={() => spRef.current?.click()}
                   title="Select one or more SP CSVs to upload in bulk"
-                  style={{ padding: '9px 18px', borderRadius: 10, border: `1px solid ${SOURCE_COLORS.sp.color}`, background: SOURCE_COLORS.sp.bg,
-                    color: SOURCE_COLORS.sp.color, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-                  ⬆ SP (.csv · bulk)
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 18px', borderRadius: 10, border: `1px solid ${SOURCE_COLORS.sp.color}`, background: SOURCE_COLORS.sp.bg,
+                    color: SOURCE_COLORS.sp.color, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', lineHeight: 1 }}>
+                  <UploadIcon size={14} strokeWidth={2.25} />
+                  SP (.csv · bulk)
                 </button>
               )}
               <button onClick={() => setDownloadOpen(true)}
                 title="Download a filtered CSV (carpark + date range)"
-                style={{ padding: '9px 18px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-                <DownloadIcon size={12} strokeWidth={2.25} style={{display:"inline",verticalAlign:"-2px",marginRight:4}}/> Download CSV
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 18px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', lineHeight: 1 }}>
+                <DownloadIcon size={14} strokeWidth={2.25} />
+                Download CSV
               </button>
             </div>
 
@@ -1700,6 +1729,20 @@ export function ScreenChargingRecords() {
           carparks={[...carparkAgg.map((c) => c.carpark_name)].sort((a, b) => a.localeCompare(b))}
           onClose={() => setDownloadOpen(false)}
         />
+      )}
+
+      {parseStatus && (
+        // Intentionally un-dismissable: no close button, no overlay-click handler. Large CSMS files
+        // can take several seconds to parse + dedupe, so we block the UI to make the wait obvious.
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: C.white, borderRadius: 20, padding: '32px 36px', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, minWidth: 320, maxWidth: 420 }}>
+            <Loader2 size={32} strokeWidth={2.25} color={C.green} style={{ animation: 'evone-spin 1s linear infinite' }} />
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.green, textAlign: 'center' }}>{parseStatus}</div>
+            <div style={{ fontSize: 12, color: C.slate, textAlign: 'center', lineHeight: 1.5 }}>
+              Please keep this tab open — large CSMS files can take several seconds to parse and deduplicate.
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
