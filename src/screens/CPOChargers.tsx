@@ -456,13 +456,12 @@ interface ChargerModalProps {
   title: string;
   locations: Location[];
   lockLocation?: boolean;
-  isEdit?: boolean;
   onSave: (data: ChargerForm) => Promise<void>;
   onDelete?: () => Promise<void>;
   onClose: () => void;
 }
 
-function ChargerModal({ initial, title, locations, lockLocation, isEdit = false, onSave, onDelete, onClose }: ChargerModalProps) {
+function ChargerModal({ initial, title, locations, lockLocation, onSave, onDelete, onClose }: ChargerModalProps) {
   const [form, setForm] = useState<ChargerForm>(initial);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -473,13 +472,7 @@ function ChargerModal({ initial, title, locations, lockLocation, isEdit = false,
 
   const handleSave = async () => {
     setSaving(true);
-    // In edit mode the PM dates are read-only — strip them from the payload so the
-    // disabled inputs can't accidentally clobber values that the Maintenance tab is
-    // managing. Initial values stay in the form, just not written back.
-    const payload: ChargerForm = isEdit
-      ? { ...form, form_a_next_date: initial.form_a_next_date, form_d_next_date: initial.form_d_next_date }
-      : form;
-    await onSave(payload);
+    await onSave(form);
     setSaving(false);
     onClose();
   };
@@ -572,32 +565,23 @@ function ChargerModal({ initial, title, locations, lockLocation, isEdit = false,
           </div>
         </div>
 
-        {/* Preventive Maintenance Schedule — editable only at creation. In edit mode the
-            current dates are shown read-only because they're managed automatically from
-            the Maintenance tab (Form A +6mo, Form D +12mo from the performed date). */}
+        {/* Preventive Maintenance schedule */}
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: C.green }}>Preventive Maintenance Schedule</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div>
               <FieldLabel>Form A · Next Date (6-mo)</FieldLabel>
               <input type="date" value={form.form_a_next_date ?? ''}
-                onChange={(e) => set('form_a_next_date', e.target.value || null)}
-                disabled={isEdit}
-                style={{ ...inputStyle(), background: isEdit ? '#F3F3F3' : C.white, color: isEdit ? C.slate : '#1a1a1a', cursor: isEdit ? 'not-allowed' : 'text' }} />
+                onChange={(e) => set('form_a_next_date', e.target.value || null)} style={inputStyle()} />
             </div>
             <div>
               <FieldLabel>Form D · Next Date (12-mo)</FieldLabel>
               <input type="date" value={form.form_d_next_date ?? ''}
-                onChange={(e) => set('form_d_next_date', e.target.value || null)}
-                disabled={isEdit}
-                style={{ ...inputStyle(), background: isEdit ? '#F3F3F3' : C.white, color: isEdit ? C.slate : '#1a1a1a', cursor: isEdit ? 'not-allowed' : 'text' }} />
+                onChange={(e) => set('form_d_next_date', e.target.value || null)} style={inputStyle()} />
             </div>
           </div>
           <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5 }}>
-            {isEdit
-              ? <>These dates are <strong>read-only</strong> after creation — logging a Form A or Form D in the Maintenance tab rolls them forward automatically (Form A <strong>+6 months</strong>, Form D <strong>+12 months</strong> from each performed date).</>
-              : <>Optional. Leave blank if unsure — the first logged Form A or Form D in the Maintenance tab will start the schedule. After creation these dates become read-only and are managed automatically (Form A rolls <strong>+6 months</strong>, Form D rolls <strong>+12 months</strong> from each logged maintenance).</>
-            }
+            "Next PM" indicators across the app use whichever of these two dates comes first. Logging a Form A or Form D in the Maintenance tab rolls the matching date forward automatically (Form A <strong>+6 months</strong>, Form D <strong>+12 months</strong> from the performed date) — you can still adjust these manually here if needed.
           </div>
         </div>
 
@@ -816,6 +800,8 @@ interface MaintenanceFormProps {
 function MaintenanceForm({ chargerId, onAdded }: MaintenanceFormProps) {
   const [type, setType] = useState<MaintenanceType>('preventive_form_a');
   const [date, setDate] = useState(todayISO());
+  const [nextDue, setNextDue] = useState(addMonthsISO(todayISO(), 6));
+  const [nextDueTouched, setNextDueTouched] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -828,15 +814,23 @@ function MaintenanceForm({ chargerId, onAdded }: MaintenanceFormProps) {
     return null;
   };
 
-  // Next Due is always derived from performed_date + interval — no manual override.
-  // Form A rolls +6mo, Form D rolls +12mo. Corrective / legacy preventive have no next.
-  const nextDue: string = (() => {
-    const m = cycleMonths(type);
-    return m && date ? addMonthsISO(date, m) : '';
-  })();
+  // Default Next Due to performed_date + interval, but let the user manually override.
+  // Once the user types into the field we stop auto-updating it.
+  const updateType = (t: MaintenanceType) => {
+    setType(t);
+    if (!nextDueTouched) {
+      const m = cycleMonths(t);
+      setNextDue(m && date ? addMonthsISO(date, m) : '');
+    }
+  };
 
-  const updateType = (t: MaintenanceType) => setType(t);
-  const updateDate = (d: string) => setDate(d);
+  const updateDate = (d: string) => {
+    setDate(d);
+    if (!nextDueTouched && d) {
+      const m = cycleMonths(type);
+      if (m) setNextDue(addMonthsISO(d, m));
+    }
+  };
 
   const submit = async () => {
     if (!file) return;
@@ -872,6 +866,8 @@ function MaintenanceForm({ chargerId, onAdded }: MaintenanceFormProps) {
 
     setType('preventive_form_a');
     setDate(todayISO());
+    setNextDue(addMonthsISO(todayISO(), 6));
+    setNextDueTouched(false);
     setFile(null);
     if (fileRef.current) fileRef.current.value = '';
     await onAdded();
@@ -897,14 +893,13 @@ function MaintenanceForm({ chargerId, onAdded }: MaintenanceFormProps) {
         </div>
         <div>
           <FieldLabel>
-            {type === 'preventive_form_a' ? 'Next Form A Due (auto)' :
-             type === 'preventive_form_d' ? 'Next Form D Due (auto)' :
+            {type === 'preventive_form_a' ? 'Next Form A Due' :
+             type === 'preventive_form_d' ? 'Next Form D Due' :
              'Next PM Due'}
           </FieldLabel>
-          <div style={{ ...inputStyle(), background: '#F3F3F3', color: nextDue ? '#1a1a1a' : C.slate, display: 'flex', alignItems: 'center', fontStyle: nextDue ? 'normal' : 'italic' }}>
-            {nextDue ? fmtDate(nextDue) :
-              type === 'corrective' ? 'No PM rollover for corrective records' : '—'}
-          </div>
+          <input type="date" value={nextDue}
+            onChange={(e) => { setNextDue(e.target.value); setNextDueTouched(true); }}
+            style={inputStyle()} />
         </div>
       </div>
       <div>
@@ -1911,7 +1906,6 @@ export function ScreenCPOChargers() {
 
       {editingCharger && (
         <ChargerModal key={editingCharger.id}
-          isEdit
           title={`Edit ${editingCharger.charger_code}`}
           initial={{
             charger_code: editingCharger.charger_code,
