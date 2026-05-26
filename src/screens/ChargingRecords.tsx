@@ -73,6 +73,17 @@ function fmtDate(s: string | null) {
   return new Date(s).toLocaleDateString('en-SG');
 }
 
+// Compact "DD/MM HH:MM" formatter for the upload preview table — strings come in as
+// either "2026-05-10 07:59:00" (no offset) or ISO; we just slice rather than risk
+// Date-object timezone shifting.
+function fmtPreviewDT(s: string | null): string {
+  if (!s) return '—';
+  const norm = s.replace('T', ' ').slice(0, 16); // "YYYY-MM-DD HH:MM"
+  const m = /^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/.exec(norm);
+  if (!m) return s.slice(0, 16);
+  return `${m[3]}/${m[2]} ${m[4]}:${m[5]}`;
+}
+
 function normalizeKey(k: string): string {
   return k.trim().toLowerCase().replace(/[\s\-\/\(\)]+/g, '_').replace(/_+/g, '_').replace(/_$/, '');
 }
@@ -190,6 +201,9 @@ function parseSpConnector(raw: string): { chargerId: string | null; connectorId:
   return { chargerId: m[1], connectorId: m[2] };
 }
 
+// Distinctive SP-export columns. If a CSV is missing these we treat it as the wrong file.
+const SP_REQUIRED_HEADERS = ['Location Name', 'Connector', 'Volume (kWh)', 'Start Date', 'Start Time', 'End Date', 'End Time'] as const;
+
 function parseSpCSV(text: string): { rows: ChargingRow[]; warnings: string[] } {
   const warnings: string[] = [];
   const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
@@ -200,6 +214,11 @@ function parseSpCSV(text: string): { rows: ChargingRow[]; warnings: string[] } {
   }
 
   const rawHeaders = splitCSVLine(nonEmpty[0]).map((h) => h.trim());
+  const missing = SP_REQUIRED_HEADERS.filter((h) => !rawHeaders.includes(h));
+  if (missing.length > 0) {
+    throw new Error(`This doesn't look like an SP Mobility charging-records CSV. Missing column${missing.length === 1 ? '' : 's'}: ${missing.join(', ')}. Please pick the file exported from the SP portal.`);
+  }
+
   const col = (name: string) => rawHeaders.indexOf(name);
 
   const iLocationName = col('Location Name');
@@ -249,6 +268,11 @@ function parseSpCSV(text: string): { rows: ChargingRow[]; warnings: string[] } {
 
 // ── GoParkin XLSX Parser ──────────────────────────────────────────
 
+// Distinctive GoParkin-export resolved keys. We resolve the headers through KEY_ALIASES first,
+// then require these — that lets the parser stay tolerant of "Carpark"/"Carpark Code" / "Charger ID"
+// / "Charger" variants while still rejecting a random spreadsheet that has none of them.
+const GOPARKIN_REQUIRED_KEYS = ['carpark_code', 'charger_id', 'vehicle_plate_number', 'start_date_time', 'end_date_time', 'total_energy_supplied_kwh'] as const;
+
 async function parseXLSXFile(file: File): Promise<{ rows: ChargingRow[]; warnings: string[] }> {
   const warnings: string[] = [];
   const buffer = await file.arrayBuffer();
@@ -259,6 +283,12 @@ async function parseXLSXFile(file: File): Promise<{ rows: ChargingRow[]; warning
   if (raw.length === 0) {
     warnings.push('Spreadsheet appears empty.');
     return { rows: [], warnings };
+  }
+
+  const resolvedKeys = new Set(Object.keys(raw[0]).map(resolveKey));
+  const missing = GOPARKIN_REQUIRED_KEYS.filter((k) => !resolvedKeys.has(k));
+  if (missing.length > 0) {
+    throw new Error(`This doesn't look like a GoParkin charging-records export. Missing column${missing.length === 1 ? '' : 's'}: ${missing.join(', ')}. Please pick the .xlsx generated from the GoParkin dashboard.`);
   }
 
   const rows: ChargingRow[] = raw.map((r) => {
@@ -301,8 +331,35 @@ function makeDupeKey(r: { charger_id?: string | null; connector_id?: string | nu
   return `${r.charger_id}|${r.connector_id ?? ''}|${t}`;
 }
 
-async function fetchExistingKeys(chargerIds: string[]): Promise<Set<string>> {
+// Parse a row's start_date_time the same way makeDupeKey does, so the time-window
+// query bounds we send to Postgres align exactly with the keys we'll compare against.
+function parseStartTimeMs(s: string | null | undefined): number | null {
+  if (!s) return null;
+  const norm = s.trim().replace(' ', 'T');
+  const hasOffset = /[Zz]|[+\-]\d{2}:\d{2}$/.test(norm);
+  const t = new Date(hasOffset ? norm : norm + 'Z').getTime();
+  return isNaN(t) ? null : t;
+}
+
+async function fetchExistingKeys(chargerIds: string[], incoming: ChargingRow[]): Promise<Set<string>> {
   if (chargerIds.length === 0) return new Set();
+
+  // Bound the lookup by the incoming file's time window — typical CSMS uploads cover
+  // a week or month, so this trims a multi-MB query that would otherwise scan every
+  // record those chargers ever produced down to a few hundred rows.
+  let minMs: number | null = null;
+  let maxMs: number | null = null;
+  for (const r of incoming) {
+    const t = parseStartTimeMs(r.start_date_time);
+    if (t === null) continue;
+    if (minMs === null || t < minMs) minMs = t;
+    if (maxMs === null || t > maxMs) maxMs = t;
+  }
+  // ±1 day buffer guards against any timezone / DST drift between client and DB.
+  const BUF_MS = 24 * 60 * 60 * 1000;
+  const lowerBound = minMs !== null ? new Date(minMs - BUF_MS).toISOString() : null;
+  const upperBound = maxMs !== null ? new Date(maxMs + BUF_MS).toISOString() : null;
+
   const keys = new Set<string>();
   const ID_CHUNK = 100;
   const PAGE = 1000;
@@ -310,11 +367,14 @@ async function fetchExistingKeys(chargerIds: string[]): Promise<Set<string>> {
     const chunk = chargerIds.slice(i, i + ID_CHUNK);
     let from = 0;
     while (true) {
-      const { data, error } = await supabase
+      let q = supabase
         .from('crm_charging_records')
         .select('charger_id, connector_id, start_date_time')
         .in('charger_id', chunk)
-        .range(from, from + PAGE - 1);
+        .order('id', { ascending: true });
+      if (lowerBound) q = q.gte('start_date_time', lowerBound);
+      if (upperBound) q = q.lte('start_date_time', upperBound);
+      const { data, error } = await q.range(from, from + PAGE - 1);
       if (error || !data || data.length === 0) break;
       for (const r of data) {
         const key = makeDupeKey(r);
@@ -722,7 +782,7 @@ function UploadModal({ source, fileName, rows, warnings, dupeCount, uploaderEmai
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 500, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 820, maxWidth: '95vw', maxHeight: '92vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span style={{ background: srcColor.bg, color: srcColor.color, fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 99 }}>
@@ -752,6 +812,42 @@ function UploadModal({ source, fileName, rows, warnings, dupeCount, uploaderEmai
             </div>
           </div>
         </div>
+
+        {rows.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Preview · first {Math.min(10, rows.length)} of {rows.length.toLocaleString()} row{rows.length === 1 ? '' : 's'}
+              </div>
+              <div style={{ fontSize: 11, color: C.slate }}>Verify before importing</div>
+            </div>
+            <div style={{ border: '1px solid #EBEBEB', borderRadius: 12, overflow: 'auto', maxHeight: 280 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: 'Figtree' }}>
+                <thead>
+                  <tr style={{ background: C.seasalt }}>
+                    {['Carpark', 'Charger', 'Conn.', 'Plate', 'Start', 'End', 'kWh', 'Amt'].map((h) => (
+                      <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: C.slate, letterSpacing: '0.04em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.slice(0, 10).map((r, i) => (
+                    <tr key={i} style={{ borderBottom: '1px solid #F3F3F3' }}>
+                      <td title={r.carpark_code ?? ''} style={{ padding: '7px 10px', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#1a1a1a' }}>{r.carpark_code ?? '—'}</td>
+                      <td style={{ padding: '7px 10px', color: C.green, fontWeight: 700, whiteSpace: 'nowrap' }}>{r.charger_id ?? '—'}</td>
+                      <td style={{ padding: '7px 10px', color: C.slate, whiteSpace: 'nowrap' }}>{r.connector_id ?? '—'}</td>
+                      <td style={{ padding: '7px 10px', color: '#1a1a1a', whiteSpace: 'nowrap' }}>{r.vehicle_plate_number ?? '—'}</td>
+                      <td style={{ padding: '7px 10px', color: C.slate, whiteSpace: 'nowrap' }}>{fmtPreviewDT(r.start_date_time)}</td>
+                      <td style={{ padding: '7px 10px', color: C.slate, whiteSpace: 'nowrap' }}>{fmtPreviewDT(r.end_date_time)}</td>
+                      <td style={{ padding: '7px 10px', color: '#1a1a1a', whiteSpace: 'nowrap', textAlign: 'right' }}>{r.total_energy_supplied_kwh != null ? Number(r.total_energy_supplied_kwh).toFixed(2) : '—'}</td>
+                      <td style={{ padding: '7px 10px', color: '#1a1a1a', whiteSpace: 'nowrap', textAlign: 'right' }}>{r.transaction_amount != null ? `$${Number(r.transaction_amount).toFixed(2)}` : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
         {dupeCount > 0 && (
           <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
@@ -1282,6 +1378,7 @@ export function ScreenChargingRecords() {
   } | null>(null);
 
   const [parseStatus, setParseStatus] = useState<string | null>(null);
+  const [parseError, setParseError] = useState<string | null>(null);
 
   // One-time keyframe inject for the loading spinner — inline-style codebase, no global CSS.
   useEffect(() => {
@@ -1376,6 +1473,19 @@ export function ScreenChargingRecords() {
     if (files.length === 0) return;
     e.target.value = '';
 
+    // Reject the wrong file extension before doing any work — the picker has accept=" "
+    // hints but users can still drop arbitrary files in some browsers.
+    const isCsv  = (n: string) => n.toLowerCase().endsWith('.csv');
+    const isXlsx = (n: string) => n.toLowerCase().endsWith('.xlsx') || n.toLowerCase().endsWith('.xls');
+    if (source === 'sp' && files.some((f) => !isCsv(f.name))) {
+      setParseError('SP upload only accepts .csv files exported from the SP Mobility portal.');
+      return;
+    }
+    if (source === 'goparkin' && files.some((f) => !isXlsx(f.name))) {
+      setParseError('GoParkin upload only accepts the .xlsx file generated by the GoParkin dashboard.');
+      return;
+    }
+
     try {
       if (source === 'sp') {
         setParseStatus(files.length === 1 ? 'Parsing SP CSV…' : `Parsing ${files.length} SP CSVs…`);
@@ -1406,7 +1516,7 @@ export function ScreenChargingRecords() {
         setParseStatus('Checking for duplicates…');
         const priced = applySpPrices(allRows, carparkPrices);
         const chargerIds = [...new Set(priced.map((r) => r.charger_id).filter((c): c is string => !!c))];
-        const existingKeys = await fetchExistingKeys(chargerIds);
+        const existingKeys = await fetchExistingKeys(chargerIds, priced);
         const { clean, dupeCount } = filterDupes(priced, existingKeys);
         setUploadModal({ source: 'sp', fileName: fileLabel, rows: clean, warnings: allWarnings, dupeCount });
       } else {
@@ -1415,10 +1525,12 @@ export function ScreenChargingRecords() {
         const { rows, warnings } = await parseXLSXFile(file);
         setParseStatus('Checking for duplicates…');
         const chargerIds = [...new Set(rows.map((r) => r.charger_id).filter((c): c is string => !!c))];
-        const existingKeys = await fetchExistingKeys(chargerIds);
+        const existingKeys = await fetchExistingKeys(chargerIds, rows);
         const { clean, dupeCount } = filterDupes(rows, existingKeys);
         setUploadModal({ source, fileName: file.name, rows: clean, warnings, dupeCount });
       }
+    } catch (err) {
+      setParseError((err as Error).message ?? 'Could not parse the uploaded file.');
     } finally {
       setParseStatus(null);
     }
@@ -1443,7 +1555,7 @@ export function ScreenChargingRecords() {
         setParseStatus('Checking for duplicates…');
         const priced = applySpPrices(pendingSpUpload.rows, allPrices);
         const chargerIds = [...new Set(priced.map((r) => r.charger_id).filter((c): c is string => !!c))];
-        const existingKeys = await fetchExistingKeys(chargerIds);
+        const existingKeys = await fetchExistingKeys(chargerIds, priced);
         const { clean, dupeCount } = filterDupes(priced, existingKeys);
         setUploadModal({
           source: 'sp',
@@ -1454,6 +1566,8 @@ export function ScreenChargingRecords() {
         });
         setPendingSpUpload(null);
       }
+    } catch (err) {
+      setParseError((err as Error).message ?? 'Could not finish processing the SP upload.');
     } finally {
       setParseStatus(null);
     }
@@ -1741,6 +1855,21 @@ export function ScreenChargingRecords() {
             <div style={{ fontSize: 12, color: C.slate, textAlign: 'center', lineHeight: 1.5 }}>
               Please keep this tab open — large CSMS files can take several seconds to parse and deduplicate.
             </div>
+          </div>
+        </div>
+      )}
+
+      {parseError && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: C.white, borderRadius: 20, padding: '28px 32px', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 14, minWidth: 360, maxWidth: 480 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#C0321A' }}>Upload rejected</div>
+            <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '12px 14px', fontSize: 13, fontWeight: 600, lineHeight: 1.5 }}>
+              {parseError}
+            </div>
+            <button onClick={() => setParseError(null)}
+              style={{ alignSelf: 'flex-end', padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              OK
+            </button>
           </div>
         </div>
       )}
