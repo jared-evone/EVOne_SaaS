@@ -13,6 +13,7 @@ import {
 import { CustomerPortal } from './portal/CustomerPortal';
 import { upsertDocument, blobToBase64 } from './portal/portalDb';
 import { supabase } from '../lib/supabase';
+import { createZipBlob } from '../lib/zip';
 import { usePermissions } from '../permissions';
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -565,6 +566,141 @@ export function CorporateStatementPDF({ stmt, billingMonth }: PDFProps) {
   );
 }
 
+// ── SP Corporate Upload Preview ───────────────────────────────────
+
+interface SpUploadPreviewProps {
+  pending: {
+    fileName: string;
+    rows: SpCorpRecord[];
+    skipped: { noEmail: number; noEnergy: number; badDate: number };
+  };
+  emailToCompany: Map<string, string | null>;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+function SpUploadPreview({ pending, emailToCompany, onCancel, onConfirm }: SpUploadPreviewProps) {
+  const { fileName, rows, skipped } = pending;
+
+  const totalKwh = Math.round(rows.reduce((s, r) => s + r.energyKwh, 0) * 100) / 100;
+  const uniqueDrivers = Array.from(new Set(rows.map((r) => r.driverEmail)));
+  const matched = uniqueDrivers.filter((e) => emailToCompany.get(e)).length;
+  const unmatched = uniqueDrivers.length - matched;
+
+  const dates = rows.map((r) => r.startDateTime).filter(Boolean).sort();
+  const firstDate = dates[0] ?? '';
+  const lastDate = dates[dates.length - 1] ?? '';
+
+  const skippedTotal = skipped.noEmail + skipped.noEnergy + skipped.badDate;
+  const preview = rows.slice(0, 10);
+
+  const stat = (label: string, value: string, accent?: boolean) => (
+    <div style={{ flex: 1, minWidth: 140 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
+      <div style={{ fontSize: 16, fontWeight: 700, color: accent ? C.green : '#1a1a1a', marginTop: 2 }}>{value}</div>
+    </div>
+  );
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 820, maxWidth: '95vw', maxHeight: '92vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ background: '#E3F0FF', color: '#1A62C0', fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 99 }}>SP CORPORATE</span>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>Confirm Import</div>
+          </div>
+          <button onClick={onCancel} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
+        </div>
+
+        <div style={{ background: C.seasalt, borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div title={fileName} style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</div>
+          <div style={{ fontSize: 12, color: C.slate }}>
+            <strong style={{ color: C.green }}>{rows.length.toLocaleString()}</strong> row{rows.length !== 1 ? 's' : ''} ready to import
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, padding: '14px 18px' }}>
+          {stat('Total Energy', `${fmtKwh(totalKwh)} kWh`, true)}
+          {stat('Unique Drivers', uniqueDrivers.length.toLocaleString())}
+          {stat('Matched to CRM', `${matched} of ${uniqueDrivers.length}`)}
+          {stat('Date Range', firstDate && lastDate ? `${firstDate.slice(0, 10)} → ${lastDate.slice(0, 10)}` : '—')}
+        </div>
+
+        {unmatched > 0 && (
+          <div style={{ background: '#FFF8E1', borderRadius: 12, padding: '12px 16px', border: '1px solid #F5E6B0' }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#B07D00' }}>
+              {unmatched} driver email{unmatched !== 1 ? 's' : ''} not linked to a CRM company
+            </div>
+            <div style={{ fontSize: 12, color: '#7A5800', marginTop: 2 }}>
+              Their rows will appear in Unmatched Records after import — add the drivers in CRM to bill them.
+            </div>
+          </div>
+        )}
+
+        {skippedTotal > 0 && (
+          <div style={{ background: '#FFF8E1', borderRadius: 12, padding: '12px 16px', border: '1px solid #F5E6B0' }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#B07D00' }}>
+              {skippedTotal.toLocaleString()} row{skippedTotal !== 1 ? 's' : ''} skipped during parsing
+            </div>
+            <div style={{ fontSize: 12, color: '#7A5800', marginTop: 2 }}>
+              {skipped.noEmail} no email · {skipped.noEnergy} empty energy cell · {skipped.badDate} unparseable date
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Preview · first {preview.length} of {rows.length.toLocaleString()} row{rows.length === 1 ? '' : 's'}
+            </div>
+            <div style={{ fontSize: 11, color: C.slate }}>Verify before importing</div>
+          </div>
+          <div style={{ border: '1px solid #EBEBEB', borderRadius: 12, overflow: 'auto', maxHeight: 280 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: 'Figtree' }}>
+              <thead>
+                <tr style={{ background: C.seasalt }}>
+                  {['Driver Email', 'Location', 'Date / Time', 'Energy (kWh)', 'CRM'].map((h) => (
+                    <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: C.slate, letterSpacing: '0.04em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {preview.map((r, i) => {
+                  const ok = !!emailToCompany.get(r.driverEmail);
+                  return (
+                    <tr key={i} style={{ borderBottom: '1px solid #F3F3F3' }}>
+                      <td style={{ padding: '7px 10px', color: '#1a1a1a', whiteSpace: 'nowrap' }}>{r.driverEmail}</td>
+                      <td title={r.location} style={{ padding: '7px 10px', color: C.slate, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.location || '—'}</td>
+                      <td style={{ padding: '7px 10px', color: C.slate, whiteSpace: 'nowrap' }}>{fmtDateTime(r.startDateTime)}</td>
+                      <td style={{ padding: '7px 10px', color: '#1a1a1a', whiteSpace: 'nowrap', textAlign: 'right', fontWeight: 700 }}>{r.energyKwh.toFixed(2)}</td>
+                      <td style={{ padding: '7px 10px', whiteSpace: 'nowrap' }}>
+                        <span style={{ background: ok ? C.honeydew : '#FFF0E0', color: ok ? C.green : '#B45309', fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99 }}>
+                          {ok ? 'Matched' : 'Unmatched'}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+          <button onClick={onCancel}
+            style={{ padding: '9px 20px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+            Cancel
+          </button>
+          <button onClick={onConfirm}
+            style={{ padding: '9px 24px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+            Import {rows.length.toLocaleString()} Row{rows.length !== 1 ? 's' : ''}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Root Screen ───────────────────────────────────────────────────
 
 type ScreenTab = 'generate' | 'portal';
@@ -586,6 +722,12 @@ export function ScreenCorporateInvoicing() {
   const [publishing, setPublishing] = useState<{ done: number; total: number } | null>(null);
   const [publishResult, setPublishResult] = useState<string | null>(null);
   const [rowBusyId, setRowBusyId] = useState<string | null>(null); // company id currently downloading/publishing
+  const [zipping, setZipping] = useState<{ done: number; total: number } | null>(null);
+  const [pendingSp, setPendingSp] = useState<{
+    fileName: string;
+    rows: SpCorpRecord[];
+    skipped: { noEmail: number; noEnergy: number; badDate: number };
+  } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -704,15 +846,17 @@ export function ScreenCorporateInvoicing() {
         });
       }
 
-      setSpCorpRecords(parsed);
-
-      const skippedTotal = skippedNoEmail + skippedNoEnergy + skippedBadDate;
       if (parsed.length === 0) {
         const sampleDateVal = rows[0][kDate!];
         setError(`No usable rows in "${SHEET}". Skipped: ${skippedNoEmail} no email, ${skippedNoEnergy} empty energy cell, ${skippedBadDate} unparseable date. Sample Date cell: ${JSON.stringify(sampleDateVal)}`);
-      } else if (skippedTotal > 0) {
-        setError(`Imported ${parsed.length} rows; skipped ${skippedTotal} (${skippedNoEmail} no email, ${skippedNoEnergy} empty energy cell, ${skippedBadDate} unparseable date).`);
+        return;
       }
+
+      setPendingSp({
+        fileName: file.name,
+        rows: parsed,
+        skipped: { noEmail: skippedNoEmail, noEnergy: skippedNoEnergy, badDate: skippedBadDate },
+      });
     } catch (err) {
       setError(`Failed to read XLSX: ${(err as Error).message ?? 'unknown error'}`);
     }
@@ -767,6 +911,40 @@ export function ScreenCorporateInvoicing() {
       setError(`Download failed: ${(e as Error).message ?? 'unknown error'}`);
     } finally {
       setRowBusyId(null);
+    }
+  };
+
+  const downloadAllPdfs = async (stmts: CompanyStatement[]) => {
+    setError(null);
+    setZipping({ done: 0, total: stmts.length });
+    try {
+      const files: { name: string; data: Uint8Array }[] = [];
+      const used = new Set<string>();
+      for (let i = 0; i < stmts.length; i++) {
+        const stmt = stmts[i];
+        const blob = await pdf(<CorporateStatementPDF stmt={stmt} billingMonth={billingMonth} />).toBlob();
+        const buf = new Uint8Array(await blob.arrayBuffer());
+        const safe = stmt.company.name.replace(/[\\/:*?"<>|]/g, '_').trim();
+        let name = `${safe}_${billingMonth}_statement.pdf`;
+        let n = 2;
+        while (used.has(name)) { name = `${safe}_${billingMonth}_statement_${n++}.pdf`; }
+        used.add(name);
+        files.push({ name, data: buf });
+        setZipping({ done: i + 1, total: stmts.length });
+      }
+      const zipBlob = createZipBlob(files);
+      const url = URL.createObjectURL(zipBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `corporate_statements_${billingMonth}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(`Bulk download failed: ${(e as Error).message ?? 'unknown error'}`);
+    } finally {
+      setZipping(null);
     }
   };
 
@@ -972,6 +1150,14 @@ export function ScreenCorporateInvoicing() {
           </div>
         </div>
       )}
+      {zipping && (
+        <div style={{ background: C.honeydew, color: C.green, borderRadius: 12, padding: '12px 18px', fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span>Generating PDFs {zipping.done} / {zipping.total}…</span>
+          <div style={{ flex: 1, height: 6, background: C.white, borderRadius: 99, overflow: 'hidden' }}>
+            <div style={{ width: `${(zipping.done / Math.max(zipping.total, 1)) * 100}%`, height: '100%', background: C.green, transition: 'width 0.2s' }} />
+          </div>
+        </div>
+      )}
       {publishResult && !publishing && (
         <div style={{ background: C.honeydew, color: C.green, borderRadius: 12, padding: '12px 18px', display: 'flex', alignItems: 'center', gap: 14, fontSize: 13, fontWeight: 600 }}>
           <span style={{ flex: 1 }}>✓ {publishResult}</span>
@@ -1040,6 +1226,13 @@ export function ScreenCorporateInvoicing() {
                 }}
                 style={{ padding: '9px 18px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
                 <DownloadIcon size={12} strokeWidth={2.25} style={{display:"inline",verticalAlign:"-2px",marginRight:4}}/> Download Master CSV
+              </button>
+              <button
+                onClick={() => downloadAllPdfs(statements)}
+                disabled={!!zipping}
+                style={{ padding: '9px 18px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: zipping ? 'default' : 'pointer', whiteSpace: 'nowrap', opacity: zipping ? 0.6 : 1 }}>
+                <DownloadIcon size={12} strokeWidth={2.25} style={{display:"inline",verticalAlign:"-2px",marginRight:4}}/>
+                {zipping ? `Zipping ${zipping.done}/${zipping.total}…` : `Download All PDFs (${statements.length})`}
               </button>
               {canEdit && (
                 <button onClick={() => publishAll(statements)} disabled={!!publishing}
@@ -1124,6 +1317,18 @@ export function ScreenCorporateInvoicing() {
           stmt={selectedStatement}
           billingMonth={billingMonth}
           onClose={() => setSelectedStatement(null)}
+        />
+      )}
+
+      {pendingSp && (
+        <SpUploadPreview
+          pending={pendingSp}
+          emailToCompany={emailToCompany}
+          onCancel={() => setPendingSp(null)}
+          onConfirm={() => {
+            setSpCorpRecords(pendingSp.rows);
+            setPendingSp(null);
+          }}
         />
       )}
       </>}
