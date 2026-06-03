@@ -5,7 +5,7 @@ import { BrandLogo, type Brand } from '../components/BrandLogo';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
 import { OneMapAutocomplete } from '../components/OneMapAutocomplete';
-import { Search, Download as DownloadIcon } from 'lucide-react';
+import { Search, Download as DownloadIcon, RotateCcw } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -456,12 +456,14 @@ interface ChargerModalProps {
   title: string;
   locations: Location[];
   lockLocation?: boolean;
+  latestFormAPerformed?: string | null;
+  latestFormDPerformed?: string | null;
   onSave: (data: ChargerForm) => Promise<void>;
   onDelete?: () => Promise<void>;
   onClose: () => void;
 }
 
-function ChargerModal({ initial, title, locations, lockLocation, onSave, onDelete, onClose }: ChargerModalProps) {
+function ChargerModal({ initial, title, locations, lockLocation, latestFormAPerformed, latestFormDPerformed, onSave, onDelete, onClose }: ChargerModalProps) {
   const [form, setForm] = useState<ChargerForm>(initial);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -566,24 +568,83 @@ function ChargerModal({ initial, title, locations, lockLocation, onSave, onDelet
         </div>
 
         {/* Preventive Maintenance schedule */}
-        <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: C.green }}>Preventive Maintenance Schedule</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <div>
-              <FieldLabel>Form A · Next Date (6-mo)</FieldLabel>
-              <input type="date" value={form.form_a_next_date ?? ''}
-                onChange={(e) => set('form_a_next_date', e.target.value || null)} style={inputStyle()} />
+        {(() => {
+          const autoFormA = latestFormAPerformed ? addMonthsISO(latestFormAPerformed, 6) : null;
+          const autoFormD = latestFormDPerformed ? addMonthsISO(latestFormDPerformed, 12) : null;
+          const earlyFormA = !!(form.form_a_next_date && autoFormA && form.form_a_next_date < autoFormA);
+          const earlyFormD = !!(form.form_d_next_date && autoFormD && form.form_d_next_date < autoFormD);
+
+          const resetBtn = (target: string | null, onReset: () => void) => (
+            <button type="button"
+              onClick={onReset}
+              disabled={!target}
+              title={target ? `Reset to ${fmtDate(target)} (auto from last logged PM)` : 'No PM of this type has been logged yet'}
+              style={{ width: 38, height: 38, flexShrink: 0, borderRadius: 10, border: '1px solid #EBEBEB', background: target ? C.white : '#F7F7F7', color: target ? C.green : '#C0C0C0', cursor: target ? 'pointer' : 'default', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+              <RotateCcw size={14} strokeWidth={2.25} />
+            </button>
+          );
+
+          const helper = (performed: string | null | undefined, auto: string | null, label: string) => {
+            if (!performed) return <span>No {label} logged yet — type a date or log one in the Maintenance tab.</span>;
+            return <span>Last {label}: <strong style={{ color: '#1a1a1a' }}>{fmtDate(performed)}</strong> · auto = <strong style={{ color: C.green }}>{fmtDate(auto)}</strong></span>;
+          };
+
+          return (
+            <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.green }}>Preventive Maintenance Schedule</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div>
+                  <FieldLabel>Form A · Next Date (6-mo)</FieldLabel>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input type="date" value={form.form_a_next_date ?? ''}
+                      onChange={(e) => set('form_a_next_date', e.target.value || null)} style={{ ...inputStyle(), flex: 1 }} />
+                    {resetBtn(autoFormA, () => set('form_a_next_date', autoFormA))}
+                  </div>
+                  <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.4 }}>
+                    {helper(latestFormAPerformed, autoFormA, 'Form A')}
+                  </div>
+                </div>
+                <div>
+                  <FieldLabel>Form D · Next Date (12-mo)</FieldLabel>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input type="date" value={form.form_d_next_date ?? ''}
+                      onChange={(e) => set('form_d_next_date', e.target.value || null)} style={{ ...inputStyle(), flex: 1 }} />
+                    {resetBtn(autoFormD, () => set('form_d_next_date', autoFormD))}
+                  </div>
+                  <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.4 }}>
+                    {helper(latestFormDPerformed, autoFormD, 'Form D')}
+                  </div>
+                </div>
+              </div>
+              {(earlyFormA || earlyFormD) && (
+                <div style={{ background: '#FFF8E1', border: '1px solid #F5E6B0', borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#B07D00' }}>Date is earlier than the latest logged PM suggests</div>
+                  {earlyFormA && (
+                    <div style={{ fontSize: 12, color: '#7A5800', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span>Form A logged {fmtDate(latestFormAPerformed!)} → auto due {fmtDate(autoFormA)}. Saving as {fmtDate(form.form_a_next_date)} will show as overdue immediately.</span>
+                      <button type="button" onClick={() => set('form_a_next_date', autoFormA)}
+                        style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #B07D00', background: C.white, color: '#B07D00', fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                        Use {fmtDate(autoFormA)}
+                      </button>
+                    </div>
+                  )}
+                  {earlyFormD && (
+                    <div style={{ fontSize: 12, color: '#7A5800', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span>Form D logged {fmtDate(latestFormDPerformed!)} → auto due {fmtDate(autoFormD)}. Saving as {fmtDate(form.form_d_next_date)} will show as overdue immediately.</span>
+                      <button type="button" onClick={() => set('form_d_next_date', autoFormD)}
+                        style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #B07D00', background: C.white, color: '#B07D00', fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                        Use {fmtDate(autoFormD)}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5 }}>
+                "Next PM" indicators across the app use whichever of these two dates comes first. Logging a Form A or Form D in the Maintenance tab rolls the matching date forward automatically (Form A <strong>+6 months</strong>, Form D <strong>+12 months</strong> from the performed date). Use <RotateCcw size={11} strokeWidth={2.25} style={{ display: 'inline', verticalAlign: '-1px' }} /> to snap back to that auto value.
+              </div>
             </div>
-            <div>
-              <FieldLabel>Form D · Next Date (12-mo)</FieldLabel>
-              <input type="date" value={form.form_d_next_date ?? ''}
-                onChange={(e) => set('form_d_next_date', e.target.value || null)} style={inputStyle()} />
-            </div>
-          </div>
-          <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5 }}>
-            "Next PM" indicators across the app use whichever of these two dates comes first. Logging a Form A or Form D in the Maintenance tab rolls the matching date forward automatically (Form A <strong>+6 months</strong>, Form D <strong>+12 months</strong> from the performed date) — you can still adjust these manually here if needed.
-          </div>
-        </div>
+          );
+        })()}
 
         {/* Warranty */}
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -1641,6 +1702,7 @@ export function ScreenCPOChargers() {
   // Modal state
   const [selectedCharger, setSelectedCharger] = useState<Charger | null>(null);
   const [editingCharger, setEditingCharger] = useState<Charger | null>(null);
+  const [editingPm, setEditingPm] = useState<{ latestFormA: string | null; latestFormD: string | null }>({ latestFormA: null, latestFormD: null });
   const [addingCharger, setAddingCharger] = useState(false);
   const [editingLocation, setEditingLocation] = useState<Location | null>(null);
   const [addingLocation, setAddingLocation] = useState(false);
@@ -1671,6 +1733,28 @@ export function ScreenCPOChargers() {
     if (updated && updated !== selectedCharger) setSelectedCharger(updated);
     if (!updated) setSelectedCharger(null);
   }, [chargers]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load latest performed Form A / Form D dates for the editing charger so the
+  // modal can offer a "snap back to auto-derived" reset.
+  useEffect(() => {
+    if (!editingCharger) { setEditingPm({ latestFormA: null, latestFormD: null }); return; }
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from('cpo_maintenance_records')
+        .select('performed_date, maintenance_type')
+        .eq('charger_id', editingCharger.id)
+        .in('maintenance_type', ['preventive_form_a', 'preventive_form_d'])
+        .order('performed_date', { ascending: false });
+      if (cancelled) return;
+      const rows = (data as { performed_date: string; maintenance_type: string }[] | null) ?? [];
+      setEditingPm({
+        latestFormA: rows.find((r) => r.maintenance_type === 'preventive_form_a')?.performed_date ?? null,
+        latestFormD: rows.find((r) => r.maintenance_type === 'preventive_form_d')?.performed_date ?? null,
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [editingCharger]);
 
   const latestByCharger = useMemo(() => {
     const map = new Map<string, MeterReading>();
@@ -1927,6 +2011,8 @@ export function ScreenCPOChargers() {
             notes: editingCharger.notes,
           }}
           locations={locations}
+          latestFormAPerformed={editingPm.latestFormA}
+          latestFormDPerformed={editingPm.latestFormD}
           onSave={(data) => updateCharger(editingCharger.id, data)}
           onDelete={canDelete ? () => deleteCharger(editingCharger.id) : undefined}
           onClose={() => setEditingCharger(null)} />
