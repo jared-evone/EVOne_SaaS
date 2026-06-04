@@ -3,6 +3,8 @@ import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { Search } from 'lucide-react';
+import { LocationTrends, ensureChargingTrendsCache } from './charging/LocationTrends';
+import { Sessions } from './charging/Sessions';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -24,6 +26,7 @@ interface PerDayRow {
 }
 
 type SourceFilter = 'all' | 'goparkin' | 'sp';
+type DashboardTab = 'weekly' | 'trends' | 'sessions';
 
 const PER_PAGE = 12;
 
@@ -80,6 +83,7 @@ function deltaTone(curr: number, prior: number): { label: string; color: string;
 // ── Component ─────────────────────────────────────────────────────
 
 export function ScreenChargingDashboard() {
+  const [tab, setTab] = useState<DashboardTab>('weekly');
   const [weekStart, setWeekStart] = useState(() => mondayOf(todayISO()));
   const [cpoOnly, setCpoOnly] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
@@ -91,6 +95,12 @@ export function ScreenChargingDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [latestDataDate, setLatestDataDate] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Warm the Location Trends session cache in the background as soon as the
+    // dashboard mounts, so switching to that tab (and between ranges) is instant.
+    ensureChargingTrendsCache().catch(() => { /* surfaced on the tab itself */ });
+  }, []);
 
   useEffect(() => {
     // One-off: detect the most recent record so the user can jump to a week with data.
@@ -108,6 +118,7 @@ export function ScreenChargingDashboard() {
   }, []);
 
   useEffect(() => {
+    if (tab !== 'weekly') return;
     setLoading(true);
     setError(null);
     const src = sourceFilter === 'all' ? null : sourceFilter;
@@ -121,7 +132,7 @@ export function ScreenChargingDashboard() {
       else { setPerDay((pd.data as PerDayRow[]) ?? []); }
       setLoading(false);
     });
-  }, [weekStart, cpoOnly, sourceFilter]);
+  }, [tab, weekStart, cpoOnly, sourceFilter]);
 
   const totals = useMemo(() => {
     const sessions = perCarpark.reduce((s, r) => s + Number(r.sessions ?? 0), 0);
@@ -152,6 +163,26 @@ export function ScreenChargingDashboard() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {/* Tab strip */}
+      <div style={{ display: 'flex', gap: 4, background: C.white, borderRadius: 12, padding: 4, border: '1px solid #EBEBEB', alignSelf: 'flex-start' }}>
+        {([
+          ['weekly', 'Weekly Detail'],
+          ['trends', 'Location Trends'],
+          ['sessions', 'Sessions'],
+        ] as [DashboardTab, string][]).map(([id, label]) => (
+          <button key={id} onClick={() => setTab(id)}
+            style={{ padding: '8px 22px', borderRadius: 10, border: 'none', fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer',
+              background: tab === id ? C.green : 'transparent', color: tab === id ? C.white : C.slate }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'trends' && <LocationTrends />}
+
+      {tab === 'sessions' && <Sessions />}
+
+      {tab === 'weekly' && <>
       {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 16px', fontSize: 13, fontWeight: 600 }}>{error}</div>}
 
       {/* Week selector + filters */}
@@ -304,6 +335,7 @@ export function ScreenChargingDashboard() {
           </div>
         </div>
       </div>
+      </>}
     </div>
   );
 }

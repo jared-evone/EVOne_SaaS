@@ -1,4 +1,7 @@
+import { useState } from 'react';
 import { C } from '../theme';
+
+export interface LineChartTooltip { title: string; value: string }
 
 // ── Sparkline ─────────────────────────────────────────────────────
 export function Sparkline({
@@ -105,12 +108,19 @@ export function LineChart({
   labels,
   color = C.green,
   height = 160,
-}: { data: number[]; labels: string[]; color?: string; height?: number }) {
-  const max = Math.max(...data) * 1.1;
+  formatY,
+  tooltips,
+}: { data: number[]; labels: string[]; color?: string; height?: number; formatY?: (v: number) => string; tooltips?: (LineChartTooltip | undefined)[] }) {
+  const [hover, setHover] = useState<number | null>(null);
+  const rawMax = Math.max(...data) * 1.1;
+  const max = rawMax > 0 ? rawMax : 1;
   const W = 520;
   const H = height;
+  const denom = data.length > 1 ? data.length - 1 : 1;
+  // With many points (e.g. daily series) per-point dots collapse into a blob — show line only.
+  const showDots = data.length <= 60;
   const pts = data.map((v, i) => {
-    const x = 48 + (i / (data.length - 1)) * (W - 60);
+    const x = 48 + (i / denom) * (W - 60);
     const y = H - 24 - (v / max) * (H - 48);
     return { x, y, v };
   });
@@ -120,7 +130,9 @@ export function LineChart({
     pts.map((p) => `L ${p.x},${p.y}`).join(' ') +
     ` L ${pts[pts.length - 1].x},${H - 24} Z`;
   const gridLines = [0.25, 0.5, 0.75, 1].map((f) => H - 24 - f * (H - 48));
+  const hovered = hover != null ? tooltips?.[hover] : undefined;
   return (
+    <div style={{ position: 'relative' }}>
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none">
       {gridLines.map((gy, i) => (
         <line key={i} x1="48" x2={W - 12} y1={gy} y2={gy} stroke="#E4F3E3" strokeWidth="1" />
@@ -133,11 +145,12 @@ export function LineChart({
       </defs>
       <path d={area} fill="url(#areafill)" />
       <polyline points={poly} fill="none" stroke={color} strokeWidth="2.5" strokeLinejoin="round" />
-      {pts.map((p, i) => (
+      {showDots && pts.map((p, i) => (
         <circle key={i} cx={p.x} cy={p.y} r="4" fill="white" stroke={color} strokeWidth="2" />
       ))}
       {labels.map((l, i) => {
-        const x = 48 + (i / (data.length - 1)) * (W - 60);
+        if (!l) return null;
+        const x = 48 + (i / denom) * (W - 60);
         return (
           <text key={i} x={x} y={H - 6} textAnchor="middle" fontSize="10" fontFamily="Figtree" fill={C.slate}>
             {l}
@@ -154,10 +167,47 @@ export function LineChart({
           fontFamily="Figtree"
           fill={C.slate}
         >
-          {Math.round((max * f) / 1000)}k
+          {formatY ? formatY(max * f) : `${Math.round((max * f) / 1000)}k`}
         </text>
       ))}
+      {/* Highlighted marker for the hovered point */}
+      {hover != null && pts[hover] && (
+        <circle cx={pts[hover].x} cy={pts[hover].y} r="5.5" fill={color} stroke="white" strokeWidth="2.5" />
+      )}
+      {/* Transparent per-point hover zones. Rendered last so they sit on top; full
+          chart width so hovering anywhere near a point surfaces it (works even when
+          visible dots are hidden). */}
+      {tooltips && pts.map((p, i) => {
+        if (!tooltips[i]) return null;
+        const x0 = i === 0 ? 0 : (pts[i - 1].x + p.x) / 2;
+        const x1 = i === pts.length - 1 ? W : (p.x + pts[i + 1].x) / 2;
+        return (
+          <rect key={`hit-${i}`} x={x0} y={0} width={Math.max(0, x1 - x0)} height={H} fill="transparent"
+            onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover((h) => (h === i ? null : h))} />
+        );
+      })}
     </svg>
+    {hovered && hover != null && (
+      <div style={{
+        position: 'absolute',
+        left: `${(pts[hover].x / W) * 100}%`,
+        top: pts[hover].y,
+        transform: 'translate(-50%, calc(-100% - 14px))',
+        pointerEvents: 'none',
+        zIndex: 30,
+        background: C.white,
+        border: '1px solid #EBEBEB',
+        borderRadius: 12,
+        padding: '10px 16px',
+        boxShadow: '0 10px 28px rgba(0,0,0,.14)',
+        whiteSpace: 'nowrap',
+        textAlign: 'center',
+      }}>
+        <div style={{ fontSize: 11, fontWeight: 600, color: C.slate, marginBottom: 4 }}>{hovered.title}</div>
+        <div style={{ fontSize: 17, fontWeight: 700, color: C.green, letterSpacing: '-0.02em', lineHeight: 1 }}>{hovered.value}</div>
+      </div>
+    )}
+    </div>
   );
 }
 
