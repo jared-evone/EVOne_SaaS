@@ -558,7 +558,7 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
           <div style={{ display: 'flex', borderBottom: '1px solid #EBEBEB', padding: '8px 12px', gap: 4, overflowX: 'auto', flexWrap: 'nowrap' }}>
             <TabButton active={tab === 'overview'} onClick={() => setTab('overview')}>Overview</TabButton>
             <TabButton active={tab === 'files'}    onClick={() => setTab('files')}>
-              Files{files.length > 0 && <span style={{ color: C.slate, marginLeft: 4, fontWeight: 600 }}>· {files.length}</span>}
+              Documents{files.length > 0 && <span style={{ color: C.slate, marginLeft: 4, fontWeight: 600 }}>· {files.length}</span>}
             </TabButton>
             {sites.map((s) => {
               const id: DetailTabId = `site:${s.id}`;
