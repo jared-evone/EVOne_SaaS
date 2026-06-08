@@ -14,6 +14,7 @@ export interface RawRow {
   source: 'goparkin' | 'sp';
   charge_type: string | null;
   payment_status: string | null;
+  vehicle_plate_number: string | null;
 }
 
 interface BucketPoint { key: string; label: string; kwh: number; count: number; }
@@ -85,7 +86,7 @@ function fmtDayLabel(iso: string): string {
 }
 
 // Full date for hover tooltips: "Week of 12 May 2025" (week start) or "May 2025" (month).
-function fmtTooltipDate(key: string, granularity: Granularity): string {
+export function fmtTooltipDate(key: string, granularity: Granularity): string {
   if (granularity === 'month') {
     const [y, m] = key.split('-').map(Number);
     return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
@@ -94,20 +95,20 @@ function fmtTooltipDate(key: string, granularity: Granularity): string {
   return 'Week of ' + new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' });
 }
 
-function fmtKwh(n: number): string {
+export function fmtKwh(n: number): string {
   return `${Number(n).toLocaleString('en-SG', { maximumFractionDigits: 1 })} kWh`;
 }
 
-function fmtKwhShort(n: number): string {
+export function fmtKwhShort(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k`;
   return Math.round(n).toString();
 }
 
-function fmtCount(n: number): string {
+export function fmtCount(n: number): string {
   return `${Math.round(n).toLocaleString('en-SG')} session${Math.round(n) === 1 ? '' : 's'}`;
 }
 
-function fmtCountShort(n: number): string {
+export function fmtCountShort(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k`;
   return Math.round(n).toString();
 }
@@ -153,12 +154,12 @@ function thinLabels(keys: string[], formatter: (k: string) => string, target: nu
   return keys.map((k, i) => (i % stride === 0 || i === keys.length - 1 ? formatter(k) : ''));
 }
 
-export function aggregate(rows: RawRow[], granularity: Granularity, startISO: string | null): CarparkTrend[] {
+// Shared axis scaffold: bucket keys, thinned labels, and a row→bucketKey mapper.
+// The axis START for "all time" (startISO null) is the earliest row, not today.
+// The axis END is the latest data date (never future-of-today) so an incomplete
+// current period doesn't render as a misleading drop-to-zero cliff at the right edge.
+function bucketScaffold(rows: RawRow[], granularity: Granularity, startISO: string | null) {
   const todayISO = new Date().toISOString().slice(0, 10);
-  // Derive the data's actual min/max dates in one pass. The axis START for "all time"
-  // (startISO null) must be the earliest row, not today. The axis END is the latest
-  // data date (never future-of-today) — NOT today — so an incomplete current period
-  // doesn't render as a misleading drop-to-zero cliff at the right edge.
   let minDate: string | null = null;
   let maxDate: string | null = null;
   for (const r of rows) {
@@ -169,10 +170,46 @@ export function aggregate(rows: RawRow[], granularity: Granularity, startISO: st
   }
   const effectiveStartISO = startISO ?? minDate;
   const effectiveEndISO = maxDate && maxDate < todayISO ? maxDate : todayISO;
-
   const bucketKeys = buildBucketKeys(granularity, effectiveStartISO, effectiveEndISO);
   const formatter = granularity === 'day' ? fmtDayLabel : granularity === 'week' ? fmtWeekLabel : fmtMonthLabel;
   const labels = thinLabels(bucketKeys, formatter);
+  const keyOf = (dateISO: string) => granularity === 'day' ? dateISO : granularity === 'week' ? mondayOf(dateISO) : monthKey(dateISO);
+  return { bucketKeys, labels, keyOf };
+}
+
+export interface TotalSeries {
+  buckets: { key: string; label: string; kwh: number; count: number }[];
+  totalKwh: number;
+  totalCount: number;
+}
+
+// Single series summed across ALL carparks (for the Overview tab).
+export function aggregateTotal(rows: RawRow[], granularity: Granularity, startISO: string | null): TotalSeries {
+  const { bucketKeys, labels, keyOf } = bucketScaffold(rows, granularity, startISO);
+  const kwhByBucket = new Map<string, number>();
+  const countByBucket = new Map<string, number>();
+  for (const r of rows) {
+    const dateISO = r.start_date_time.slice(0, 10);
+    if (dateISO.length < 10) continue;
+    const bk = keyOf(dateISO);
+    kwhByBucket.set(bk, (kwhByBucket.get(bk) ?? 0) + Number(r.total_energy_supplied_kwh ?? 0));
+    countByBucket.set(bk, (countByBucket.get(bk) ?? 0) + 1);
+  }
+  const buckets = bucketKeys.map((key, i) => ({
+    key,
+    label: labels[i],
+    kwh: Math.round((kwhByBucket.get(key) ?? 0) * 100) / 100,
+    count: countByBucket.get(key) ?? 0,
+  }));
+  return {
+    buckets,
+    totalKwh: buckets.reduce((s, b) => s + b.kwh, 0),
+    totalCount: buckets.reduce((s, b) => s + b.count, 0),
+  };
+}
+
+export function aggregate(rows: RawRow[], granularity: Granularity, startISO: string | null): CarparkTrend[] {
+  const { bucketKeys, labels, keyOf } = bucketScaffold(rows, granularity, startISO);
 
   // group rows by carpark + bucket — track both summed kWh and session count
   const perCp = new Map<string, { kwhByBucket: Map<string, number>; countByBucket: Map<string, number>; sources: Set<'goparkin' | 'sp'> }>();
@@ -180,7 +217,7 @@ export function aggregate(rows: RawRow[], granularity: Granularity, startISO: st
     const dateISO = r.start_date_time.slice(0, 10);
     if (dateISO.length < 10) continue; // skip malformed/empty timestamps (mondayOf would throw)
     const code = r.carpark_code || '(unknown)';
-    const bucketKey = granularity === 'day' ? dateISO : granularity === 'week' ? mondayOf(dateISO) : monthKey(dateISO);
+    const bucketKey = keyOf(dateISO);
     let entry = perCp.get(code);
     if (!entry) { entry = { kwhByBucket: new Map(), countByBucket: new Map(), sources: new Set() }; perCp.set(code, entry); }
     entry.kwhByBucket.set(bucketKey, (entry.kwhByBucket.get(bucketKey) ?? 0) + Number(r.total_energy_supplied_kwh ?? 0));
@@ -275,6 +312,50 @@ export function ensureCpoCarparkSet(): Promise<Set<string>> {
   return cpoSetPromise;
 }
 
+// Vehicles to exclude from the analytics. The user picks whole companies (in the
+// Excluded Companies tab); here we resolve those companies to the plate set of all
+// their CRM vehicles. Plates are normalised (UPPER + trim) on both sides so casing /
+// spacing differences match. Cache is cleared whenever the exclusion list is edited.
+export function normalizePlate(p: string | null | undefined): string {
+  return (p ?? '').toUpperCase().trim();
+}
+
+let excludedCache: Set<string> | null = null;
+let excludedPromise: Promise<Set<string>> | null = null;
+
+async function loadExcludedVehicles(): Promise<Set<string>> {
+  const [{ data: ex, error: exErr }, { data: veh, error: vErr }] = await Promise.all([
+    supabase.from('charging_excluded_companies').select('company_id'),
+    supabase.from('crm_vehicles').select('vehicle_plate, company_id'),
+  ]);
+  if (exErr) throw new Error(exErr.message);
+  if (vErr) throw new Error(vErr.message);
+  const excludedCompanies = new Set(((ex ?? []) as { company_id: string }[]).map((r) => r.company_id));
+  const set = new Set<string>();
+  for (const v of (veh ?? []) as { vehicle_plate: string | null; company_id: string | null }[]) {
+    if (v.company_id && excludedCompanies.has(v.company_id)) {
+      const p = normalizePlate(v.vehicle_plate);
+      if (p) set.add(p);
+    }
+  }
+  return set;
+}
+
+export function ensureExcludedVehicles(): Promise<Set<string>> {
+  if (excludedCache) return Promise.resolve(excludedCache);
+  if (!excludedPromise) {
+    excludedPromise = loadExcludedVehicles()
+      .then((s) => { excludedCache = s; return s; })
+      .catch((e) => { excludedPromise = null; throw e; });
+  }
+  return excludedPromise;
+}
+
+export function clearExcludedVehiclesCache(): void {
+  excludedCache = null;
+  excludedPromise = null;
+}
+
 // Count-then-parallel-range pagination. Assumes the table is stable for the
 // duration of the load (records are imported via a separate modal, never
 // concurrently with a dashboard view), so offset pages don't shift under us.
@@ -299,7 +380,7 @@ async function loadAllChargingRows(onProgress?: (n: number) => void): Promise<Ra
       batch.push(
         supabase
           .from('crm_charging_records')
-          .select('carpark_code, start_date_time, total_energy_supplied_kwh, source, charge_type, payment_status')
+          .select('carpark_code, start_date_time, total_energy_supplied_kwh, source, charge_type, payment_status, vehicle_plate_number')
           .order('id', { ascending: true })
           .range(p * PAGE, p * PAGE + PAGE - 1),
       );
@@ -323,10 +404,13 @@ export function LocationTrends() {
   const [dcOnly, setDcOnly] = useState(false);
   const [cpoOnly, setCpoOnly] = useState(false);
   const [cpoSet, setCpoSet] = useState<Set<string>>(new Set());
+  const [excludeOn, setExcludeOn] = useState(false);
+  const [excludedSet, setExcludedSet] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
     ensureCpoCarparkSet().then((s) => { if (!cancelled) setCpoSet(s); }).catch(() => {});
+    ensureExcludedVehicles().then((s) => { if (!cancelled) setExcludedSet(s); }).catch(() => {});
     return () => { cancelled = true; };
   }, []);
 
@@ -366,10 +450,11 @@ export function LocationTrends() {
       if (sourceFilter !== 'all' && r.source !== sourceFilter) return false;
       if (dcOnly && r.charge_type !== 'DC') return false;
       if (cpoOnly && cpoSet.size > 0 && !(r.carpark_code && cpoSet.has(r.carpark_code))) return false;
+      if (excludeOn && excludedSet.size > 0 && r.vehicle_plate_number && excludedSet.has(normalizePlate(r.vehicle_plate_number))) return false;
       if (startISO && dateStr < startISO) return false;
       return true;
     });
-  }, [rows, rangeMonths, sourceFilter, dcOnly, cpoOnly, cpoSet]);
+  }, [rows, rangeMonths, sourceFilter, dcOnly, cpoOnly, cpoSet, excludeOn, excludedSet]);
 
   const trends = useMemo(
     () => aggregate(filteredRows, granularity, rangeStartISO(rangeMonths)),
@@ -416,6 +501,7 @@ export function LocationTrends() {
 
         <button onClick={() => setDcOnly((v) => !v)} style={toggleBtn(dcOnly)}>{dcOnly ? '✓ ' : ''}DC Only</button>
         <button onClick={() => setCpoOnly((v) => !v)} style={toggleBtn(cpoOnly)}>{cpoOnly ? '✓ ' : ''}CPO Only (EVE + EVOne)</button>
+        <button onClick={() => setExcludeOn((v) => !v)} style={toggleBtn(excludeOn)}>{excludeOn ? '✓ ' : ''}Exclude Vehicles{excludedSet.size > 0 ? ` (${excludedSet.size})` : ''}</button>
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
           {(['all', 'goparkin', 'sp'] as const).map((s) => (

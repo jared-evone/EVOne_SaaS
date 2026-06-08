@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { C } from '../theme';
 
 export interface LineChartTooltip { title: string; value: string }
@@ -112,9 +112,23 @@ export function LineChart({
   tooltips,
 }: { data: number[]; labels: string[]; color?: string; height?: number; formatY?: (v: number) => string; tooltips?: (LineChartTooltip | undefined)[] }) {
   const [hover, setHover] = useState<number | null>(null);
+  // Measure the container so the SVG renders 1:1 (viewBox width == pixel width).
+  // A fixed viewBox stretched via preserveAspectRatio="none" warps dots/strokes
+  // on wide cards; matching the width keeps circles round and strokes even.
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [measured, setMeasured] = useState(520);
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const update = () => setMeasured(el.clientWidth || 520);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const rawMax = Math.max(...data) * 1.1;
   const max = rawMax > 0 ? rawMax : 1;
-  const W = 520;
+  const W = Math.max(320, measured);
   const H = height;
   const denom = data.length > 1 ? data.length - 1 : 1;
   // With many points (e.g. daily series) per-point dots collapse into a blob — show line only.
@@ -132,7 +146,7 @@ export function LineChart({
   const gridLines = [0.25, 0.5, 0.75, 1].map((f) => H - 24 - f * (H - 48));
   const hovered = hover != null ? tooltips?.[hover] : undefined;
   return (
-    <div style={{ position: 'relative' }}>
+    <div ref={wrapRef} style={{ position: 'relative' }}>
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none">
       {gridLines.map((gy, i) => (
         <line key={i} x1="48" x2={W - 12} y1={gy} y2={gy} stroke="#E4F3E3" strokeWidth="1" />
@@ -204,7 +218,7 @@ export function LineChart({
         textAlign: 'center',
       }}>
         <div style={{ fontSize: 11, fontWeight: 600, color: C.slate, marginBottom: 4 }}>{hovered.title}</div>
-        <div style={{ fontSize: 17, fontWeight: 700, color: C.green, letterSpacing: '-0.02em', lineHeight: 1 }}>{hovered.value}</div>
+        <div style={{ fontSize: 17, fontWeight: 700, color, letterSpacing: '-0.02em', lineHeight: 1 }}>{hovered.value}</div>
       </div>
     )}
     </div>

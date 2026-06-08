@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { C } from '../../theme';
+import { LineChart, type LineChartTooltip } from '../../components/charts';
 import {
-  aggregate, CarparkCard, ensureCpoCarparkSet, toggleBtn,
+  aggregateTotal, ensureCpoCarparkSet, toggleBtn,
   ensureChargingTrendsCache, getCachedChargingRows, clearChargingTrendsCache,
   ensureExcludedVehicles, normalizePlate,
+  fmtKwh, fmtKwhShort, fmtCount, fmtCountShort, fmtTooltipDate,
   type Granularity,
 } from './LocationTrends';
 
-type RangeMonths = 3 | 6 | 12 | 'all';
+type RangeMonths = 3 | 6 | 12 | 24 | 'all';
 type SourceFilter = 'all' | 'goparkin' | 'sp';
 
 function rangeStartISO(months: RangeMonths): string | null {
@@ -20,13 +22,12 @@ function rangeStartISO(months: RangeMonths): string | null {
 const isSuccess = (s: string | null) => (s ?? '').toLowerCase() === 'success';
 
 // ── Component ─────────────────────────────────────────────────────
-// Sessions reuses the shared charging cache (preloaded on dashboard mount, same
-// one Location Trends uses) and derives "successful sessions only" in memory — no
-// separate fetch, so it's instant once that one cache is warm.
+// Two dashboard-wide line charts (sessions + energy) summed across every carpark,
+// off the shared charging cache that's preloaded on dashboard mount.
 
-export function Sessions() {
+export function ChargingOverview() {
   const [rangeMonths, setRangeMonths] = useState<RangeMonths>(12);
-  const [granularity, setGranularity] = useState<Granularity>('day');
+  const [granularity, setGranularity] = useState<Granularity>('week');
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [dcOnly, setDcOnly] = useState(false);
   const [cpoOnly, setCpoOnly] = useState(false);
@@ -67,7 +68,6 @@ export function Sessions() {
     setRefreshKey((k) => k + 1);
   };
 
-  // Success-only + range + source + charge-type + CPO — all in memory, instant.
   const filteredRows = useMemo(() => {
     const startISO = rangeStartISO(rangeMonths);
     return rows.filter((r) => {
@@ -83,18 +83,34 @@ export function Sessions() {
     });
   }, [rows, rangeMonths, sourceFilter, dcOnly, cpoOnly, cpoSet, excludeOn, excludedSet]);
 
-  // aggregate sorts by total kWh; re-sort by session count to match the count metric.
-  const trends = useMemo(
-    () => aggregate(filteredRows, granularity, rangeStartISO(rangeMonths))
-      .sort((a, b) => b.totalCount - a.totalCount),
+  const series = useMemo(
+    () => aggregateTotal(filteredRows, granularity, rangeStartISO(rangeMonths)),
     [filteredRows, granularity, rangeMonths],
   );
+
+  const carparks = useMemo(() => {
+    const s = new Set<string>();
+    for (const r of filteredRows) if (r.carpark_code) s.add(r.carpark_code);
+    return s.size;
+  }, [filteredRows]);
+
+  const labels = series.buckets.map((b) => b.label);
+  const sessionTips: (LineChartTooltip | undefined)[] | undefined = granularity === 'day'
+    ? undefined
+    : series.buckets.map((b) => ({ title: fmtTooltipDate(b.key, granularity), value: fmtCount(b.count) }));
+  const energyTips: (LineChartTooltip | undefined)[] | undefined = granularity === 'day'
+    ? undefined
+    : series.buckets.map((b) => ({ title: fmtTooltipDate(b.key, granularity), value: fmtKwh(b.kwh) }));
 
   const rangeLabel =
     rangeMonths === 'all' ? 'All time' :
     rangeMonths === 3 ? 'Last 3 months' :
     rangeMonths === 6 ? 'Last 6 months' :
-    'Last 12 months';
+    rangeMonths === 12 ? 'Last 12 months' :
+    'Last 24 months';
+  const granLabel = granularity === 'day' ? 'daily' : granularity === 'week' ? 'weekly' : 'monthly';
+
+  const hasData = !loading && series.buckets.length > 0 && series.totalCount > 0;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -105,8 +121,8 @@ export function Sessions() {
       {/* Filter strip */}
       <div style={{ background: C.white, borderRadius: 16, padding: '14px 20px', border: '1px solid #EBEBEB', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', gap: 4 }}>
-          {(['3', '6', '12', 'all'] as const).map((r) => {
-            const v: RangeMonths = r === 'all' ? 'all' : (Number(r) as 3 | 6 | 12);
+          {(['3', '6', '12', '24', 'all'] as const).map((r) => {
+            const v: RangeMonths = r === 'all' ? 'all' : (Number(r) as 3 | 6 | 12 | 24);
             return (
               <button key={r} onClick={() => setRangeMonths(v)} style={pillBtn(rangeMonths === v)}>
                 {r === 'all' ? 'All time' : `${r} mo`}
@@ -118,9 +134,9 @@ export function Sessions() {
         <div style={{ width: 1, height: 24, background: '#EBEBEB' }} />
 
         <div style={{ display: 'flex', gap: 4 }}>
-          {(['day', 'week', 'month'] as const).map((g) => (
+          {(['week', 'month'] as const).map((g) => (
             <button key={g} onClick={() => setGranularity(g)} style={pillBtn(granularity === g)}>
-              {g === 'day' ? 'Daily' : g === 'week' ? 'Weekly' : 'Monthly'}
+              {g === 'week' ? 'Weekly' : 'Monthly'}
             </button>
           ))}
         </div>
@@ -142,8 +158,8 @@ export function Sessions() {
 
       {/* Summary line */}
       <div style={{ fontSize: 13, color: C.slate, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-        <span><strong style={{ color: '#1a1a1a' }}>{rangeLabel}</strong> · {granularity === 'day' ? 'daily' : granularity === 'week' ? 'weekly' : 'monthly'} session count · <strong style={{ color: '#1a1a1a' }}>successful sessions only</strong></span>
-        <span>{trends.length} carpark{trends.length === 1 ? '' : 's'} with data</span>
+        <span><strong style={{ color: '#1a1a1a' }}>{rangeLabel}</strong> · {granLabel} totals across all carparks · <strong style={{ color: '#1a1a1a' }}>successful sessions only</strong></span>
+        <span>{carparks} carpark{carparks === 1 ? '' : 's'}</span>
         <span>{filteredRows.length.toLocaleString()} session{filteredRows.length === 1 ? '' : 's'}</span>
         {!loading && (
           <button onClick={refresh}
@@ -153,20 +169,64 @@ export function Sessions() {
         )}
       </div>
 
-      {/* Cards */}
-      {loading && trends.length === 0 ? (
+      {loading && !hasData ? (
         <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '60px 24px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
           Loading charging data… {loadedCount > 0 ? `(${loadedCount.toLocaleString()} rows so far)` : ''}
         </div>
-      ) : trends.length === 0 ? (
+      ) : !hasData ? (
         <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '60px 24px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
-          No successful sessions for the selected range and source filter.
+          No charging activity for the selected range and filters.
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(440px, 1fr))', gap: 16 }}>
-          {trends.map((t) => <CarparkCard key={t.carpark_code} t={t} granularity={granularity} metric="count" />)}
-        </div>
+        <>
+          <ChartCard
+            title={`Total Charging Sessions (${granLabel})`}
+            totalLabel="Total"
+            totalValue={fmtCount(series.totalCount)}
+            data={series.buckets.map((b) => b.count)}
+            labels={labels}
+            color={C.green}
+            formatY={fmtCountShort}
+            tooltips={sessionTips}
+          />
+          <ChartCard
+            title={`Total Energy (${granLabel})`}
+            totalLabel="Total"
+            totalValue={fmtKwh(series.totalKwh)}
+            data={series.buckets.map((b) => b.kwh)}
+            labels={labels}
+            color={C.opal}
+            formatY={fmtKwhShort}
+            tooltips={energyTips}
+          />
+        </>
       )}
+    </div>
+  );
+}
+
+interface ChartCardProps {
+  title: string;
+  totalLabel: string;
+  totalValue: string;
+  data: number[];
+  labels: string[];
+  color: string;
+  formatY: (v: number) => string;
+  tooltips?: (LineChartTooltip | undefined)[];
+}
+
+function ChartCard({ title, totalLabel, totalValue, data, labels, color, formatY, tooltips }: ChartCardProps) {
+  return (
+    <div style={{ background: C.white, borderRadius: 16, padding: '18px 24px', border: '1px solid #EBEBEB' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>{title}</div>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontSize: 10, color: C.slate, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{totalLabel}</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: '#1a1a1a' }}>{totalValue}</div>
+        </div>
+      </div>
+      <LineChart data={data} labels={labels} color={color} height={300} formatY={formatY} tooltips={tooltips} />
     </div>
   );
 }

@@ -5,6 +5,8 @@ import { supabase } from '../lib/supabase';
 import { Search } from 'lucide-react';
 import { LocationTrends, ensureChargingTrendsCache } from './charging/LocationTrends';
 import { Sessions } from './charging/Sessions';
+import { ChargingOverview } from './charging/ChargingOverview';
+import { ExcludedCompanies } from './charging/ExcludedCompanies';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -26,7 +28,7 @@ interface PerDayRow {
 }
 
 type SourceFilter = 'all' | 'goparkin' | 'sp';
-type DashboardTab = 'weekly' | 'trends' | 'sessions';
+type DashboardTab = 'overview' | 'weekly' | 'trends' | 'sessions' | 'excluded';
 
 const PER_PAGE = 12;
 
@@ -83,7 +85,7 @@ function deltaTone(curr: number, prior: number): { label: string; color: string;
 // ── Component ─────────────────────────────────────────────────────
 
 export function ScreenChargingDashboard() {
-  const [tab, setTab] = useState<DashboardTab>('weekly');
+  const [tab, setTab] = useState<DashboardTab>('overview');
   const [weekStart, setWeekStart] = useState(() => mondayOf(todayISO()));
   const [cpoOnly, setCpoOnly] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
@@ -166,9 +168,11 @@ export function ScreenChargingDashboard() {
       {/* Tab strip */}
       <div style={{ display: 'flex', gap: 4, background: C.white, borderRadius: 12, padding: 4, border: '1px solid #EBEBEB', alignSelf: 'flex-start' }}>
         {([
+          ['overview', 'Overview'],
           ['weekly', 'Weekly Detail'],
           ['trends', 'Location Trends'],
           ['sessions', 'Sessions'],
+          ['excluded', 'Excluded Companies'],
         ] as [DashboardTab, string][]).map(([id, label]) => (
           <button key={id} onClick={() => setTab(id)}
             style={{ padding: '8px 22px', borderRadius: 10, border: 'none', fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer',
@@ -178,9 +182,13 @@ export function ScreenChargingDashboard() {
         ))}
       </div>
 
+      {tab === 'overview' && <ChargingOverview />}
+
       {tab === 'trends' && <LocationTrends />}
 
       {tab === 'sessions' && <Sessions />}
+
+      {tab === 'excluded' && <ExcludedCompanies />}
 
       {tab === 'weekly' && <>
       {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 16px', fontSize: 13, fontWeight: 600 }}>{error}</div>}
