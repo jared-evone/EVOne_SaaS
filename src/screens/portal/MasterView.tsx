@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { C } from '../../theme';
 import { StatementView } from '../CorporateInvoicing';
-import { listAccounts, listDocumentsForCompany, countDocsByCompany, downloadPdfFromBase64, blobToBase64, uploadInvoiceForCompany, uploadStatementForCompany, deleteDocument } from './portalDb';
-import type { PortalAccount, PortalDocument, DocType } from './types';
-import { Search } from 'lucide-react';
+import { listCompanies, listDocumentsForCompany, countDocsByCompany, downloadPdfFromBase64, blobToBase64, uploadInvoiceForCompany, uploadStatementForCompany, deleteDocument } from './portalDb';
+import type { PortalDocument, DocType } from './types';
+import { Search, Upload as UploadIcon } from 'lucide-react';
 import { Download as DownloadIcon } from 'lucide-react';
+import { BulkInvoiceUpload } from './BulkInvoiceUpload';
 
 function fmtTs(s: string | null): string {
   if (!s) return '—';
@@ -24,8 +25,10 @@ function fmtKwh(n: number): string {
   return `${Number(n).toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} kWh`;
 }
 
-interface AccountWithCount {
-  account: PortalAccount;
+interface Company { id: string; name: string; }
+
+interface CompanyWithCount {
+  company: Company;
   docCount: number;
 }
 
@@ -160,7 +163,7 @@ function UploadDocumentModal({ docType, companyId, companyName, existingMonths, 
 }
 
 export function MasterView() {
-  const [accounts, setAccounts] = useState<AccountWithCount[]>([]);
+  const [companies, setCompanies] = useState<CompanyWithCount[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -171,35 +174,30 @@ export function MasterView() {
   const [uploadingDoc, setUploadingDoc] = useState<DocType | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [bulkOpen, setBulkOpen] = useState(false);
 
   useEffect(() => {
     (async () => {
       try {
-        const [list, counts] = await Promise.all([listAccounts(), countDocsByCompany()]);
-        setAccounts(list.map((account) => ({ account, docCount: counts[account.company_id] ?? 0 })));
+        const [list, counts] = await Promise.all([listCompanies(), countDocsByCompany()]);
+        setCompanies(list.map((company) => ({ company, docCount: counts[company.id] ?? 0 })));
       } finally {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [refreshKey]);
 
   useEffect(() => {
     if (!selectedId) { setDocs([]); return; }
-    const account = accounts.find((a) => a.account.id === selectedId)?.account;
-    if (!account) return;
     setDocsLoading(true);
-    listDocumentsForCompany(account.company_id)
+    listDocumentsForCompany(selectedId)
       .then(setDocs)
       .finally(() => setDocsLoading(false));
-  }, [selectedId, accounts, refreshKey]);
+  }, [selectedId, refreshKey]);
 
-  const filtered = accounts.filter((a) => {
-    const q = search.toLowerCase();
-    return (a.account.email ?? '').toLowerCase().includes(q)
-      || (a.account.crm_companies?.name ?? '').toLowerCase().includes(q);
-  });
+  const filtered = companies.filter((c) => c.company.name.toLowerCase().includes(search.toLowerCase()));
 
-  const selected = accounts.find((a) => a.account.id === selectedId);
+  const selected = companies.find((c) => c.company.id === selectedId);
   const visibleDocs = docs.filter((d) => d.doc_type === activeTab);
   const statementCount = docs.filter((d) => d.doc_type === 'statement').length;
   const invoiceCount = docs.filter((d) => d.doc_type === 'invoice').length;
@@ -208,47 +206,49 @@ export function MasterView() {
     return <div style={{ padding: 40, textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</div>;
   }
 
-  if (accounts.length === 0) {
+  if (companies.length === 0) {
     return (
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '60px 24px', textAlign: 'center', color: C.slate }}>
         <div style={{ fontSize: 32, marginBottom: 12 }}>◉</div>
-        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6, color: '#1a1a1a' }}>No customer accounts yet</div>
-        <div style={{ fontSize: 13 }}>Use the Accounts tab to create the first portal account.</div>
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6, color: '#1a1a1a' }}>No companies in CRM yet</div>
+        <div style={{ fontSize: 13 }}>Add companies in Corporate CRM to archive their statements and invoices here.</div>
       </div>
     );
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 16, alignItems: 'start' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <button onClick={() => setBulkOpen(true)}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 18px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+          <UploadIcon size={14} strokeWidth={2.25} /> Bulk Upload Invoices
+        </button>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 16, alignItems: 'start' }}>
       {/* Left list */}
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: 14, borderBottom: '1px solid #F3F3F3' }}>
           <div style={{ position: 'relative' }}>
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search company or email…"
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search company…"
               style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
             <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}><Search size={14} /></span>
           </div>
         </div>
         <div style={{ maxHeight: '70vh', overflowY: 'auto', padding: 8 }}>
-          {filtered.map(({ account, docCount }) => {
-            const isSelected = account.id === selectedId;
+          {filtered.map(({ company, docCount }) => {
+            const isSelected = company.id === selectedId;
             return (
-              <div key={account.id} onClick={() => setSelectedId(account.id)}
+              <div key={company.id} onClick={() => setSelectedId(company.id)}
                 style={{ padding: 12, borderRadius: 12, marginBottom: 4, cursor: 'pointer',
                   background: isSelected ? C.honeydew : 'transparent',
                   border: isSelected ? `1.5px solid ${C.green}` : '1.5px solid transparent' }}
                 onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = C.seasalt; }}
                 onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: isSelected ? C.green : '#1a1a1a', marginBottom: 2 }}>
-                  {account.crm_companies?.name ?? '—'}
+                <div style={{ fontSize: 13, fontWeight: 700, color: isSelected ? C.green : '#1a1a1a', marginBottom: 4 }}>
+                  {company.name}
                 </div>
-                <div style={{ fontSize: 11, color: account.email ? C.slate : '#B07D00', fontFamily: account.email ? 'monospace' : 'Figtree', fontStyle: account.email ? 'normal' : 'italic', marginBottom: 6 }}>
-                  {account.email ?? 'Awaiting setup'}
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: C.slate }}>
-                  <span>{docCount} doc{docCount !== 1 ? 's' : ''}</span>
-                  <span>Last login: {account.last_login_at ? new Date(account.last_login_at).toLocaleDateString('en-SG') : 'never'}</span>
-                </div>
+                <div style={{ fontSize: 10, color: C.slate }}>{docCount} doc{docCount !== 1 ? 's' : ''}</div>
               </div>
             );
           })}
@@ -262,20 +262,18 @@ export function MasterView() {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         {!selected && (
           <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '60px 24px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
-            Select an account on the left to view its issued documents.
+            Select a company on the left to view and upload its archived statements and invoices.
           </div>
         )}
         {selected && (
           <>
-            {/* Account header */}
+            {/* Company header */}
             <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '20px 24px' }}>
               <div style={{ fontSize: 18, fontWeight: 700, color: C.green, letterSpacing: '-0.02em', marginBottom: 4 }}>
-                {selected.account.crm_companies?.name ?? '—'}
+                {selected.company.name}
               </div>
-              <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 12, color: C.slate }}>
-                <span>Email: <strong style={{ color: selected.account.email ? '#1a1a1a' : '#B07D00' }}>{selected.account.email ?? 'Awaiting setup'}</strong></span>
-                <span>Last login: <strong style={{ color: '#1a1a1a' }}>{fmtTs(selected.account.last_login_at)}</strong></span>
-                <span>Created: <strong style={{ color: '#1a1a1a' }}>{fmtTs(selected.account.created_at)}</strong></span>
+              <div style={{ fontSize: 12, color: C.slate }}>
+                {statementCount} statement{statementCount !== 1 ? 's' : ''} · {invoiceCount} invoice{invoiceCount !== 1 ? 's' : ''} archived
               </div>
             </div>
 
@@ -357,7 +355,7 @@ export function MasterView() {
                                     style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>View</button>
                                 )}
                                 <button onClick={() => {
-                                  const cname = selected.account.crm_companies?.name ?? 'company';
+                                  const cname = selected.company.name;
                                   downloadPdfFromBase64(d.pdf_base64, `${cname}_${d.billing_month}_${d.doc_type}.pdf`);
                                 }}
                                   style={{ padding: '5px 12px', borderRadius: 6, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}><DownloadIcon size={12} strokeWidth={2.25} style={{display:"inline",verticalAlign:"-2px",marginRight:4}}/> PDF</button>
@@ -369,7 +367,7 @@ export function MasterView() {
                         </tr>
                       ))}
                       {visibleDocs.length === 0 && (
-                        <tr><td colSpan={6} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No {activeTab}s issued for this customer yet.</td></tr>
+                        <tr><td colSpan={6} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No {activeTab}s archived for this company yet. Use the Upload button above.</td></tr>
                       )}
                     </tbody>
                   </table>
@@ -391,8 +389,8 @@ export function MasterView() {
       {uploadingDoc && selected && (
         <UploadDocumentModal
           docType={uploadingDoc}
-          companyId={selected.account.company_id}
-          companyName={selected.account.crm_companies?.name ?? '—'}
+          companyId={selected.company.id}
+          companyName={selected.company.name}
           existingMonths={[...new Set(docs.filter((d) => d.doc_type === 'statement').map((d) => d.billing_month))]}
           prefilled={(() => {
             const latestStmt = docs.find((d) => d.doc_type === 'statement');
@@ -401,6 +399,15 @@ export function MasterView() {
               : {};
           })()}
           onClose={() => setUploadingDoc(null)}
+          onUploaded={() => setRefreshKey((k) => k + 1)}
+        />
+      )}
+      </div>
+
+      {bulkOpen && (
+        <BulkInvoiceUpload
+          companies={companies.map((c) => c.company)}
+          onClose={() => setBulkOpen(false)}
           onUploaded={() => setRefreshKey((k) => k + 1)}
         />
       )}

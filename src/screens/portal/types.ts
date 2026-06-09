@@ -44,7 +44,10 @@ export interface PortalStatementData {
   };
   goparkinRows: Array<{ plate: string; location: string; start: string; end: string; kwh: number }>;
   spRows: Array<{ driverEmail: string; location: string; startDateTime: string; endDateTime: string; energyKwh: number }>;
+  overstayRows?: Array<{ corporate: string; carpark: string; plate: string; start: string; end: string; overstayMins: number; amount: number }>;
   totalKwh: number;
   appliedRate: number;
+  energyAmount?: number;
+  overstayAmount?: number;
   totalAmount: number;
 }

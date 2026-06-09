@@ -1514,6 +1514,11 @@ function ChargerCard({ charger, latestReading, onClick }: ChargerCardProps) {
           <div style={{ fontSize: 16, fontWeight: 700, color: C.green, letterSpacing: '-0.01em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {charger.charger_code}
           </div>
+          {charger.registration_code && (
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.04em', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {charger.registration_code}
+            </div>
+          )}
           {charger.bay_label && (
             <div style={{ fontSize: 12, color: '#1a1a1a', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {charger.bay_label}

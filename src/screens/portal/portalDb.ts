@@ -131,6 +131,15 @@ export async function countFleetForCompany(companyId: string): Promise<{ vehicle
   return { vehicles: v.count ?? 0, spDrivers: d.count ?? 0 };
 }
 
+export async function listCompanies(): Promise<{ id: string; name: string }[]> {
+  const { data, error } = await supabase
+    .from('crm_companies')
+    .select('id, name')
+    .order('name');
+  if (error) throw error;
+  return (data as { id: string; name: string }[]) ?? [];
+}
+
 export async function countDocsByCompany(): Promise<Record<string, number>> {
   const { data, error } = await supabase
     .from('customer_portal_documents')

@@ -58,13 +58,27 @@ export interface SpCorpRecord {
   energyKwh: number;
 }
 
+export interface OverstayRecord {
+  corporate: string; // raw "Corporate" value from the GoParkin overstay sheet
+  carpark: string;
+  plate: string;
+  start: string;
+  end: string;
+  overstayMins: number;
+  amount: number;
+}
+
 export interface CompanyStatement {
   company: CRMCompany;
   goparkinRows: GoParkinRow[];
   spRows: SpCorpRecord[];
+  // Optional so stored PortalStatementData (which predates overstay) stays assignable.
+  overstayRows?: OverstayRecord[];
   totalKwh: number;
   appliedRate: number;
-  totalAmount: number;
+  energyAmount?: number;   // totalKwh * appliedRate
+  overstayAmount?: number; // sum of overstay charges
+  totalAmount: number;     // energyAmount + overstayAmount (the billed total)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -153,6 +167,12 @@ function parseSpCorpDate(raw: unknown): string {
   return '';
 }
 
+// Normalise a corporate name for matching the overstay sheet's "Corporate" column to a
+// CRM company name: lowercase, drop parentheticals like "(Managed CPO)", collapse spaces.
+function normCorpName(s: string): string {
+  return String(s ?? '').toLowerCase().replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 // Find a column header in `row` by trimmed, case-insensitive match against any candidate
 function findKey(row: Record<string, unknown>, candidates: string[]): string | undefined {
   const keys = Object.keys(row);
@@ -168,6 +188,7 @@ export function buildStatement(
   company: CRMCompany,
   goparkinRows: GoParkinRow[],
   spRows: SpCorpRecord[],
+  overstayRows: OverstayRecord[] = [],
 ): CompanyStatement {
   const gpKwh = goparkinRows.reduce((s, r) => s + r.kwh, 0);
   const spKwh = spRows.reduce((s, r) => s + r.energyKwh, 0);
@@ -176,8 +197,10 @@ export function buildStatement(
     totalKwh >= Number(company.threshold_kwh)
       ? Number(company.discounted_rate)
       : Number(company.base_rate);
-  const totalAmount = Math.round(totalKwh * appliedRate * 100) / 100;
-  return { company, goparkinRows, spRows, totalKwh, appliedRate, totalAmount };
+  const energyAmount = Math.round(totalKwh * appliedRate * 100) / 100;
+  const overstayAmount = Math.round(overstayRows.reduce((s, r) => s + r.amount, 0) * 100) / 100;
+  const totalAmount = Math.round((energyAmount + overstayAmount) * 100) / 100;
+  return { company, goparkinRows, spRows, overstayRows, totalKwh, appliedRate, energyAmount, overstayAmount, totalAmount };
 }
 
 // ── FieldLabel ────────────────────────────────────────────────────
@@ -200,6 +223,9 @@ interface StatementViewProps {
 
 export function StatementView({ stmt, billingMonth, onClose }: StatementViewProps) {
   const { company, goparkinRows, spRows, totalKwh, appliedRate, totalAmount } = stmt;
+  const overstayRows = stmt.overstayRows ?? [];
+  const overstayAmount = stmt.overstayAmount ?? Math.round(overstayRows.reduce((s, r) => s + r.amount, 0) * 100) / 100;
+  const energyAmount = stmt.energyAmount ?? Math.round((totalAmount - overstayAmount) * 100) / 100;
 
   // Group by identifier
   const gpByPlate = goparkinRows.reduce<Record<string, GoParkinRow[]>>((acc, r) => {
@@ -282,6 +308,15 @@ export function StatementView({ stmt, billingMonth, onClose }: StatementViewProp
               </tbody>
             </table>
           </div>
+          {overstayAmount > 0 && (
+            <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 13 }}>
+              <span style={{ color: C.slate }}>Energy charge <strong style={{ color: '#1a1a1a' }}>{fmtAmt(energyAmount)}</strong></span>
+              <span style={{ color: C.slate }}>+</span>
+              <span style={{ color: C.slate }}>Overstay charge <strong style={{ color: '#1a1a1a' }}>{fmtAmt(overstayAmount)}</strong></span>
+              <span style={{ color: C.slate }}>=</span>
+              <span style={{ color: C.green, fontWeight: 700 }}>{fmtAmt(totalAmount)}</span>
+            </div>
+          )}
         </div>
 
         {/* Section 2: Vehicle Breakdown */}
@@ -363,6 +398,53 @@ export function StatementView({ stmt, billingMonth, onClose }: StatementViewProp
             })}
           </div>
         </div>
+
+        {/* Section 4: Overstay Charges */}
+        {overstayRows.length > 0 && (
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.green, marginBottom: 12 }}>4. Overstay Charges</div>
+            <div style={{ borderRadius: 12, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+                <colgroup>
+                  <col style={{ width: '14%' }} />
+                  <col style={{ width: '26%' }} />
+                  <col style={{ width: '21%' }} />
+                  <col style={{ width: '21%' }} />
+                  <col style={{ width: '8%' }} />
+                  <col style={{ width: '10%' }} />
+                </colgroup>
+                <thead>
+                  <tr>
+                    {[
+                      ['Vehicle', 'left'], ['Car Park', 'left'], ['Start Time', 'left'],
+                      ['End Time', 'left'], ['Mins', 'right'], ['Amount', 'right'],
+                    ].map(([h, align]) => (
+                      <th key={h} style={{ ...thStyle, textAlign: align as 'left' | 'right' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...overstayRows].sort((a, z) => a.start.localeCompare(z.start)).map((r, i) => (
+                    <tr key={i}>
+                      <td style={{ ...tdStyle, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.plate || '—'}</td>
+                      <td style={tdStyle}>
+                        <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.carpark}>{r.carpark || '—'}</div>
+                      </td>
+                      <td style={{ ...tdStyle, color: C.slate, fontFamily: 'monospace', fontSize: 12 }}>{fmtDateTime(r.start)}</td>
+                      <td style={{ ...tdStyle, color: C.slate, fontFamily: 'monospace', fontSize: 12 }}>{fmtDateTime(r.end)}</td>
+                      <td style={{ ...tdStyle, color: '#1a1a1a', textAlign: 'right' }}>{r.overstayMins.toLocaleString()}</td>
+                      <td style={{ ...tdStyle, fontWeight: 700, textAlign: 'right' }}>{fmtAmt(r.amount)}</td>
+                    </tr>
+                  ))}
+                  <tr style={{ background: C.seasalt }}>
+                    <td colSpan={5} style={{ ...tdStyle, fontWeight: 700, textAlign: 'right', borderBottom: 'none' }}>Overstay Total:</td>
+                    <td style={{ ...tdStyle, fontWeight: 700, color: C.green, borderBottom: 'none', textAlign: 'right' }}>{fmtAmt(overstayAmount)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -382,6 +464,9 @@ interface PDFProps { stmt: CompanyStatement; billingMonth: string; }
 
 export function CorporateStatementPDF({ stmt, billingMonth }: PDFProps) {
   const { company, goparkinRows, spRows, totalKwh, appliedRate, totalAmount } = stmt;
+  const overstayRows = stmt.overstayRows ?? [];
+  const overstayAmount = stmt.overstayAmount ?? Math.round(overstayRows.reduce((s, r) => s + r.amount, 0) * 100) / 100;
+  const energyAmount = stmt.energyAmount ?? Math.round((totalAmount - overstayAmount) * 100) / 100;
 
   const gpByPlate = goparkinRows.reduce<Record<string, GoParkinRow[]>>((acc, r) => {
     (acc[r.plate] = acc[r.plate] ?? []).push(r);
@@ -478,6 +563,17 @@ export function CorporateStatementPDF({ stmt, billingMonth }: PDFProps) {
           </View>
         </View>
 
+        {overstayAmount > 0 && (
+          <View style={{ flexDirection: 'row', marginTop: -12, marginBottom: 18 }}>
+            <Text style={{ fontSize: 10, color: pdfSlate }}>Energy charge </Text>
+            <Text style={{ fontSize: 10, fontWeight: 'bold' }}>{fmtAmt(energyAmount)}</Text>
+            <Text style={{ fontSize: 10, color: pdfSlate }}>{'  +  Overstay charge '}</Text>
+            <Text style={{ fontSize: 10, fontWeight: 'bold' }}>{fmtAmt(overstayAmount)}</Text>
+            <Text style={{ fontSize: 10, color: pdfSlate }}>{'  =  '}</Text>
+            <Text style={{ fontSize: 10, fontWeight: 'bold', color: pdfGreen }}>{fmtAmt(totalAmount)}</Text>
+          </View>
+        )}
+
         {/* ── Section 2: Vehicle Breakdown ── */}
         <Text style={{ fontSize: 13, fontWeight: 'bold', color: pdfGreen, marginBottom: 6 }}>2. Vehicle Breakdown</Text>
         <View style={{ ...bAll, borderRadius: 4, marginBottom: 18 }}>
@@ -561,6 +657,57 @@ export function CorporateStatementPDF({ stmt, billingMonth }: PDFProps) {
             </View>
           );
         })}
+
+        {/* ── Section 4: Overstay Charges ── */}
+        {overstayRows.length > 0 && (() => {
+          const OW = { veh: '15%', cp: '25%', dt: '20%', mins: '8%', amt: '12%' };
+          const sorted = [...overstayRows].sort((a, z) => a.start.localeCompare(z.start));
+          const ROW = { flexDirection: 'row', ...bAll } as const;
+          const ROW_NEXT = { ...ROW, marginTop: -pdfBorderW } as const;
+          return (
+            <View style={{ marginTop: 4 }}>
+              <View wrap={false}>
+                <Text style={{ fontSize: 13, fontWeight: 'bold', color: pdfGreen, marginBottom: 6 }}>4. Overstay Charges</Text>
+                <View style={{ flexDirection: 'row', ...bAll }}>
+                  {hCell('Vehicle', { w: OW.veh, center: true })}
+                  {hCell('Car Park', { w: OW.cp, center: true })}
+                  {hCell('Start Time', { w: OW.dt, center: true })}
+                  {hCell('End Time', { w: OW.dt, center: true })}
+                  {hCell('Mins', { w: OW.mins, center: true })}
+                  {hCell('Amount', { w: OW.amt, last: true, center: true })}
+                </View>
+                {sorted[0] && (
+                  <View style={ROW_NEXT}>
+                    {cell(sorted[0].plate || '—', { w: OW.veh, bold: true })}
+                    {cell(sorted[0].carpark || '—', { w: OW.cp, truncate: true })}
+                    {cell(fmtDateTime(sorted[0].start), { color: pdfSlate, w: OW.dt, center: true })}
+                    {cell(fmtDateTime(sorted[0].end), { color: pdfSlate, w: OW.dt, center: true })}
+                    {cell(String(sorted[0].overstayMins), { w: OW.mins, center: true })}
+                    {cell(fmtAmt(sorted[0].amount), { bold: true, w: OW.amt, last: true, center: true })}
+                  </View>
+                )}
+              </View>
+              {sorted.slice(1).map((r, i) => (
+                <View key={i} wrap={false} style={ROW_NEXT}>
+                  {cell(r.plate || '—', { w: OW.veh, bold: true })}
+                  {cell(r.carpark || '—', { w: OW.cp, truncate: true })}
+                  {cell(fmtDateTime(r.start), { color: pdfSlate, w: OW.dt, center: true })}
+                  {cell(fmtDateTime(r.end), { color: pdfSlate, w: OW.dt, center: true })}
+                  {cell(String(r.overstayMins), { w: OW.mins, center: true })}
+                  {cell(fmtAmt(r.amount), { bold: true, w: OW.amt, last: true, center: true })}
+                </View>
+              ))}
+              <View wrap={false} style={{ ...ROW_NEXT, backgroundColor: pdfHoneydew }}>
+                <View style={{ flex: 1, paddingVertical: 6, paddingHorizontal: 8, ...bRight }}>
+                  <Text style={{ fontSize: 10, fontWeight: 'bold', textAlign: 'right' }}>Overstay Total:</Text>
+                </View>
+                <View style={{ width: OW.amt, paddingVertical: 6, paddingHorizontal: 8 }}>
+                  <Text style={{ fontSize: 10, fontWeight: 'bold', color: pdfGreen, textAlign: 'center' }}>{fmtAmt(overstayAmount)}</Text>
+                </View>
+              </View>
+            </View>
+          );
+        })()}
       </Page>
     </Document>
   );
@@ -701,6 +848,142 @@ function SpUploadPreview({ pending, emailToCompany, onCancel, onConfirm }: SpUpl
   );
 }
 
+// ── GoParkin Overstay Upload Preview ──────────────────────────────
+
+interface OverstayUploadPreviewProps {
+  pending: {
+    fileName: string;
+    rows: OverstayRecord[];
+    skipped: { noCorporate: number; badAmount: number };
+  };
+  corpToCompany: Map<string, string>;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+function OverstayUploadPreview({ pending, corpToCompany, onCancel, onConfirm }: OverstayUploadPreviewProps) {
+  const { fileName, rows, skipped } = pending;
+
+  const totalAmount = Math.round(rows.reduce((s, r) => s + r.amount, 0) * 100) / 100;
+  const uniqueCorps = Array.from(new Set(rows.map((r) => r.corporate)));
+  const matched = uniqueCorps.filter((c) => corpToCompany.get(normCorpName(c))).length;
+  const unmatched = uniqueCorps.length - matched;
+
+  const dates = rows.map((r) => r.start).filter(Boolean).sort();
+  const firstDate = dates[0] ?? '';
+  const lastDate = dates[dates.length - 1] ?? '';
+
+  const skippedTotal = skipped.noCorporate + skipped.badAmount;
+  const preview = rows.slice(0, 10);
+
+  const stat = (label: string, value: string, accent?: boolean) => (
+    <div style={{ flex: 1, minWidth: 140 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
+      <div style={{ fontSize: 16, fontWeight: 700, color: accent ? C.green : '#1a1a1a', marginTop: 2 }}>{value}</div>
+    </div>
+  );
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 860, maxWidth: '95vw', maxHeight: '92vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ background: '#FFF0E0', color: '#B45309', fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 99 }}>GOPARKIN OVERSTAY</span>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>Confirm Import</div>
+          </div>
+          <button onClick={onCancel} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
+        </div>
+
+        <div style={{ background: C.seasalt, borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div title={fileName} style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</div>
+          <div style={{ fontSize: 12, color: C.slate }}>
+            <strong style={{ color: C.green }}>{rows.length.toLocaleString()}</strong> overstay record{rows.length !== 1 ? 's' : ''} ready to import
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, padding: '14px 18px' }}>
+          {stat('Total Overstay', fmtAmt(totalAmount), true)}
+          {stat('Companies', uniqueCorps.length.toLocaleString())}
+          {stat('Matched to CRM', `${matched} of ${uniqueCorps.length}`)}
+          {stat('Date Range', firstDate && lastDate ? `${firstDate.slice(0, 10)} → ${lastDate.slice(0, 10)}` : '—')}
+        </div>
+
+        {unmatched > 0 && (
+          <div style={{ background: '#FFF8E1', borderRadius: 12, padding: '12px 16px', border: '1px solid #F5E6B0' }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#B07D00' }}>
+              {unmatched} compan{unmatched !== 1 ? 'ies' : 'y'} not matched to the CRM
+            </div>
+            <div style={{ fontSize: 12, color: '#7A5800', marginTop: 2 }}>
+              Their overstay rows will appear in Unmatched Records after import — the "Corporate" name must match a CRM company to be billed.
+            </div>
+          </div>
+        )}
+
+        {skippedTotal > 0 && (
+          <div style={{ background: '#FFF8E1', borderRadius: 12, padding: '12px 16px', border: '1px solid #F5E6B0' }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#B07D00' }}>
+              {skippedTotal.toLocaleString()} row{skippedTotal !== 1 ? 's' : ''} skipped during parsing
+            </div>
+            <div style={{ fontSize: 12, color: '#7A5800', marginTop: 2 }}>
+              {skipped.noCorporate} no corporate name · {skipped.badAmount} unparseable amount
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Preview · first {preview.length} of {rows.length.toLocaleString()} row{rows.length === 1 ? '' : 's'}
+            </div>
+            <div style={{ fontSize: 11, color: C.slate }}>Verify before importing</div>
+          </div>
+          <div style={{ border: '1px solid #EBEBEB', borderRadius: 12, overflow: 'auto', maxHeight: 280 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: 'Figtree' }}>
+              <thead>
+                <tr style={{ background: C.seasalt }}>
+                  {['Corporate', 'Vehicle', 'Car Park', 'Overstay (mins)', 'Amount', 'CRM'].map((h) => (
+                    <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontSize: 10, fontWeight: 700, color: C.slate, letterSpacing: '0.04em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {preview.map((r, i) => {
+                  const ok = !!corpToCompany.get(normCorpName(r.corporate));
+                  return (
+                    <tr key={i} style={{ borderBottom: '1px solid #F3F3F3' }}>
+                      <td title={r.corporate} style={{ padding: '7px 10px', color: '#1a1a1a', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.corporate || '—'}</td>
+                      <td style={{ padding: '7px 10px', color: '#1a1a1a', whiteSpace: 'nowrap' }}>{r.plate || '—'}</td>
+                      <td title={r.carpark} style={{ padding: '7px 10px', color: C.slate, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.carpark || '—'}</td>
+                      <td style={{ padding: '7px 10px', color: C.slate, whiteSpace: 'nowrap', textAlign: 'right' }}>{r.overstayMins.toLocaleString()}</td>
+                      <td style={{ padding: '7px 10px', color: '#1a1a1a', whiteSpace: 'nowrap', textAlign: 'right', fontWeight: 700 }}>{fmtAmt(r.amount)}</td>
+                      <td style={{ padding: '7px 10px', whiteSpace: 'nowrap' }}>
+                        <span style={{ background: ok ? C.honeydew : '#FFF0E0', color: ok ? C.green : '#B45309', fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99 }}>
+                          {ok ? 'Matched' : 'Unmatched'}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+          <button onClick={onCancel}
+            style={{ padding: '9px 20px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+            Cancel
+          </button>
+          <button onClick={onConfirm}
+            style={{ padding: '9px 24px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+            Import {rows.length.toLocaleString()} Row{rows.length !== 1 ? 's' : ''}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Root Screen ───────────────────────────────────────────────────
 
 type ScreenTab = 'generate' | 'portal';
@@ -716,6 +999,7 @@ export function ScreenCorporateInvoicing() {
   const [spDrivers, setSpDrivers] = useState<CRMDriver[]>([]);
   const [goparkinRecords, setGoparkinRecords] = useState<GoParkinRow[]>([]);
   const [spCorpRecords, setSpCorpRecords] = useState<SpCorpRecord[]>([]);
+  const [overstayRecords, setOverstayRecords] = useState<OverstayRecord[]>([]);
   const [pulling, setPulling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedStatement, setSelectedStatement] = useState<CompanyStatement | null>(null);
@@ -728,7 +1012,13 @@ export function ScreenCorporateInvoicing() {
     rows: SpCorpRecord[];
     skipped: { noEmail: number; noEnergy: number; badDate: number };
   } | null>(null);
+  const [pendingOverstay, setPendingOverstay] = useState<{
+    fileName: string;
+    rows: OverstayRecord[];
+    skipped: { noCorporate: number; badAmount: number };
+  } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const overstayFileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -862,6 +1152,100 @@ export function ScreenCorporateInvoicing() {
     }
   };
 
+  const handleOverstayFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    setError(null);
+    try {
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(new Uint8Array(buffer), { type: 'array', cellDates: true });
+      // The GoParkin overstay export has a logo / title preamble, so the real header
+      // row sits a few rows down. Read as an array-of-arrays and locate it by content.
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      if (!sheet) { setError('The workbook has no sheets.'); return; }
+      const aoa = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '', raw: true, blankrows: false });
+
+      const norm = (v: unknown) => String(v ?? '').trim().toLowerCase();
+      let headerIdx = -1;
+      for (let i = 0; i < aoa.length; i++) {
+        const cells = (aoa[i] ?? []).map(norm);
+        if (cells.includes('car park name') && cells.some((c) => c.includes('vehicle')) && cells.includes('corporate')) {
+          headerIdx = i;
+          break;
+        }
+      }
+      if (headerIdx === -1) {
+        setError('Could not find the overstay table header (expected a row with "Car Park Name", "Vehicle Number" and "Corporate").');
+        return;
+      }
+
+      const header = (aoa[headerIdx] ?? []).map(norm);
+      const colOf = (preds: ((c: string) => boolean)[]): number => {
+        for (const p of preds) {
+          const idx = header.findIndex(p);
+          if (idx !== -1) return idx;
+        }
+        return -1;
+      };
+      const iCarpark = colOf([(c) => c === 'car park name', (c) => c.includes('car park')]);
+      const iStart   = colOf([(c) => c === 'start time', (c) => c.includes('start')]);
+      const iEnd     = colOf([(c) => c === 'end time', (c) => c.includes('end')]);
+      const iMins    = colOf([(c) => c.includes('overstay')]);
+      const iPlate   = colOf([(c) => c.includes('vehicle')]);
+      const iAmount  = colOf([(c) => c.includes('amount')]);
+      const iCorp    = colOf([(c) => c === 'corporate', (c) => c.includes('corporate')]);
+
+      if (iCorp === -1 || iAmount === -1) {
+        setError('The overstay sheet is missing the "Corporate" and/or "Amount" column.');
+        return;
+      }
+
+      const parsed: OverstayRecord[] = [];
+      let skippedNoCorporate = 0;
+      let skippedBadAmount = 0;
+
+      for (let i = headerIdx + 1; i < aoa.length; i++) {
+        const row = aoa[i] ?? [];
+        const corporate = String(row[iCorp] ?? '').trim();
+        const amountRaw = row[iAmount];
+        const amount = typeof amountRaw === 'number'
+          ? amountRaw
+          : parseFloat(String(amountRaw ?? '').replace(/[^0-9.\-]/g, ''));
+        const minsRaw = iMins !== -1 ? row[iMins] : '';
+        const overstayMins = typeof minsRaw === 'number'
+          ? Math.round(minsRaw)
+          : parseInt(String(minsRaw ?? '').replace(/[^0-9\-]/g, ''), 10);
+
+        if (!corporate) { skippedNoCorporate++; continue; }
+        if (isNaN(amount)) { skippedBadAmount++; continue; }
+
+        parsed.push({
+          corporate,
+          carpark: iCarpark !== -1 ? String(row[iCarpark] ?? '').trim() : '',
+          plate: iPlate !== -1 ? String(row[iPlate] ?? '').trim() : '',
+          start: iStart !== -1 ? parseSpCorpDate(row[iStart]) : '',
+          end: iEnd !== -1 ? parseSpCorpDate(row[iEnd]) : '',
+          overstayMins: isNaN(overstayMins) ? 0 : overstayMins,
+          amount,
+        });
+      }
+
+      if (parsed.length === 0) {
+        setError(`No usable overstay rows found. Skipped: ${skippedNoCorporate} no corporate name, ${skippedBadAmount} unparseable amount.`);
+        return;
+      }
+
+      setPendingOverstay({
+        fileName: file.name,
+        rows: parsed,
+        skipped: { noCorporate: skippedNoCorporate, badAmount: skippedBadAmount },
+      });
+    } catch (err) {
+      setError(`Failed to read overstay XLSX: ${(err as Error).message ?? 'unknown error'}`);
+    }
+  };
+
   const publishAll = async (toPublish: CompanyStatement[]) => {
     setError(null);
     setPublishResult(null);
@@ -887,7 +1271,7 @@ export function ScreenCorporateInvoicing() {
 
         setPublishing({ done: i + 1, total: toPublish.length });
       }
-      setPublishResult(`Published ${toPublish.length} statement${toPublish.length !== 1 ? 's' : ''} for ${fmtMonthLabel(billingMonth)}. Upload the matching invoices from your accounting software in the Master View.`);
+      setPublishResult(`Published ${toPublish.length} statement${toPublish.length !== 1 ? 's' : ''} for ${fmtMonthLabel(billingMonth)}. Upload the matching invoices from your accounting software in the Archived tab.`);
     } catch (e) {
       setError(`Publish failed: ${(e as Error).message ?? 'unknown error'}`);
     } finally {
@@ -975,9 +1359,12 @@ export function ScreenCorporateInvoicing() {
     }
   };
 
-  // Build statements from both sources
+  // Build statements from every source
   const plateToCompany = new Map(vehicles.map((v) => [v.vehicle_plate, v.company_id]));
   const emailToCompany = new Map(spDrivers.map((d) => [d.driver_email.toLowerCase(), d.company_id]));
+  // Overstay rows link by the sheet's "Corporate" name → CRM company name.
+  const corpNameToId = new Map(companies.map((c) => [normCorpName(c.name), c.id]));
+  const corpToCompany = new Map(companies.map((c) => [normCorpName(c.name), c.name]));
 
   const companyGp: Record<string, GoParkinRow[]> = {};
   const unmatchedGpRows: GoParkinRow[] = [];
@@ -994,19 +1381,29 @@ export function ScreenCorporateInvoicing() {
     if (cid) { (companySp[cid] = companySp[cid] ?? []).push(r); }
     else { unmatchedSpRows.push(r); }
   }
+  const companyOverstay: Record<string, OverstayRecord[]> = {};
+  const unmatchedOverstayRows: OverstayRecord[] = [];
+  for (const r of overstayRecords) {
+    const cid = corpNameToId.get(normCorpName(r.corporate));
+    if (cid) { (companyOverstay[cid] = companyOverstay[cid] ?? []).push(r); }
+    else { unmatchedOverstayRows.push(r); }
+  }
+
   const unmatchedGp = unmatchedGpRows.length;
   const unmatchedSp = unmatchedSpRows.length;
+  const unmatchedOverstay = unmatchedOverstayRows.length;
 
   const statements: CompanyStatement[] = companies
-    .map((c) => buildStatement(c, companyGp[c.id] ?? [], companySp[c.id] ?? []))
-    .filter((s) => s.totalKwh > 0)
+    .map((c) => buildStatement(c, companyGp[c.id] ?? [], companySp[c.id] ?? [], companyOverstay[c.id] ?? []))
+    .filter((s) => s.totalKwh > 0 || (s.overstayAmount ?? 0) > 0)
     .sort((a, b) => b.totalAmount - a.totalAmount);
 
   const totalBillingKwh = statements.reduce((s, st) => s + st.totalKwh, 0);
   const totalBillingAmt = statements.reduce((s, st) => s + st.totalAmount, 0);
-  const unmatchedTotal = unmatchedGp + unmatchedSp;
+  const totalOverstayAmt = statements.reduce((s, st) => s + (st.overstayAmount ?? 0), 0);
+  const unmatchedTotal = unmatchedGp + unmatchedSp + unmatchedOverstay;
 
-  const hasData = goparkinRecords.length > 0 || spCorpRecords.length > 0;
+  const hasData = goparkinRecords.length > 0 || spCorpRecords.length > 0 || overstayRecords.length > 0;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -1014,7 +1411,7 @@ export function ScreenCorporateInvoicing() {
       <div style={{ display: 'flex', gap: 4, background: C.white, borderRadius: 12, padding: 4, border: '1px solid #EBEBEB', alignSelf: 'flex-start' }}>
         {([
           ['generate', 'Generate'],
-          ['portal',   'Customer Portal'],
+          ['portal',   'Archived'],
         ] as [ScreenTab, string][]).map(([id, label]) => (
           <button key={id} onClick={() => setTab(id)}
             style={{ padding: '8px 22px', borderRadius: 10, border: 'none', fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer',
@@ -1045,22 +1442,30 @@ export function ScreenCorporateInvoicing() {
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flex: 1, flexWrap: 'wrap' }}>
           {canEdit && (
             <button
-              onClick={pullGoParkin}
-              disabled={pulling}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 20px', borderRadius: 10, border: 'none', background: pulling ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: pulling ? 'default' : 'pointer' }}>
-              <DownloadIcon size={14} strokeWidth={2.25} />
-              {pulling ? 'Pulling…' : 'Pull GoParkin Data'}
+              onClick={() => fileRef.current?.click()}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 20px', borderRadius: 10, border: `1px solid ${C.green}`, background: spCorpRecords.length > 0 ? C.honeydew : 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              <UploadIcon size={14} strokeWidth={2.25} />
+              {spCorpRecords.length > 0 ? 'SP Corporate ✓' : 'Upload SP Corporate (.xlsx)'}
             </button>
           )}
           {canEdit && (
             <button
-              onClick={() => fileRef.current?.click()}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 20px', borderRadius: 10, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              onClick={() => overstayFileRef.current?.click()}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 20px', borderRadius: 10, border: `1px solid ${C.green}`, background: overstayRecords.length > 0 ? C.honeydew : 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
               <UploadIcon size={14} strokeWidth={2.25} />
-              Upload SP Corporate (.xlsx)
+              {overstayRecords.length > 0 ? 'GoParkin Overstay ✓' : 'Upload GoParkin Overstay (.xlsx)'}
+            </button>
+          )}
+          {canEdit && (
+            <button
+              onClick={pullGoParkin}
+              disabled={pulling}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 24px', borderRadius: 10, border: 'none', background: pulling ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: pulling ? 'default' : 'pointer' }}>
+              {pulling ? 'Generating…' : 'Generate'}
             </button>
           )}
           <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleFileSelect} />
+          <input ref={overstayFileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleOverstayFileSelect} />
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {goparkinRecords.length > 0 && (
               <span style={{ background: C.honeydew, color: C.green, fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 99, letterSpacing: '0.04em' }}>
@@ -1070,6 +1475,11 @@ export function ScreenCorporateInvoicing() {
             {spCorpRecords.length > 0 && (
               <span style={{ background: '#E3F0FF', color: '#1A62C0', fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 99, letterSpacing: '0.04em' }}>
                 SP Corp: {spCorpRecords.length.toLocaleString()} records
+              </span>
+            )}
+            {overstayRecords.length > 0 && (
+              <span style={{ background: '#FFF0E0', color: '#B45309', fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 99, letterSpacing: '0.04em' }}>
+                Overstay: {overstayRecords.length.toLocaleString()} records · {fmtAmt(totalOverstayAmt)}
               </span>
             )}
           </div>
@@ -1115,15 +1525,27 @@ export function ScreenCorporateInvoicing() {
                 if (r.startDateTime && r.startDateTime > cur.last) cur.last = r.startDateTime;
                 sumSp.set(r.driverEmail, cur);
               }
+              const sumOverstay = new Map<string, { sessions: number; amount: number; first: string; last: string }>();
+              for (const r of unmatchedOverstayRows) {
+                const cur = sumOverstay.get(r.corporate) ?? { sessions: 0, amount: 0, first: r.start, last: r.start };
+                cur.sessions += 1;
+                cur.amount += r.amount;
+                if (r.start && (!cur.first || r.start < cur.first)) cur.first = r.start;
+                if (r.start && r.start > cur.last) cur.last = r.start;
+                sumOverstay.set(r.corporate, cur);
+              }
               const rows: (string | number)[][] = [
-                ['Source', 'Identifier', 'Sessions', 'Total Energy (kWh)', 'First Seen', 'Last Seen'],
+                ['Source', 'Identifier', 'Sessions', 'Total Energy (kWh)', 'Overstay Amount (SGD)', 'First Seen', 'Last Seen'],
               ];
               [...sumGp.entries()]
                 .sort((a, b) => b[1].kwh - a[1].kwh)
-                .forEach(([plate, s]) => rows.push(['goparkin', plate, s.sessions, s.kwh.toFixed(2), fmtDateTime(s.first), fmtDateTime(s.last)]));
+                .forEach(([plate, s]) => rows.push(['goparkin', plate, s.sessions, s.kwh.toFixed(2), '', fmtDateTime(s.first), fmtDateTime(s.last)]));
               [...sumSp.entries()]
                 .sort((a, b) => b[1].kwh - a[1].kwh)
-                .forEach(([email, s]) => rows.push(['sp', email, s.sessions, s.kwh.toFixed(2), fmtDateTime(s.first), fmtDateTime(s.last)]));
+                .forEach(([email, s]) => rows.push(['sp', email, s.sessions, s.kwh.toFixed(2), '', fmtDateTime(s.first), fmtDateTime(s.last)]));
+              [...sumOverstay.entries()]
+                .sort((a, b) => b[1].amount - a[1].amount)
+                .forEach(([corp, s]) => rows.push(['overstay', corp, s.sessions, '', s.amount.toFixed(2), fmtDateTime(s.first), fmtDateTime(s.last)]));
               downloadCSV(`unmatched_records_${billingMonth}.csv`, rows);
             }}
             style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid #B07D00', background: C.white, color: '#B07D00', fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
@@ -1137,7 +1559,7 @@ export function ScreenCorporateInvoicing() {
         <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '60px 24px', textAlign: 'center', color: C.slate }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>◈</div>
           <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6, color: '#1a1a1a' }}>No data loaded</div>
-          <div style={{ fontSize: 13 }}>Pull GoParkin data and/or upload an SP Corporate xlsx to generate statements.</div>
+          <div style={{ fontSize: 13 }}>Upload SP Corporate and/or GoParkin Overstay files, then click Generate to build statements.</div>
         </div>
       )}
 
@@ -1163,7 +1585,7 @@ export function ScreenCorporateInvoicing() {
           <span style={{ flex: 1 }}>✓ {publishResult}</span>
           <button onClick={() => { setTab('portal'); setPublishResult(null); }}
             style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid ' + C.green, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-            View in Master →
+            View in Archived →
           </button>
           <button onClick={() => setPublishResult(null)}
             style={{ padding: '6px 10px', borderRadius: 8, border: 'none', background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 14, cursor: 'pointer' }}>×</button>
@@ -1178,7 +1600,7 @@ export function ScreenCorporateInvoicing() {
               <div style={{ flex: 1, minWidth: 200 }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>Ready to publish for {fmtMonthLabel(billingMonth)}</div>
                 <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
-                  {statements.length} statement{statements.length !== 1 ? 's' : ''} will be saved to the customer portals. Invoices are uploaded separately in the Master View.
+                  {statements.length} statement{statements.length !== 1 ? 's' : ''} will be saved to the customer portals. Invoices are uploaded separately in the Archived tab.
                 </div>
               </div>
               <button
@@ -1193,6 +1615,8 @@ export function ScreenCorporateInvoicing() {
                     'Total kWh',
                     'Applied Rate (SGD/kWh)',
                     'Rate Tier',
+                    'Energy Amount (SGD)',
+                    'Overstay (SGD)',
                     'Total Amount (SGD)',
                   ];
                   const rows: (string | number)[][] = [header];
@@ -1200,6 +1624,8 @@ export function ScreenCorporateInvoicing() {
                     const gpKwh = Math.round(stmt.goparkinRows.reduce((s, r) => s + r.kwh, 0) * 100) / 100;
                     const spKwh = Math.round(stmt.spRows.reduce((s, r) => s + r.energyKwh, 0) * 100) / 100;
                     const tier = stmt.totalKwh >= Number(stmt.company.threshold_kwh) ? 'Discounted' : 'Base';
+                    const overstayAmt = stmt.overstayAmount ?? 0;
+                    const energyAmt = stmt.energyAmount ?? Math.round((stmt.totalAmount - overstayAmt) * 100) / 100;
                     rows.push([
                       stmt.company.name,
                       Number(stmt.company.threshold_kwh),
@@ -1210,6 +1636,8 @@ export function ScreenCorporateInvoicing() {
                       stmt.totalKwh.toFixed(2),
                       Number(stmt.appliedRate).toFixed(4),
                       tier,
+                      energyAmt.toFixed(2),
+                      overstayAmt.toFixed(2),
                       stmt.totalAmount.toFixed(2),
                     ]);
                   }
@@ -1220,6 +1648,8 @@ export function ScreenCorporateInvoicing() {
                     statements.reduce((s, st) => s + st.spRows.reduce((a, r) => a + r.energyKwh, 0), 0).toFixed(2),
                     totalBillingKwh.toFixed(2),
                     '', '',
+                    (totalBillingAmt - totalOverstayAmt).toFixed(2),
+                    totalOverstayAmt.toFixed(2),
                     totalBillingAmt.toFixed(2),
                   ]);
                   downloadCSV(`corporate_invoicing_master_${billingMonth}.csv`, rows);
@@ -1246,7 +1676,7 @@ export function ScreenCorporateInvoicing() {
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: C.seasalt }}>
-                  {['Company', 'GoParkin kWh', 'SP kWh', 'Total kWh', 'Applied Rate', 'Total Amount', ''].map((h) => (
+                  {['Company', 'GoParkin kWh', 'SP kWh', 'Total kWh', 'Applied Rate', 'Overstay', 'Total Amount', ''].map((h) => (
                     <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
                   ))}
                 </tr>
@@ -1255,6 +1685,7 @@ export function ScreenCorporateInvoicing() {
                 {statements.map((stmt) => {
                   const gpKwh = stmt.goparkinRows.reduce((s, r) => s + r.kwh, 0);
                   const spKwh = stmt.spRows.reduce((s, r) => s + r.energyKwh, 0);
+                  const overstayAmt = stmt.overstayAmount ?? 0;
                   const aboveThreshold = stmt.totalKwh >= Number(stmt.company.threshold_kwh);
                   return (
                     <tr key={stmt.company.id}
@@ -1271,6 +1702,7 @@ export function ScreenCorporateInvoicing() {
                           {fmtRate(stmt.appliedRate)}{aboveThreshold ? ' (disc.)' : ' (base)'}
                         </span>
                       </td>
+                      <td style={{ padding: '12px 16px', fontSize: 13, color: overstayAmt > 0 ? '#B45309' : C.slate, fontWeight: overstayAmt > 0 ? 700 : 400 }}>{overstayAmt > 0 ? fmtAmt(overstayAmt) : '—'}</td>
                       <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 700, color: C.green }}>{fmtAmt(stmt.totalAmount)}</td>
                       <td style={{ padding: '12px 16px', whiteSpace: 'nowrap' }} onClick={(e) => e.stopPropagation()}>
                         {(() => {
@@ -1304,7 +1736,7 @@ export function ScreenCorporateInvoicing() {
                   );
                 })}
                 {statements.length === 0 && (
-                  <tr><td colSpan={7} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No companies matched the loaded records.</td></tr>
+                  <tr><td colSpan={8} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No companies matched the loaded records.</td></tr>
                 )}
               </tbody>
             </table>
@@ -1328,6 +1760,18 @@ export function ScreenCorporateInvoicing() {
           onConfirm={() => {
             setSpCorpRecords(pendingSp.rows);
             setPendingSp(null);
+          }}
+        />
+      )}
+
+      {pendingOverstay && (
+        <OverstayUploadPreview
+          pending={pendingOverstay}
+          corpToCompany={corpToCompany}
+          onCancel={() => setPendingOverstay(null)}
+          onConfirm={() => {
+            setOverstayRecords(pendingOverstay.rows);
+            setPendingOverstay(null);
           }}
         />
       )}
