@@ -1,10 +1,13 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { C } from '../../theme';
 import { Logo } from '../../components/Logo';
-import { Search, Power } from 'lucide-react';
+import { Search, Power, ChevronDown } from 'lucide-react';
+import { supabase } from '../../lib/supabase';
+import { usePermissions } from '../../permissions';
+import { TYPE_LABEL as CRM_TYPE_LABEL, type Customer as CRMCustomer } from '../Customers';
 import {
   STATUS_COLORS,
-  TECHNICIANS,
+  OTHER_FORM_ID,
   useWorkOrderStore,
   type Customer,
   type CustomerType,
@@ -290,7 +293,7 @@ export function WorkOrdersAdmin() {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ background: C.seasalt }}>
-              {['Ref', 'Title', 'Customer', 'Product', 'Tech', 'Date', 'Priority', 'Status'].map((h) => (
+              {['Ref', 'Title', 'Customer', 'Form', 'Tech', 'Date', 'Priority', 'Status'].map((h) => (
                 <th
                   key={h}
                   style={{ padding: '11px 14px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB' }}
@@ -314,7 +317,7 @@ export function WorkOrdersAdmin() {
                   <td style={{ padding: '11px 14px', fontWeight: 700, color: C.green }}>{w.id}</td>
                   <td style={{ padding: '11px 14px', fontWeight: 600, color: '#1a1a1a' }}>{w.title}</td>
                   <td style={{ padding: '11px 14px', color: '#1a1a1a' }}>{w.customer}</td>
-                  <td style={{ padding: '11px 14px', color: C.slate }}>{w.product}</td>
+                  <td style={{ padding: '11px 14px', color: C.slate }}>{store.getTemplate(w.templateId)?.name ?? (w.templateId === OTHER_FORM_ID ? 'Other (PDF)' : '—')}</td>
                   <td style={{ padding: '11px 14px', color: C.slate }}>{w.assignedTo ?? '—'}</td>
                   <td style={{ padding: '11px 14px', color: C.slate }}>{w.scheduledDate}</td>
                   <td style={{ padding: '11px 14px' }}>
@@ -381,47 +384,105 @@ function WorkOrderModal({
   onClose: () => void;
 }) {
   const store = useWorkOrderStore();
+  const { can } = usePermissions();
+  const canDelete = can('tsd_workorders', 'can_delete');
   const isNew = mode === 'new';
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [form, setForm] = useState({
     title: workOrder?.title ?? '',
-    customerId: workOrder?.customerId ?? (store.customers[0]?.id ?? null),
-    customer: workOrder?.customer ?? (store.customers[0]?.name ?? ''),
-    address: workOrder?.address ?? (store.customers[0]?.address ?? ''),
-    product: workOrder?.product ?? '7kW Home Charger',
+    customerId: workOrder?.customerId ?? null,
+    customer: workOrder?.customer ?? '',
+    address: workOrder?.address ?? '',
     scheduledDate: workOrder?.scheduledDate ?? '2026-05-08',
     priority: workOrder?.priority ?? ('normal' as 'low' | 'normal' | 'high'),
     templateId: workOrder?.templateId ?? store.templates[0]?.id ?? '',
     assignedTo: workOrder?.assignedTo ?? null,
   });
+  // Non-templated ("Other") jobs require a manually-uploaded PDF report.
+  const [reportFile, setReportFile] = useState<{ name: string; base64: string } | null>(
+    workOrder?.reportPdfBase64 ? { name: workOrder.reportFileName ?? 'report.pdf', base64: workOrder.reportPdfBase64 } : null,
+  );
+  const isOther = form.templateId === OTHER_FORM_ID;
+
+  // Customers come from the shared CRM database (the same one PM / Sales / Tech use),
+  // not the work-order module's own registry.
+  const [crmCustomers, setCrmCustomers] = useState<CRMCustomer[]>([]);
+  const [custLoading, setCustLoading] = useState(isNew);
+
+  useEffect(() => {
+    if (!isNew) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.from('customers').select('*').order('name');
+      if (cancelled) return;
+      const list = (data as CRMCustomer[]) ?? [];
+      setCrmCustomers(list);
+      setCustLoading(false);
+      // Default to the first customer if the user hasn't picked one yet.
+      setForm((f) => {
+        if (f.customerId) return f;
+        const first = list[0];
+        return first ? { ...f, customerId: first.id, customer: first.name, address: first.address ?? '' } : f;
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [isNew]);
+
+  // Technicians come from the shared technicians table — managed in the Technicians tab.
+  const [techs, setTechs] = useState<TechRec[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    supabase.from('technicians').select('name, fin_number, contact_number, photo_path').order('name').then(({ data }) => {
+      if (!cancelled) setTechs((data as TechRec[]) ?? []);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   const selectCustomer = (customerId: string) => {
-    const c = store.customers.find((x) => x.id === customerId);
+    const c = crmCustomers.find((x) => x.id === customerId);
     if (!c) return;
     setForm((f) => ({
       ...f,
       customerId: c.id,
       customer: c.name,
-      address: c.address,
+      address: c.address ?? '',
     }));
   };
 
+  const canCreate = !!form.customerId && (!isOther || !!reportFile);
+
   const handleSave = () => {
     if (isNew) {
+      if (!canCreate) return;
       store.createWorkOrder({
         title: form.title || 'Untitled work order',
         customerId: form.customerId,
         customer: form.customer,
         address: form.address,
-        product: form.product,
         scheduledDate: form.scheduledDate,
         priority: form.priority,
         templateId: form.templateId,
         assignedTo: form.assignedTo,
+        reportFileName: isOther ? reportFile?.name : undefined,
+        reportPdfBase64: isOther ? reportFile?.base64 : undefined,
       });
     } else if (workOrder) {
       store.reassign(workOrder.id, form.assignedTo);
     }
     onClose();
+  };
+
+  const onPickReport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const base64: string = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(String(reader.result).split(',')[1] ?? '');
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    setReportFile({ name: file.name, base64 });
   };
 
   return (
@@ -468,24 +529,31 @@ function WorkOrderModal({
           />
         </FormRow>
         <FormRow label="Customer">
-          {isNew && store.customers.length > 0 ? (
+          {isNew ? (
             <select
               value={form.customerId ?? ''}
               onChange={(e) => selectCustomer(e.target.value)}
-              style={inputStyle(false)}
+              disabled={custLoading || crmCustomers.length === 0}
+              style={inputStyle(custLoading || crmCustomers.length === 0)}
             >
-              {store.customers.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} · {c.type}
-                </option>
-              ))}
+              {custLoading ? (
+                <option value="">Loading customers…</option>
+              ) : crmCustomers.length === 0 ? (
+                <option value="">No customers found — add one in the Customers tab</option>
+              ) : (
+                crmCustomers.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} · {CRM_TYPE_LABEL[c.type]}
+                  </option>
+                ))
+              )}
             </select>
           ) : (
             <input value={form.customer} disabled style={inputStyle(true)} />
           )}
           {isNew && (
             <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>
-              Add new customers in the Customers tab. Address pulls from their profile.
+              Pulled from the shared Customers database. Add or edit customers in the Customers tab — address auto-fills from their profile.
             </div>
           )}
         </FormRow>
@@ -493,18 +561,11 @@ function WorkOrderModal({
           <input
             value={form.address}
             disabled
+            placeholder={isNew && form.customerId && !form.address ? 'No address on file for this customer' : ''}
             style={inputStyle(true)}
           />
         </FormRow>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <FormRow label="Product">
-            <input
-              value={form.product}
-              onChange={(e) => setForm((f) => ({ ...f, product: e.target.value }))}
-              disabled={!isNew}
-              style={inputStyle(!isNew)}
-            />
-          </FormRow>
           <FormRow label="Scheduled date">
             <input
               type="date"
@@ -514,8 +575,6 @@ function WorkOrderModal({
               style={inputStyle(!isNew)}
             />
           </FormRow>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <FormRow label="Priority">
             <select
               value={form.priority}
@@ -528,33 +587,77 @@ function WorkOrderModal({
               <option value="high">High</option>
             </select>
           </FormRow>
-          <FormRow label="Form template">
-            <select
-              value={form.templateId}
-              onChange={(e) => setForm((f) => ({ ...f, templateId: e.target.value }))}
-              disabled={!isNew}
-              style={inputStyle(!isNew)}
-            >
-              {store.templates.map((t) => (
-                <option key={t.id} value={t.id}>{t.name}</option>
-              ))}
-            </select>
-          </FormRow>
         </div>
+        <FormRow label="Form">
+          <BrandSelect
+            value={form.templateId}
+            disabled={!isNew}
+            onChange={(v) => setForm((f) => ({ ...f, templateId: v }))}
+            options={[
+              ...store.templates.map((t) => ({ value: t.id, label: t.name })),
+              { value: OTHER_FORM_ID, label: 'Other — non-templated (upload PDF report)' },
+            ]}
+          />
+        </FormRow>
+        {isOther && (
+          <FormRow label="Report PDF">
+            {isNew ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <input type="file" accept="application/pdf,.pdf" onChange={onPickReport}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box', cursor: 'pointer', background: C.white }} />
+                {reportFile
+                  ? <div style={{ fontSize: 11, color: C.green, fontWeight: 700 }}>✓ {reportFile.name}</div>
+                  : <div style={{ fontSize: 11, color: '#B45309' }}>A PDF report is required for non-templated jobs.</div>}
+              </div>
+            ) : (
+              <input value={workOrder?.reportFileName ?? '—'} disabled style={inputStyle(true)} />
+            )}
+          </FormRow>
+        )}
         <FormRow label="Assigned technician">
-          <select
-            value={form.assignedTo ?? ''}
-            onChange={(e) => setForm((f) => ({ ...f, assignedTo: e.target.value || null }))}
-            style={inputStyle(false)}
-          >
-            <option value="">— Unassigned —</option>
-            {TECHNICIANS.map((t) => (
-              <option key={t} value={t}>{t}</option>
-            ))}
-          </select>
+          <TechnicianSelect
+            value={form.assignedTo}
+            technicians={techs}
+            onChange={(name) => setForm((f) => ({ ...f, assignedTo: name }))}
+          />
         </FormRow>
 
+        {!isNew && canDelete && confirmDelete && (
+          <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#C0321A' }}>Delete {workOrder!.id}?</div>
+            <div style={{ fontSize: 12, color: '#C0321A' }}>This permanently removes the work order and its submitted report. This cannot be undone.</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => setConfirmDelete(false)}
+                style={{ flex: 1, padding: '8px', borderRadius: 8, border: '1px solid #FDEAEA', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                Cancel
+              </button>
+              <button onClick={() => { if (workOrder) store.deleteWorkOrder(workOrder.id); onClose(); }}
+                style={{ flex: 1, padding: '8px', borderRadius: 8, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                Yes, Delete
+              </button>
+            </div>
+          </div>
+        )}
+
         <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+          {!isNew && canDelete && !confirmDelete && (
+            <button
+              onClick={() => setConfirmDelete(true)}
+              style={{
+                padding: '10px 20px',
+                borderRadius: 10,
+                border: '1px solid #FDEAEA',
+                background: C.white,
+                color: '#C0321A',
+                fontFamily: 'Figtree',
+                fontSize: 13,
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              Delete
+            </button>
+          )}
           <button
             onClick={onClose}
             style={{
@@ -572,22 +675,28 @@ function WorkOrderModal({
           >
             Cancel
           </button>
-          <button
-            onClick={handleSave}
-            style={{
-              padding: '9px 24px',
-              borderRadius: 10,
-              border: 'none',
-              background: C.green,
-              color: C.white,
-              fontFamily: 'Figtree',
-              fontSize: 13,
-              fontWeight: 700,
-              cursor: 'pointer',
-            }}
-          >
-            {isNew ? 'Create work order' : 'Save assignment'}
-          </button>
+          {(() => {
+            const blocked = isNew && !canCreate;
+            return (
+              <button
+                onClick={handleSave}
+                disabled={blocked}
+                style={{
+                  padding: '9px 24px',
+                  borderRadius: 10,
+                  border: 'none',
+                  background: blocked ? '#ccc' : C.green,
+                  color: C.white,
+                  fontFamily: 'Figtree',
+                  fontSize: 13,
+                  fontWeight: 700,
+                  cursor: blocked ? 'default' : 'pointer',
+                }}
+              >
+                {isNew ? 'Create work order' : 'Save assignment'}
+              </button>
+            );
+          })()}
         </div>
       </div>
     </div>
@@ -617,6 +726,171 @@ function inputStyle(disabled: boolean): React.CSSProperties {
     background: disabled ? '#F9F9F9' : C.white,
     color: '#1a1a1a',
   };
+}
+
+interface BrandSelectOption { value: string; label: string; }
+
+// Brand-styled dropdown replacing the native <select> on work-order fields.
+function BrandSelect({ value, options, onChange, disabled, placeholder, up }: {
+  value: string;
+  options: BrandSelectOption[];
+  onChange: (v: string) => void;
+  disabled?: boolean;
+  placeholder?: string;
+  up?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [open]);
+
+  const selected = options.find((o) => o.value === value);
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          ...inputStyle(!!disabled),
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+          cursor: disabled ? 'default' : 'pointer', textAlign: 'left',
+          borderColor: open ? C.green : '#EBEBEB',
+        }}
+      >
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: selected ? '#1a1a1a' : C.slate }}>
+          {selected?.label ?? placeholder ?? 'Select…'}
+        </span>
+        <ChevronDown size={16} strokeWidth={2.25} style={{ color: C.slate, flexShrink: 0, transition: 'transform .15s', transform: open ? 'rotate(180deg)' : 'none' }} />
+      </button>
+      {open && !disabled && (
+        <div style={{
+          position: 'absolute', left: 0, right: 0, zIndex: 60,
+          top: up ? undefined : 'calc(100% + 6px)', bottom: up ? 'calc(100% + 6px)' : undefined,
+          background: C.white, border: '1px solid #EBEBEB', borderRadius: 12,
+          boxShadow: '0 12px 32px rgba(0,0,0,.14)', padding: 6, maxHeight: 240, overflowY: 'auto',
+          display: 'flex', flexDirection: 'column', gap: 1,
+        }}>
+          {options.map((o) => {
+            const active = o.value === value;
+            return (
+              <button
+                key={o.value || '__none'}
+                type="button"
+                onClick={() => { onChange(o.value); setOpen(false); }}
+                onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = C.seasalt; }}
+                onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+                style={{
+                  width: '100%', textAlign: 'left', padding: '9px 12px', borderRadius: 8, border: 'none',
+                  background: active ? C.honeydew : 'transparent', color: active ? C.green : '#1a1a1a',
+                  fontFamily: 'Figtree', fontSize: 13, fontWeight: active ? 700 : 500, cursor: 'pointer',
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}
+              >
+                {o.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Technician picker (avatar + name + FIN + contact) ─────────────
+
+interface TechRec { name: string; fin_number: string | null; contact_number: string | null; photo_path: string | null; }
+
+function techPhotoUrl(path: string): string {
+  return supabase.storage.from('technician-photos').getPublicUrl(path).data.publicUrl;
+}
+
+function TechAvatar({ name, photoPath, size = 30 }: { name: string; photoPath: string | null; size?: number }) {
+  if (photoPath) {
+    return <img src={techPhotoUrl(photoPath)} alt={name} style={{ width: size, height: size, borderRadius: '50%', objectFit: 'cover', border: '1px solid #EBEBEB', flexShrink: 0 }} />;
+  }
+  return (
+    <div style={{ width: size, height: size, borderRadius: '50%', background: C.honeydew, color: C.green, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: size * 0.42, flexShrink: 0 }}>
+      {(name.trim().charAt(0) || '?').toUpperCase()}
+    </div>
+  );
+}
+
+function TechnicianSelect({ value, technicians, onChange }: {
+  value: string | null;
+  technicians: TechRec[];
+  onChange: (name: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [open]);
+
+  const selected = value ? technicians.find((t) => t.name === value) : undefined;
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button type="button" onClick={() => setOpen((o) => !o)}
+        style={{ ...inputStyle(false), display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, cursor: 'pointer', textAlign: 'left', borderColor: open ? C.green : '#EBEBEB' }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8, overflow: 'hidden' }}>
+          {value ? (
+            <>
+              <TechAvatar name={value} photoPath={selected?.photo_path ?? null} size={24} />
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#1a1a1a' }}>{value}</span>
+            </>
+          ) : (
+            <span style={{ color: C.slate }}>— Unassigned —</span>
+          )}
+        </span>
+        <ChevronDown size={16} strokeWidth={2.25} style={{ color: C.slate, flexShrink: 0, transition: 'transform .15s', transform: open ? 'rotate(180deg)' : 'none' }} />
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', left: 0, right: 0, zIndex: 60, bottom: 'calc(100% + 6px)',
+          background: C.white, border: '1px solid #EBEBEB', borderRadius: 12,
+          boxShadow: '0 12px 32px rgba(0,0,0,.14)', padding: 6, maxHeight: 320, overflowY: 'auto',
+          display: 'flex', flexDirection: 'column', gap: 1,
+        }}>
+          <button type="button" onClick={() => { onChange(null); setOpen(false); }}
+            onMouseEnter={(e) => { if (value) e.currentTarget.style.background = C.seasalt; }}
+            onMouseLeave={(e) => { if (value) e.currentTarget.style.background = 'transparent'; }}
+            style={{ width: '100%', textAlign: 'left', padding: '9px 12px', borderRadius: 8, border: 'none', background: !value ? C.honeydew : 'transparent', color: !value ? C.green : '#1a1a1a', fontFamily: 'Figtree', fontSize: 13, fontWeight: !value ? 700 : 500, cursor: 'pointer' }}>
+            — Unassigned —
+          </button>
+          {technicians.map((t) => {
+            const active = t.name === value;
+            return (
+              <button key={t.name} type="button" onClick={() => { onChange(t.name); setOpen(false); }}
+                onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = C.seasalt; }}
+                onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left', padding: '8px 10px', borderRadius: 8, border: 'none', background: active ? C.honeydew : 'transparent', cursor: 'pointer', fontFamily: 'Figtree' }}>
+                <TechAvatar name={t.name} photoPath={t.photo_path} size={34} />
+                <span style={{ display: 'flex', flexDirection: 'column', gap: 2, overflow: 'hidden' }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: active ? C.green : '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</span>
+                  <span style={{ fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {t.fin_number || 'No FIN'} · {t.contact_number || 'No contact'}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+          {technicians.length === 0 && (
+            <div style={{ padding: '12px', textAlign: 'center', color: C.slate, fontSize: 12 }}>No technicians yet — add them in the Technicians tab.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1255,8 +1529,13 @@ function TemplateEditor({ template, onDelete }: { template: FormTemplate; onDele
           ? 'Confirm step'
           : type === 'textarea'
             ? 'Notes'
-            : 'Field';
-    setDraft((d) => ({ ...d, fields: [...d.fields, { id, type, label }] }));
+            : type === 'photo'
+              ? 'Photo'
+              : type === 'group'
+                ? 'Is it OK?'
+                : 'Field';
+    const extra = type === 'group' ? { photoLabel: 'Photo', remarkLabel: 'Remarks' } : {};
+    setDraft((d) => ({ ...d, fields: [...d.fields, { id, type, label, ...extra }] }));
   };
 
   const updateField = (id: string, patch: Partial<FormField>) =>
@@ -1341,7 +1620,7 @@ function TemplateEditor({ template, onDelete }: { template: FormTemplate; onDele
             {isOverlay(draft) ? 'Overlay mode' : 'Structured mode'}
           </span>
           {!isOverlay(draft) &&
-            (['section', 'text', 'textarea', 'checkbox'] as FieldType[]).map((t) => (
+            (['section', 'text', 'textarea', 'checkbox', 'photo', 'group'] as FieldType[]).map((t) => (
               <button
                 key={t}
                 onClick={() => addField(t)}
@@ -1357,7 +1636,7 @@ function TemplateEditor({ template, onDelete }: { template: FormTemplate; onDele
                   cursor: 'pointer',
                 }}
               >
-                + {t === 'textarea' ? 'Long Text' : t === 'text' ? 'Text' : t === 'checkbox' ? 'Checkbox' : 'Section'}
+                + {t === 'textarea' ? 'Long Text' : t === 'text' ? 'Text' : t === 'checkbox' ? 'Checkbox' : t === 'photo' ? 'Photo' : t === 'group' ? 'Group' : 'Section'}
               </button>
             ))}
           <button
@@ -1771,10 +2050,11 @@ function FieldEditor({
         border: `1px solid ${isSection ? C.green : '#EBEBEB'}`,
         padding: '10px 12px',
         display: 'flex',
-        alignItems: 'center',
+        flexDirection: 'column',
         gap: 10,
       }}
     >
+     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         <button onClick={onUp} disabled={first} style={iconBtn(first)}>▲</button>
         <button onClick={onDown} disabled={last} style={iconBtn(last)}>▼</button>
@@ -1835,6 +2115,15 @@ function FieldEditor({
       >
         ×
       </button>
+     </div>
+      {field.type === 'group' && (
+        <div style={{ display: 'flex', gap: 10, paddingLeft: 34, flexWrap: 'wrap' }}>
+          <input value={field.photoLabel ?? 'Photo'} onChange={(e) => onChange({ photoLabel: e.target.value })} placeholder="Photo label"
+            style={{ flex: 1, minWidth: 140, padding: '6px 10px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', background: '#FAFAFA' }} />
+          <input value={field.remarkLabel ?? 'Remarks'} onChange={(e) => onChange({ remarkLabel: e.target.value })} placeholder="Remarks label"
+            style={{ flex: 1, minWidth: 140, padding: '6px 10px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', background: '#FAFAFA' }} />
+        </div>
+      )}
     </div>
   );
 }

@@ -956,21 +956,29 @@ const DOWNLOAD_COLUMNS: { key: keyof ChargingRecord; label: string }[] = [
 
 interface DownloadModalProps {
   carparks: string[]; // distinct carpark names, pre-fetched
+  managed: Set<string>; // carpark codes tagged as CPO-managed
+  initialSource: 'all' | 'goparkin' | 'sp';
+  initialCpoOnly: boolean;
   onClose: () => void;
 }
 
-function DownloadModal({ carparks, onClose }: DownloadModalProps) {
+function DownloadModal({ carparks, managed, initialSource, initialCpoOnly, onClose }: DownloadModalProps) {
   // Default range: last 30 days, ending today (SGT calendar).
   const today = new Date();
   const monthAgo = new Date();
   monthAgo.setDate(today.getDate() - 30);
   const toISO = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
+  const cpoCarparks = useMemo(() => carparks.filter((c) => managed.has(c)), [carparks, managed]);
+
   const [startDate, setStartDate] = useState(toISO(monthAgo));
   const [endDate,   setEndDate]   = useState(toISO(today));
-  const [source,    setSource]    = useState<'all' | 'goparkin' | 'sp'>('all');
+  const [source,    setSource]    = useState<'all' | 'goparkin' | 'sp'>(initialSource);
+  const [cpoOnly,   setCpoOnly]   = useState(initialCpoOnly && cpoCarparks.length > 0);
   const [carparkSearch, setCarparkSearch] = useState('');
-  const [selected, setSelected] = useState<Set<string>>(() => new Set(carparks));
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set(initialCpoOnly && cpoCarparks.length > 0 ? cpoCarparks : carparks),
+  );
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [error, setError] = useState<string | null>(null);
@@ -985,14 +993,21 @@ function DownloadModal({ carparks, onClose }: DownloadModalProps) {
   const someSelected = selected.size > 0 && !allSelected;
 
   const toggleAll = () => {
+    setCpoOnly(false);
     setSelected(allSelected ? new Set() : new Set(carparks));
   };
   const toggleOne = (name: string) => {
+    setCpoOnly(false);
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(name)) next.delete(name); else next.add(name);
       return next;
     });
+  };
+  const toggleCpoOnly = () => {
+    const next = !cpoOnly;
+    setCpoOnly(next);
+    setSelected(new Set(next ? cpoCarparks : carparks));
   };
 
   const handleDownload = async () => {
@@ -1109,6 +1124,17 @@ function DownloadModal({ carparks, onClose }: DownloadModalProps) {
             ))}
           </div>
         </div>
+
+        {cpoCarparks.length > 0 && (
+          <button onClick={toggleCpoOnly}
+            style={{ alignSelf: 'flex-start', padding: '7px 16px', borderRadius: 99,
+              border: `1px solid ${cpoOnly ? C.green : '#EBEBEB'}`,
+              background: cpoOnly ? C.honeydew : C.white,
+              color: cpoOnly ? C.green : C.slate,
+              fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+            {cpoOnly ? '✓ ' : ''}CPO Only <span style={{ opacity: 0.6, fontWeight: 600 }}>· {cpoCarparks.length}</span>
+          </button>
+        )}
 
         <div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
@@ -1841,6 +1867,9 @@ export function ScreenChargingRecords() {
       {downloadOpen && (
         <DownloadModal
           carparks={[...carparkAgg.map((c) => c.carpark_name)].sort((a, b) => a.localeCompare(b))}
+          managed={managedSet}
+          initialSource={sourceFilter}
+          initialCpoOnly={cpoOnly}
           onClose={() => setDownloadOpen(false)}
         />
       )}

@@ -117,7 +117,7 @@ export function ExcludedCompanies() {
         <div>
           <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>Excluded Companies</div>
           <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
-            Select a company from the corporate CRM to exclude. All of its vehicles are removed from the Overview, Location Trends and Sessions tabs when the “Exclude Vehicles” toggle is on.
+            Select a company from the corporate CRM to exclude. All of its vehicles are removed from the Overview, Energy (kWh) and Sessions tabs when the “Exclude Vehicles” toggle is on.
           </div>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>

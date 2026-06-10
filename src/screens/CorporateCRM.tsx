@@ -473,7 +473,7 @@ function CompanyModal({ initial, title, canDelete, invoicingOnly = false, onSave
         {confirmDelete && (
           <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: '#C0321A' }}>Delete this company?</div>
-            <div style={{ fontSize: 12, color: '#C0321A' }}>This action is permanent and cannot be undone.</div>
+            <div style={{ fontSize: 12, color: '#C0321A' }}>All of its GoParkin vehicles and SP drivers will be removed too. This action is permanent and cannot be undone.</div>
             <div style={{ display: 'flex', gap: 8 }}>
               <button onClick={() => setConfirmDelete(false)}
                 style={{ flex: 1, padding: '8px', borderRadius: 8, border: '1px solid #FDEAEA', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
@@ -639,7 +639,7 @@ function BatchConfirmBar({ count, noun, deleting, onConfirm, onCancel }: BatchCo
           Delete {count} {noun}{count !== 1 ? 's' : ''}?
         </div>
         <div style={{ fontSize: 12, color: '#C0321A', marginTop: 2 }}>
-          This action is permanent and cannot be undone.
+          {noun === 'company' ? 'All GoParkin vehicles and SP drivers linked to ' + (count !== 1 ? 'these companies' : 'this company') + ' will be removed too. ' : ''}This action is permanent and cannot be undone.
         </div>
       </div>
       <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>

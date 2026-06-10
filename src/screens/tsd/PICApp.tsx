@@ -4,12 +4,13 @@ import { Logo } from '../../components/Logo';
 import { Download as DownloadIcon, Power } from 'lucide-react';
 import {
   DEMO_PIC,
+  OTHER_FORM_ID,
   STATUS_COLORS,
   useWorkOrderStore,
   type FormValues,
   type WorkOrder,
 } from '../../workOrderStore';
-import { FieldList, FormHeader, FormPaper } from './TechApp';
+import { FieldList, FormHeader, FormPaper, openBase64Pdf } from './TechApp';
 import { OverlayFormRenderer, isOverlay } from './OverlayForm';
 import { PDFPreviewModal } from './PDFExport';
 
@@ -165,7 +166,7 @@ export function PICReviewBoard() {
                 </span>
               </div>
               <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{w.customer}</div>
-              <div style={{ fontSize: 11, color: C.slate }}>{w.product} · {w.assignedTo ?? '—'}</div>
+              <div style={{ fontSize: 11, color: C.slate }}>{w.product ? `${w.product} · ` : ''}{w.assignedTo ?? '—'}</div>
               {w.response?.submittedAt && (
                 <div style={{ fontSize: 10, color: C.slate, marginTop: 2 }}>
                   Submitted {w.response.submittedAt}
@@ -216,6 +217,33 @@ function PICReportEditor({ workOrder }: { workOrder: WorkOrder }) {
   }, [workOrder.id, workOrder.response]);
 
   if (!template) {
+    if (workOrder.templateId === OTHER_FORM_ID) {
+      const completedOther = workOrder.status === 'completed';
+      return (
+        <div style={{ background: C.white, borderRadius: 14, padding: 24, border: '1px solid #EBEBEB', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.green }}>{workOrder.id} · {workOrder.customer}</div>
+            <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>Non-templated job — review the uploaded PDF report.</div>
+          </div>
+          {workOrder.reportPdfBase64 ? (
+            <button onClick={() => openBase64Pdf(workOrder.reportPdfBase64!, workOrder.reportFileName ?? `${workOrder.id}.pdf`)}
+              style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '10px 18px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              <DownloadIcon size={13} strokeWidth={2.25} /> {workOrder.reportFileName ?? 'Download report PDF'}
+            </button>
+          ) : (
+            <div style={{ fontSize: 13, color: '#B45309' }}>No report PDF attached.</div>
+          )}
+          {completedOther ? (
+            <div style={{ background: C.honeydew, color: C.green, borderRadius: 10, padding: '10px 14px', fontSize: 13, fontWeight: 600 }}>Approved & marked completed.</div>
+          ) : (
+            <button onClick={() => store.approve(workOrder.id)}
+              style={{ alignSelf: 'flex-start', padding: '10px 22px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              Approve & mark completed
+            </button>
+          )}
+        </div>
+      );
+    }
     return (
       <div style={{ background: C.white, borderRadius: 14, padding: 24, border: '1px solid #EBEBEB' }}>
         Template missing.

@@ -49,5 +49,6 @@ export interface PortalStatementData {
   appliedRate: number;
   energyAmount?: number;
   overstayAmount?: number;
+  minimumCharge?: number;
   totalAmount: number;
 }

@@ -30,6 +30,7 @@ import { ScreenDashboard } from './screens/Dashboard';
 import { Login } from './screens/Login';
 import { TechApp } from './screens/tsd/TechApp';
 import { WorkOrdersAdmin, FormBuilder } from './screens/tsd/TSDAdminApp';
+import { TechniciansAdmin } from './screens/tsd/TechniciansAdmin';
 import { PICReviewBoard } from './screens/tsd/PICApp';
 import { PublicApplication } from './screens/crm/PublicApplication';
 import {
@@ -63,9 +64,10 @@ const NAV_ALL: NavEntry[] = [
   { kind: 'leaf', id: 'corporateinvoicing',icon: FileText,        label: 'Corporate Invoicing' },
   { kind: 'leaf', id: 'tsd_technician',    icon: Hammer,          label: 'Technician' },
   { kind: 'group', key: 'tsd_admin_group', icon: ClipboardList,   label: 'TSD Admin', children: [
-    { kind: 'leaf', id: 'tsd_workorders', icon: ClipboardList,    label: 'Work Orders' },
-    { kind: 'leaf', id: 'tsd_forms',      icon: FileText,         label: 'Form Templates' },
-    { kind: 'leaf', id: 'tsd_pic',        icon: ShieldCheck,      label: 'PIC Review' },
+    { kind: 'leaf', id: 'tsd_workorders',  icon: ClipboardList,   label: 'Work Orders' },
+    { kind: 'leaf', id: 'tsd_forms',       icon: FileText,        label: 'Form Templates' },
+    { kind: 'leaf', id: 'tsd_pic',         icon: ShieldCheck,     label: 'PIC Review' },
+    { kind: 'leaf', id: 'tsd_technicians', icon: Users,           label: 'Technicians' },
   ]},
   { kind: 'group', key: 'settings_group', icon: SettingsIcon,     label: 'Settings', children: [
     { kind: 'leaf', id: 'settings', icon: Users,                  label: 'Users & Permissions' },
@@ -96,6 +98,7 @@ const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
   tsd_workorders:      'Work Orders',
   tsd_forms:           'Form Templates',
   tsd_pic:             'PIC Review',
+  tsd_technicians:     'Technicians',
   settings:            'Users & Permissions',
   dbhealth:            'DB Health',
 };
@@ -121,6 +124,7 @@ const screens: Partial<Record<ScreenId, JSX.Element>> = {
   tsd_workorders:      <WorkOrdersAdmin />,
   tsd_forms:           <FormBuilder />,
   tsd_pic:             <PICReviewBoard />,
+  tsd_technicians:     <TechniciansAdmin />,
   settings:            <ScreenSettings />,
   dbhealth:            <ScreenDBHealth />,
 };

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { C } from '../../theme';
 import { LineChart, type LineChartTooltip } from '../../components/charts';
 import {
@@ -21,6 +21,17 @@ function rangeStartISO(months: RangeMonths): string | null {
 
 const isSuccess = (s: string | null) => (s ?? '').toLowerCase() === 'success';
 
+function currentYM(): string {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function addMonthYM(ym: string, delta: number): string {
+  const [y, m] = ym.split('-').map(Number);
+  const d = new Date(y, (m - 1) + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
 // ── Component ─────────────────────────────────────────────────────
 // Two dashboard-wide line charts (sessions + energy) summed across every carpark,
 // off the shared charging cache that's preloaded on dashboard mount.
@@ -34,6 +45,12 @@ export function ChargingOverview() {
   const [cpoSet, setCpoSet] = useState<Set<string>>(new Set());
   const [excludeOn, setExcludeOn] = useState(false);
   const [excludedSet, setExcludedSet] = useState<Set<string>>(new Set());
+  const [carparkSel, setCarparkSel] = useState<Set<string>>(new Set());
+  const [kpiMonth, setKpiMonth] = useState(currentYM);
+  const [carparkOpen, setCarparkOpen] = useState(false);
+  const [carparkSearch, setCarparkSearch] = useState('');
+  const carparkRef = useRef<HTMLDivElement>(null);
+  const carparkActive = carparkSel.size > 0;
 
   useEffect(() => {
     let cancelled = false;
@@ -41,6 +58,33 @@ export function ChargingOverview() {
     ensureExcludedVehicles().then((s) => { if (!cancelled) setExcludedSet(s); }).catch(() => {});
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    if (!carparkOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (carparkRef.current && !carparkRef.current.contains(e.target as Node)) setCarparkOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [carparkOpen]);
+
+  // Carpark filter and CPO Only are mutually exclusive — selecting carparks clears CPO,
+  // and enabling CPO clears the carpark selection.
+  const toggleCarpark = (cp: string) => {
+    setCpoOnly(false);
+    setCarparkSel((prev) => {
+      const next = new Set(prev);
+      if (next.has(cp)) next.delete(cp); else next.add(cp);
+      return next;
+    });
+  };
+  const enableCpoOnly = () => {
+    setCpoOnly((v) => {
+      const nv = !v;
+      if (nv) { setCarparkSel(new Set()); setCarparkOpen(false); }
+      return nv;
+    });
+  };
 
   const [rows, setRows] = useState(() => getCachedChargingRows() ?? []);
   const [loading, setLoading] = useState(() => getCachedChargingRows() === null);
@@ -68,6 +112,17 @@ export function ChargingOverview() {
     setRefreshKey((k) => k + 1);
   };
 
+  const allCarparks = useMemo(() => {
+    const s = new Set<string>();
+    for (const r of rows) if (r.carpark_code) s.add(r.carpark_code);
+    return [...s].sort((a, b) => a.localeCompare(b));
+  }, [rows]);
+
+  const carparkOptions = useMemo(() => {
+    const q = carparkSearch.trim().toLowerCase();
+    return q ? allCarparks.filter((c) => c.toLowerCase().includes(q)) : allCarparks;
+  }, [allCarparks, carparkSearch]);
+
   const filteredRows = useMemo(() => {
     const startISO = rangeStartISO(rangeMonths);
     return rows.filter((r) => {
@@ -76,12 +131,16 @@ export function ChargingOverview() {
       if (dateStr.length < 10) return false;
       if (sourceFilter !== 'all' && r.source !== sourceFilter) return false;
       if (dcOnly && r.charge_type !== 'DC') return false;
-      if (cpoOnly && cpoSet.size > 0 && !(r.carpark_code && cpoSet.has(r.carpark_code))) return false;
+      if (carparkActive) {
+        if (!(r.carpark_code && carparkSel.has(r.carpark_code))) return false;
+      } else if (cpoOnly && cpoSet.size > 0 && !(r.carpark_code && cpoSet.has(r.carpark_code))) {
+        return false;
+      }
       if (excludeOn && excludedSet.size > 0 && r.vehicle_plate_number && excludedSet.has(normalizePlate(r.vehicle_plate_number))) return false;
       if (startISO && dateStr < startISO) return false;
       return true;
     });
-  }, [rows, rangeMonths, sourceFilter, dcOnly, cpoOnly, cpoSet, excludeOn, excludedSet]);
+  }, [rows, rangeMonths, sourceFilter, dcOnly, cpoOnly, cpoSet, carparkActive, carparkSel, excludeOn, excludedSet]);
 
   const series = useMemo(
     () => aggregateTotal(filteredRows, granularity, rangeStartISO(rangeMonths)),
@@ -93,6 +152,28 @@ export function ChargingOverview() {
     for (const r of filteredRows) if (r.carpark_code) s.add(r.carpark_code);
     return s.size;
   }, [filteredRows]);
+
+  // Selected month's daily average sessions per carpark:
+  //   sessions that month ÷ #carparks ÷ days in the month (days elapsed so far if it's
+  //   the current, unfinished month).
+  const monthlyAvg = useMemo(() => {
+    const cur = currentYM();
+    const [y, m] = kpiMonth.split('-').map(Number);
+    const monthRows = filteredRows.filter((r) => r.start_date_time.slice(0, 7) === kpiMonth);
+    const sessions = monthRows.length;
+    const inMonth = new Set<string>();
+    for (const r of monthRows) if (r.carpark_code) inMonth.add(r.carpark_code);
+    const cpCount = carparkActive ? carparkSel.size : inMonth.size;
+    const daysInMonth = new Date(y, m, 0).getDate();
+    let daysElapsed = daysInMonth;
+    let finished = true;
+    if (kpiMonth === cur) { daysElapsed = Math.min(new Date().getDate(), daysInMonth); finished = daysElapsed >= daysInMonth; }
+    const avg = cpCount > 0 && daysElapsed > 0 ? sessions / cpCount / daysElapsed : 0;
+    return {
+      avg, sessions, cpCount, daysElapsed, finished,
+      monthLabel: new Date(y, m - 1, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }),
+    };
+  }, [filteredRows, carparkActive, carparkSel, kpiMonth]);
 
   const labels = series.buckets.map((b) => b.label);
   const sessionTips: (LineChartTooltip | undefined)[] | undefined = granularity === 'day'
@@ -144,7 +225,43 @@ export function ChargingOverview() {
         <div style={{ width: 1, height: 24, background: '#EBEBEB' }} />
 
         <button onClick={() => setDcOnly((v) => !v)} style={toggleBtn(dcOnly)}>{dcOnly ? '✓ ' : ''}DC Only</button>
-        <button onClick={() => setCpoOnly((v) => !v)} style={toggleBtn(cpoOnly)}>{cpoOnly ? '✓ ' : ''}CPO Only (EVE + EVOne)</button>
+        <button onClick={enableCpoOnly} style={toggleBtn(cpoOnly)}>{cpoOnly ? '✓ ' : ''}CPO Only (EVE + EVOne)</button>
+
+        <div ref={carparkRef} style={{ position: 'relative' }}>
+          <button onClick={() => setCarparkOpen((o) => !o)} style={toggleBtn(carparkActive)}>
+            {carparkActive ? `✓ Carparks (${carparkSel.size})` : 'Carparks'} ▾
+          </button>
+          {carparkOpen && (
+            <div style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 50, width: 300, background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, boxShadow: '0 12px 32px rgba(0,0,0,.14)', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <input value={carparkSearch} onChange={(e) => setCarparkSearch(e.target.value)} placeholder="Search carparks…"
+                style={{ width: '100%', padding: '7px 12px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', boxSizing: 'border-box', background: C.seasalt }} />
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>{carparkSel.size} of {allCarparks.length} selected</span>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button onClick={() => { setCpoOnly(false); setCarparkSel(new Set(allCarparks)); }}
+                    style={{ border: 'none', background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Select all</button>
+                  <button onClick={() => setCarparkSel(new Set())}
+                    style={{ border: 'none', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Clear</button>
+                </div>
+              </div>
+              <div style={{ maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 1 }}>
+                {carparkOptions.length === 0 && (
+                  <div style={{ padding: '12px 8px', textAlign: 'center', color: C.slate, fontSize: 12 }}>No matches</div>
+                )}
+                {carparkOptions.map((cp) => {
+                  const checked = carparkSel.has(cp);
+                  return (
+                    <label key={cp} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 8, cursor: 'pointer', fontSize: 12, background: checked ? C.honeydew : 'transparent' }}>
+                      <input type="checkbox" checked={checked} onChange={() => toggleCarpark(cp)} style={{ accentColor: C.green, cursor: 'pointer' }} />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: checked ? C.green : '#1a1a1a', fontWeight: checked ? 700 : 400 }} title={cp}>{cp}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
         <button onClick={() => setExcludeOn((v) => !v)} style={toggleBtn(excludeOn)}>{excludeOn ? '✓ ' : ''}Exclude Vehicles{excludedSet.size > 0 ? ` (${excludedSet.size})` : ''}</button>
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
@@ -158,7 +275,7 @@ export function ChargingOverview() {
 
       {/* Summary line */}
       <div style={{ fontSize: 13, color: C.slate, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-        <span><strong style={{ color: '#1a1a1a' }}>{rangeLabel}</strong> · {granLabel} totals across all carparks · <strong style={{ color: '#1a1a1a' }}>successful sessions only</strong></span>
+        <span><strong style={{ color: '#1a1a1a' }}>{rangeLabel}</strong> · {granLabel} totals across {carparkActive ? 'selected' : 'all'} carparks · <strong style={{ color: '#1a1a1a' }}>successful sessions only</strong></span>
         <span>{carparks} carpark{carparks === 1 ? '' : 's'}</span>
         <span>{filteredRows.length.toLocaleString()} session{filteredRows.length === 1 ? '' : 's'}</span>
         {!loading && (
@@ -179,6 +296,36 @@ export function ChargingOverview() {
         </div>
       ) : (
         <>
+          {/* Big KPI — current month's daily average sessions per carpark */}
+          <div style={{ background: C.green, borderRadius: 16, padding: '24px 28px', color: C.white, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', opacity: 0.85 }}>
+                Avg Daily Sessions per Carpark · {monthlyAvg.monthLabel}
+              </div>
+              <div style={{ fontSize: 44, fontWeight: 700, letterSpacing: '-0.04em', lineHeight: 1, marginTop: 8 }}>
+                {monthlyAvg.avg.toLocaleString('en-SG', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
+              </div>
+              <div style={{ fontSize: 12, opacity: 0.85, marginTop: 8 }}>
+                {monthlyAvg.sessions.toLocaleString()} session{monthlyAvg.sessions === 1 ? '' : 's'} ÷ {monthlyAvg.cpCount} carpark{monthlyAvg.cpCount === 1 ? '' : 's'} ÷ {monthlyAvg.daysElapsed} day{monthlyAvg.daysElapsed === 1 ? '' : 's'}
+                {monthlyAvg.finished ? '' : ' so far this month'}
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <button onClick={() => setKpiMonth((mo) => addMonthYM(mo, -1))} title="Previous month"
+                  style={{ width: 28, height: 28, borderRadius: 8, border: 'none', background: 'rgba(255,255,255,0.2)', color: C.white, fontSize: 16, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}>‹</button>
+                <input type="month" value={kpiMonth} max={currentYM()} onChange={(e) => { if (e.target.value) setKpiMonth(e.target.value); }}
+                  style={{ padding: '6px 10px', borderRadius: 8, border: 'none', fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, color: '#1a1a1a', background: C.white, outline: 'none', cursor: 'pointer', colorScheme: 'light' }} />
+                <button onClick={() => setKpiMonth((mo) => (mo >= currentYM() ? mo : addMonthYM(mo, 1)))} disabled={kpiMonth >= currentYM()} title="Next month"
+                  style={{ width: 28, height: 28, borderRadius: 8, border: 'none', background: 'rgba(255,255,255,0.2)', color: C.white, fontSize: 16, fontWeight: 700, cursor: kpiMonth >= currentYM() ? 'default' : 'pointer', opacity: kpiMonth >= currentYM() ? 0.4 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}>›</button>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontSize: 22, fontWeight: 700 }}>{monthlyAvg.sessions.toLocaleString()}</div>
+                <div style={{ fontSize: 11, opacity: 0.85 }}>total sessions in {monthlyAvg.monthLabel}</div>
+              </div>
+            </div>
+          </div>
+
           <ChartCard
             title={`Total Charging Sessions (${granLabel})`}
             totalLabel="Total"

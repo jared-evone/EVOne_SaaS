@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { C } from '../../theme';
 import { Logo } from '../../components/Logo';
 import {
   DEMO_TECHNICIAN,
+  OTHER_FORM_ID,
   STATUS_COLORS,
   useWorkOrderStore,
   type FormField,
@@ -10,18 +11,36 @@ import {
   type WorkOrder,
 } from '../../workOrderStore';
 import { OverlayFormRenderer, isOverlay } from './OverlayForm';
-import { Power, Calendar } from 'lucide-react';
+import { usePermissions } from '../../permissions';
+import { supabase } from '../../lib/supabase';
+import { Power, Calendar, User, Camera } from 'lucide-react';
 
 interface TechAppProps {
   onBack?: () => void;
   onSignOut?: () => void;
 }
 
+type TabKey = 'available' | 'mine' | 'all' | 'unassigned';
+
 export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
   const store = useWorkOrderStore();
-  const me = DEMO_TECHNICIAN;
+  const { user } = usePermissions();
+  const isAdmin = user.role_name === 'admin';
+  const me = user.full_name || DEMO_TECHNICIAN;
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [tab, setTab] = useState<'available' | 'mine'>('mine');
+  const [tab, setTab] = useState<TabKey>('mine');
+  const [adminView, setAdminView] = useState<'list' | 'calendar'>('calendar');
+  const [adminFilter, setAdminFilter] = useState<string>('all'); // 'all' | 'unassigned' | technician name
+  const [dbTechs, setDbTechs] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    let cancelled = false;
+    supabase.from('technicians').select('name').order('name').then(({ data }) => {
+      if (!cancelled) setDbTechs(((data as { name: string }[]) ?? []).map((t) => t.name));
+    });
+    return () => { cancelled = true; };
+  }, [isAdmin]);
 
   const active = activeId ? store.workOrders.find((w) => w.id === activeId) : null;
   if (active) {
@@ -35,11 +54,97 @@ export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
   }
 
   const available = store.workOrders.filter((w) => w.status === 'open');
-  const mine = store.workOrders.filter(
-    (w) => w.assignedTo === me && w.status !== 'completed',
-  );
+  const mine = store.workOrders.filter((w) => w.assignedTo === me && w.status !== 'completed');
+  const all = store.workOrders;
+  const unassigned = store.workOrders.filter((w) => !w.assignedTo);
 
+  // Member tabs (My Jobs / Available).
+  const tabs: [TabKey, string][] = [
+    ['mine', `My Jobs (${mine.length})`],
+    ['available', `Available (${available.length})`],
+  ];
   const visible = tab === 'available' ? available : mine;
+  const emptyMsg = tab === 'mine' ? 'No open jobs assigned to you.' : 'No jobs available to pick up.';
+
+  // Admin: per-technician job counts, listing every known technician plus any
+  // assignee already on a job (so legacy names still appear as a filter).
+  const jobsByAssignee = new Map<string, number>();
+  for (const w of store.workOrders) if (w.assignedTo) jobsByAssignee.set(w.assignedTo, (jobsByAssignee.get(w.assignedTo) ?? 0) + 1);
+  const techFilters = [...new Set([...dbTechs, ...jobsByAssignee.keys()])].sort((a, b) => a.localeCompare(b));
+
+  const adminVisible =
+    adminFilter === 'all' ? all :
+    adminFilter === 'unassigned' ? unassigned :
+    store.workOrders.filter((w) => w.assignedTo === adminFilter);
+  const adminEmptyMsg =
+    adminFilter === 'all' ? 'No work orders yet.' :
+    adminFilter === 'unassigned' ? 'No unassigned work orders.' :
+    `No jobs assigned to ${adminFilter}.`;
+
+  const railBtn = (active: boolean): React.CSSProperties => ({
+    textAlign: 'left', padding: '10px 16px', borderRadius: 12,
+    border: active ? 'none' : '1px solid #EBEBEB',
+    fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer',
+    background: active ? C.green : C.white,
+    color: active ? C.white : C.slate,
+    boxShadow: active ? '0 6px 14px rgba(42,154,71,0.2)' : 'none',
+  });
+
+  if (isAdmin) {
+    return (
+      <Shell
+        onBack={onBack}
+        onSignOut={onSignOut}
+        title="All Jobs"
+        subtitle={`All technicians · ${all.length} job${all.length === 1 ? '' : 's'}`}
+        crumb="Technician"
+        wide
+      >
+        <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr', gap: 16, alignItems: 'start' }}>
+          {/* Filter rail */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <button onClick={() => setAdminFilter('all')} style={railBtn(adminFilter === 'all')}>All Jobs ({all.length})</button>
+            <button onClick={() => setAdminFilter('unassigned')} style={railBtn(adminFilter === 'unassigned')}>Unassigned ({unassigned.length})</button>
+            {techFilters.length > 0 && (
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', padding: '12px 8px 2px' }}>Technicians</div>
+            )}
+            {techFilters.map((name) => (
+              <button key={name} onClick={() => setAdminFilter(name)} style={railBtn(adminFilter === name)}>
+                {name} ({jobsByAssignee.get(name) ?? 0})
+              </button>
+            ))}
+          </div>
+          {/* List / Calendar */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div style={{ display: 'flex', gap: 4, background: C.white, borderRadius: 12, padding: 4, border: '1px solid #EBEBEB', alignSelf: 'flex-start' }}>
+              {([['list', 'List view'], ['calendar', 'Calendar view']] as const).map(([k, l]) => (
+                <button key={k} onClick={() => setAdminView(k)}
+                  style={{ padding: '8px 18px', borderRadius: 10, border: 'none', fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                    background: adminView === k ? C.green : 'transparent', color: adminView === k ? C.white : C.slate }}>
+                  {l}
+                </button>
+              ))}
+            </div>
+
+            {adminView === 'calendar' ? (
+              <JobCalendar key={adminFilter} jobs={adminVisible} onOpen={setActiveId} onReschedule={(id, date) => store.reschedule(id, date)} />
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {adminVisible.length === 0 && (
+                  <div style={{ padding: '40px 20px', textAlign: 'center', color: C.slate, fontSize: 13, background: C.white, borderRadius: 14, border: '1px dashed #EBEBEB' }}>
+                    {adminEmptyMsg}
+                  </div>
+                )}
+                {adminVisible.map((wo) => (
+                  <WorkOrderCard key={wo.id} wo={wo} assignee={wo.assignedTo} actionLabel="View" onAction={() => setActiveId(wo.id)} />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </Shell>
+    );
+  }
 
   return (
     <Shell
@@ -51,12 +156,7 @@ export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
     >
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
-        {(
-          [
-            ['mine', `My Jobs (${mine.length})`],
-            ['available', `Available (${available.length})`],
-          ] as const
-        ).map(([k, l]) => (
+        {tabs.map(([k, l]) => (
           <button
             key={k}
             onClick={() => setTab(k)}
@@ -92,24 +192,27 @@ export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
               border: '1px dashed #EBEBEB',
             }}
           >
-            {tab === 'mine' ? 'No open jobs assigned to you.' : 'No jobs available to pick up.'}
+            {emptyMsg}
           </div>
         )}
         {visible.map((wo) => (
           <WorkOrderCard
             key={wo.id}
             wo={wo}
+            assignee={isAdmin ? wo.assignedTo : undefined}
             actionLabel={
-              tab === 'available'
-                ? 'Pick up'
-                : wo.status === 'in_progress'
-                  ? 'Continue'
-                  : wo.status === 'assigned'
-                    ? 'Start'
-                    : 'Open'
+              isAdmin
+                ? 'View'
+                : tab === 'available'
+                  ? 'Pick up'
+                  : wo.status === 'in_progress'
+                    ? 'Continue'
+                    : wo.status === 'assigned'
+                      ? 'Start'
+                      : 'Open'
             }
             onAction={() => {
-              if (wo.status === 'open') store.pickUp(wo.id, me);
+              if (!isAdmin && wo.status === 'open') store.pickUp(wo.id, me);
               setActiveId(wo.id);
             }}
           />
@@ -128,6 +231,7 @@ function Shell({
   title,
   subtitle,
   crumb,
+  wide,
 }: {
   children: React.ReactNode;
   onBack?: () => void;
@@ -135,6 +239,7 @@ function Shell({
   title: string;
   subtitle: string;
   crumb: string;
+  wide?: boolean;
 }) {
   // When embedded inside the Dashboard (no onBack/onSignOut), the parent
   // already provides the logo, page title, sign-out menu, and scroll —
@@ -207,7 +312,7 @@ function Shell({
       </header>
       )}
 
-      <div style={{ maxWidth: 720, margin: '0 auto', padding: embedded ? '0 0 60px' : '24px 20px 60px' }}>
+      <div style={{ maxWidth: wide ? 'none' : 720, margin: '0 auto', padding: embedded ? '0 0 60px' : '24px 20px 60px' }}>
         <div style={{ marginBottom: 20 }}>
           <div style={{ fontSize: 22, fontWeight: 700, color: C.green, letterSpacing: '-0.02em' }}>{title}</div>
           <div style={{ fontSize: 12, color: C.slate, marginTop: 4 }}>{subtitle}</div>
@@ -224,10 +329,12 @@ function WorkOrderCard({
   wo,
   actionLabel,
   onAction,
+  assignee,
 }: {
   wo: WorkOrder;
   actionLabel: string;
   onAction: () => void;
+  assignee?: string | null;
 }) {
   const sc = STATUS_COLORS[wo.status];
   const priorityColor = wo.priority === 'high' ? '#C0321A' : wo.priority === 'low' ? C.slate : C.opal;
@@ -261,12 +368,17 @@ function WorkOrderCard({
       </div>
       <div style={{ fontSize: 15, fontWeight: 700, color: '#1a1a1a', lineHeight: 1.3 }}>{wo.title}</div>
       <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5 }}>
-        {wo.customer} · {wo.product}
+        {wo.customer}{wo.product ? ` · ${wo.product}` : ''}
         <br />
         {wo.address}
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 11, color: C.slate, display: 'inline-flex', alignItems: 'center', gap: 4 }}><Calendar size={11} strokeWidth={2} /> {wo.scheduledDate}</span>
+        {assignee !== undefined && (
+          <span style={{ fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 10px', borderRadius: 99, background: assignee ? C.honeydew : '#FFF0E0', color: assignee ? C.green : '#B45309' }}>
+            <User size={11} strokeWidth={2.25} /> {assignee ?? 'Unassigned'}
+          </span>
+        )}
         <button
           onClick={onAction}
           style={{
@@ -289,6 +401,197 @@ function WorkOrderCard({
   );
 }
 
+// ── Calendar (admin "All Jobs") ───────────────────────────────────
+
+const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+function pad2(n: number) { return String(n).padStart(2, '0'); }
+function isoOf(d: Date) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+
+function JobCalendar({ jobs, onOpen, onReschedule }: { jobs: WorkOrder[]; onOpen: (id: string) => void; onReschedule?: (id: string, date: string) => void }) {
+  const [dragOverIso, setDragOverIso] = useState<string | null>(null);
+  useEffect(() => {
+    const clear = () => setDragOverIso(null);
+    document.addEventListener('dragend', clear);
+    return () => document.removeEventListener('dragend', clear);
+  }, []);
+
+  // Open on the month of the most recent scheduled job (falling back to today).
+  const [cursor, setCursor] = useState(() => {
+    const dates = jobs.map((j) => j.scheduledDate).filter(Boolean).sort();
+    const base = dates.length ? dates[dates.length - 1] : isoOf(new Date());
+    const [yy, mm] = base.split('-').map(Number);
+    return { y: yy, m0: mm - 1 };
+  });
+
+  const byDate = useMemo(() => {
+    const m = new Map<string, WorkOrder[]>();
+    for (const j of jobs) {
+      if (!j.scheduledDate) continue;
+      const arr = m.get(j.scheduledDate);
+      if (arr) arr.push(j); else m.set(j.scheduledDate, [j]);
+    }
+    return m;
+  }, [jobs]);
+
+  const { y, m0 } = cursor;
+  const todayIso = isoOf(new Date());
+  const monthLabel = new Date(y, m0, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+
+  const first = new Date(y, m0, 1);
+  const startOffset = (first.getDay() + 6) % 7; // 0 = Monday
+  const daysInMonth = new Date(y, m0 + 1, 0).getDate();
+  const totalCells = Math.ceil((startOffset + daysInMonth) / 7) * 7;
+  const cells = Array.from({ length: totalCells }, (_, i) => new Date(y, m0, 1 - startOffset + i));
+
+  const step = (delta: number) => setCursor((c) => {
+    const d = new Date(c.y, c.m0 + delta, 1);
+    return { y: d.getFullYear(), m0: d.getMonth() };
+  });
+  const goToday = () => { const n = new Date(); setCursor({ y: n.getFullYear(), m0: n.getMonth() }); };
+
+  const navBtn: React.CSSProperties = { width: 32, height: 32, borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontSize: 16, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 };
+
+  return (
+    <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '14px 18px', borderBottom: '1px solid #F3F3F3' }}>
+        <button onClick={() => step(-1)} style={navBtn} title="Previous month">‹</button>
+        <button onClick={() => step(1)} style={navBtn} title="Next month">›</button>
+        <div style={{ fontSize: 16, fontWeight: 700, color: C.green, marginLeft: 4 }}>{monthLabel}</div>
+        <button onClick={goToday} style={{ marginLeft: 'auto', padding: '6px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Today</button>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', borderBottom: '1px solid #F3F3F3', background: C.seasalt }}>
+        {WEEKDAYS.map((w) => (
+          <div key={w} style={{ padding: '8px 10px', fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{w}</div>
+        ))}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)' }}>
+        {cells.map((d, i) => {
+          const iso = isoOf(d);
+          const inMonth = d.getMonth() === m0;
+          const dayJobs = byDate.get(iso) ?? [];
+          const isToday = iso === todayIso;
+          const isDropTarget = dragOverIso === iso;
+          return (
+            <div key={i}
+              onDragOver={onReschedule ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dragOverIso !== iso) setDragOverIso(iso); } : undefined}
+              onDrop={onReschedule ? (e) => {
+                e.preventDefault();
+                const id = e.dataTransfer.getData('text/plain');
+                setDragOverIso(null);
+                if (id) onReschedule(id, iso);
+              } : undefined}
+              style={{
+                minHeight: 160,
+                borderRight: (i % 7 !== 6) ? '1px solid #F3F3F3' : 'none',
+                borderBottom: '1px solid #F3F3F3',
+                background: isDropTarget ? C.honeydew : inMonth ? C.white : '#FBFCFD',
+                boxShadow: isDropTarget ? `inset 0 0 0 2px ${C.green}` : 'none',
+                padding: 6,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+              }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 2px' }}>
+                <span style={{
+                  fontSize: 12, fontWeight: 700,
+                  color: inMonth ? (isToday ? C.white : '#1a1a1a') : '#C7CDD3',
+                  background: isToday ? C.green : 'transparent',
+                  minWidth: 22, height: 22, borderRadius: 99, padding: '0 6px',
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                }}>{d.getDate()}</span>
+                {dayJobs.length > 0 && <span style={{ fontSize: 10, color: C.slate, fontWeight: 700 }}>{dayJobs.length}</span>}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, overflowY: 'auto', maxHeight: 280 }}>
+                {dayJobs.map((j) => <CalendarJobCard key={j.id} wo={j} onOpen={() => onOpen(j.id)} draggable={!!onReschedule} />)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CalendarJobCard({ wo, onOpen, draggable }: { wo: WorkOrder; onOpen: () => void; draggable?: boolean }) {
+  const sc = STATUS_COLORS[wo.status];
+  const priorityColor = wo.priority === 'high' ? '#C0321A' : wo.priority === 'low' ? C.slate : C.opal;
+  return (
+    <button
+      onClick={onOpen}
+      draggable={draggable}
+      onDragStart={draggable ? (e) => { e.dataTransfer.setData('text/plain', wo.id); e.dataTransfer.effectAllowed = 'move'; } : undefined}
+      title={draggable ? 'Drag to another day to reschedule' : undefined}
+      style={{
+        textAlign: 'left', width: '100%',
+        border: '1px solid #EBEBEB', borderLeft: `3px solid ${priorityColor}`, borderRadius: 10,
+        background: C.white, padding: '9px 11px', cursor: draggable ? 'grab' : 'pointer',
+        display: 'flex', flexDirection: 'column', gap: 5, fontFamily: 'Figtree',
+      }}>
+      {/* Company name */}
+      <span style={{ fontSize: 12, fontWeight: 700, color: C.green, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={wo.customer}>{wo.customer}</span>
+      {/* Job title */}
+      <span style={{ fontSize: 11, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={wo.title}>{wo.title}</span>
+      {/* Technician */}
+      <span style={{ fontSize: 10, color: wo.assignedTo ? C.slate : '#B45309', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {wo.assignedTo ?? 'Unassigned'}
+      </span>
+      {/* Status */}
+      <span style={{ alignSelf: 'flex-start', fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: sc.bg, color: sc.color, whiteSpace: 'nowrap', letterSpacing: '0.02em' }}>{sc.label}</span>
+    </button>
+  );
+}
+
+// ── Non-templated ("Other") job — manually-uploaded PDF report ─────
+
+export function openBase64Pdf(base64: string, filename: string) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function OtherJobView({ workOrder, onBack, onSignOut }: { workOrder: WorkOrder; onBack: () => void; onSignOut?: () => void }) {
+  const store = useWorkOrderStore();
+  const { user } = usePermissions();
+  const me = user.full_name || DEMO_TECHNICIAN;
+  const submitted = workOrder.status === 'submitted' || workOrder.status === 'reviewed' || workOrder.status === 'completed';
+  return (
+    <Shell onBack={onBack} onSignOut={onSignOut} title={workOrder.title} subtitle={`${workOrder.id} · ${workOrder.customer}`} crumb="Technician">
+      <div style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ fontSize: 13, color: C.slate }}>Non-templated job — the report is a manually-uploaded PDF.</div>
+        {workOrder.reportPdfBase64 ? (
+          <button onClick={() => openBase64Pdf(workOrder.reportPdfBase64!, workOrder.reportFileName ?? `${workOrder.id}.pdf`)}
+            style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 18px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+            ⬇ {workOrder.reportFileName ?? 'Download report PDF'}
+          </button>
+        ) : (
+          <div style={{ fontSize: 13, color: '#B45309' }}>No report PDF attached.</div>
+        )}
+      </div>
+      {submitted ? (
+        <div style={{ marginTop: 18, padding: '12px 16px', background: C.honeydew, color: C.green, borderRadius: 12, fontSize: 13, fontWeight: 600, textAlign: 'center' }}>
+          This report has been submitted. The PIC handles it from here.
+        </div>
+      ) : (
+        <button onClick={() => { store.submit(workOrder.id, {}, me); onBack(); }}
+          style={{ marginTop: 18, padding: '12px', borderRadius: 12, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>
+          Submit report
+        </button>
+      )}
+    </Shell>
+  );
+}
+
 // ── Fill-form view ────────────────────────────────────────────────
 
 function TechFillFormView({
@@ -301,12 +604,16 @@ function TechFillFormView({
   onSignOut?: () => void;
 }) {
   const store = useWorkOrderStore();
-  const me = DEMO_TECHNICIAN;
+  const { user } = usePermissions();
+  const me = user.full_name || DEMO_TECHNICIAN;
   const template = store.getTemplate(workOrder.templateId);
   const [values, setValues] = useState<FormValues>(() => workOrder.response?.values ?? {});
   const [savedAt, setSavedAt] = useState<string | null>(null);
 
   if (!template) {
+    if (workOrder.templateId === OTHER_FORM_ID) {
+      return <OtherJobView workOrder={workOrder} onBack={onBack} onSignOut={onSignOut} />;
+    }
     return (
       <Shell onBack={onBack} onSignOut={onSignOut} title="Form not found" subtitle="" crumb="Technician">
         <div>This work order references a missing template.</div>
@@ -564,7 +871,7 @@ export function FieldList({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {fields.map((f) => (
-        <FieldRow key={f.id} field={f} value={values[f.id]} onChange={onChange} disabled={disabled} />
+        <FieldRow key={f.id} field={f} values={values} onChange={onChange} disabled={disabled} />
       ))}
     </div>
   );
@@ -572,15 +879,16 @@ export function FieldList({
 
 function FieldRow({
   field,
-  value,
+  values,
   onChange,
   disabled,
 }: {
   field: FormField;
-  value: string | boolean | undefined;
+  values: FormValues;
   onChange: (id: string, val: string | boolean) => void;
   disabled: boolean;
 }) {
+  const value = values[field.id];
   if (field.type === 'section') {
     return (
       <div
@@ -628,6 +936,109 @@ function FieldRow({
         <span>{field.label}</span>
         {field.required && <span style={{ marginLeft: 'auto', fontSize: 10, color: '#C0321A' }}>required</span>}
       </label>
+    );
+  }
+
+  if (field.type === 'group') {
+    const checked = value === true;
+    const photoKey = `${field.id}::photo`;
+    const remarkKey = `${field.id}::remark`;
+    const photoSrc = typeof values[photoKey] === 'string' ? (values[photoKey] as string) : '';
+    const remark = typeof values[remarkKey] === 'string' ? (values[remarkKey] as string) : '';
+    const readGroupPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      e.target.value = '';
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onloadend = () => onChange(photoKey, String(reader.result));
+      reader.readAsDataURL(file);
+    };
+    return (
+      <div style={{ border: `1px solid ${checked ? C.green : '#EBEBEB'}`, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 12, background: C.white }}>
+        {/* The question (checkbox) */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: disabled ? 'default' : 'pointer', fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>
+          <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(field.id, e.target.checked)}
+            style={{ width: 18, height: 18, accentColor: C.green, cursor: disabled ? 'default' : 'pointer' }} />
+          <span>{field.label}{field.required && <span style={{ color: '#C0321A', marginLeft: 6 }}>*</span>}</span>
+        </label>
+
+        {/* Photo */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{field.photoLabel || 'Photo'}</label>
+          {photoSrc ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <img src={photoSrc} alt={field.photoLabel || 'Photo'} style={{ width: '100%', maxHeight: 220, objectFit: 'contain', borderRadius: 10, border: '1px solid #EBEBEB', background: '#F9F9F9' }} />
+              {!disabled && (
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                    <Camera size={12} strokeWidth={2.25} /> Replace
+                    <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={readGroupPhoto} />
+                  </label>
+                  <button type="button" onClick={() => onChange(photoKey, '')} style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Remove</button>
+                </div>
+              )}
+            </div>
+          ) : disabled ? (
+            <div style={{ padding: '16px', textAlign: 'center', color: C.slate, fontSize: 12, background: '#F9F9F9', borderRadius: 10, border: '1px dashed #EBEBEB' }}>No photo</div>
+          ) : (
+            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '16px', borderRadius: 10, border: '1.5px dashed #CBD5DD', background: '#F9F9F9', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              <Camera size={16} strokeWidth={2.25} /> Take or upload photo
+              <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={readGroupPhoto} />
+            </label>
+          )}
+        </div>
+
+        {/* Remarks */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{field.remarkLabel || 'Remarks'}</label>
+          <textarea value={remark} disabled={disabled} rows={2} onChange={(e) => onChange(remarkKey, e.target.value)}
+            style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', resize: 'vertical', lineHeight: 1.5, background: disabled ? '#F9F9F9' : C.white }} />
+        </div>
+      </div>
+    );
+  }
+
+  if (field.type === 'photo') {
+    const src = typeof value === 'string' ? value : '';
+    const readPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      e.target.value = '';
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onloadend = () => onChange(field.id, String(reader.result));
+      reader.readAsDataURL(file);
+    };
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+          {field.label}
+          {field.required && <span style={{ color: '#C0321A', marginLeft: 6 }}>*</span>}
+        </label>
+        {src ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <img src={src} alt={field.label} style={{ width: '100%', maxHeight: 260, objectFit: 'contain', borderRadius: 10, border: '1px solid #EBEBEB', background: '#F9F9F9' }} />
+            {!disabled && (
+              <div style={{ display: 'flex', gap: 8 }}>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                  <Camera size={13} strokeWidth={2.25} /> Replace
+                  <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={readPhoto} />
+                </label>
+                <button type="button" onClick={() => onChange(field.id, '')}
+                  style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                  Remove
+                </button>
+              </div>
+            )}
+          </div>
+        ) : disabled ? (
+          <div style={{ padding: '20px', textAlign: 'center', color: C.slate, fontSize: 12, background: '#F9F9F9', borderRadius: 10, border: '1px dashed #EBEBEB' }}>No photo</div>
+        ) : (
+          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '18px', borderRadius: 10, border: '1.5px dashed #CBD5DD', background: '#F9F9F9', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+            <Camera size={16} strokeWidth={2.25} /> Take or upload photo
+            <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={readPhoto} />
+          </label>
+        )}
+      </div>
     );
   }
 

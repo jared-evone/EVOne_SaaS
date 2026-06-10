@@ -4,7 +4,7 @@ import { PDFDownloadLink, Document, Page, View, Text, Image as PdfImage, pdf } f
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import evoneLogoUrl from '../assets/evone-logo.png';
-import { Download as DownloadIcon, Upload as UploadIcon } from 'lucide-react';
+import { Download as DownloadIcon, Upload as UploadIcon, Search } from 'lucide-react';
 import {
   pdfGreen, pdfHoneydew, pdfSlate, pdfBorderW,
   bRight, bBottom, bAll,
@@ -76,10 +76,14 @@ export interface CompanyStatement {
   overstayRows?: OverstayRecord[];
   totalKwh: number;
   appliedRate: number;
-  energyAmount?: number;   // totalKwh * appliedRate
-  overstayAmount?: number; // sum of overstay charges
-  totalAmount: number;     // energyAmount + overstayAmount (the billed total)
+  energyAmount?: number;    // totalKwh * appliedRate
+  overstayAmount?: number;  // sum of overstay charges
+  minimumCharge?: number;   // top-up applied when the bill falls below the $25 minimum
+  totalAmount: number;      // energyAmount + overstayAmount + minimumCharge (the billed total)
 }
+
+// Every statement is billed at least this much.
+export const MINIMUM_CHARGE = 25;
 
 // ── Helpers ───────────────────────────────────────────────────────
 
@@ -199,8 +203,11 @@ export function buildStatement(
       : Number(company.base_rate);
   const energyAmount = Math.round(totalKwh * appliedRate * 100) / 100;
   const overstayAmount = Math.round(overstayRows.reduce((s, r) => s + r.amount, 0) * 100) / 100;
-  const totalAmount = Math.round((energyAmount + overstayAmount) * 100) / 100;
-  return { company, goparkinRows, spRows, overstayRows, totalKwh, appliedRate, energyAmount, overstayAmount, totalAmount };
+  const subtotal = Math.round((energyAmount + overstayAmount) * 100) / 100;
+  // Minimum charge: if the bill is below the floor, top it up so the total is exactly $25.
+  const minimumCharge = subtotal < MINIMUM_CHARGE ? Math.round((MINIMUM_CHARGE - subtotal) * 100) / 100 : 0;
+  const totalAmount = Math.round((subtotal + minimumCharge) * 100) / 100;
+  return { company, goparkinRows, spRows, overstayRows, totalKwh, appliedRate, energyAmount, overstayAmount, minimumCharge, totalAmount };
 }
 
 // ── FieldLabel ────────────────────────────────────────────────────
@@ -225,7 +232,8 @@ export function StatementView({ stmt, billingMonth, onClose }: StatementViewProp
   const { company, goparkinRows, spRows, totalKwh, appliedRate, totalAmount } = stmt;
   const overstayRows = stmt.overstayRows ?? [];
   const overstayAmount = stmt.overstayAmount ?? Math.round(overstayRows.reduce((s, r) => s + r.amount, 0) * 100) / 100;
-  const energyAmount = stmt.energyAmount ?? Math.round((totalAmount - overstayAmount) * 100) / 100;
+  const minimumCharge = stmt.minimumCharge ?? 0;
+  const energyAmount = stmt.energyAmount ?? Math.round((totalAmount - overstayAmount - minimumCharge) * 100) / 100;
 
   // Group by identifier
   const gpByPlate = goparkinRows.reduce<Record<string, GoParkinRow[]>>((acc, r) => {
@@ -308,13 +316,18 @@ export function StatementView({ stmt, billingMonth, onClose }: StatementViewProp
               </tbody>
             </table>
           </div>
-          {overstayAmount > 0 && (
+          {(overstayAmount > 0 || minimumCharge > 0) && (
             <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 13 }}>
               <span style={{ color: C.slate }}>Energy charge <strong style={{ color: '#1a1a1a' }}>{fmtAmt(energyAmount)}</strong></span>
-              <span style={{ color: C.slate }}>+</span>
-              <span style={{ color: C.slate }}>Overstay charge <strong style={{ color: '#1a1a1a' }}>{fmtAmt(overstayAmount)}</strong></span>
+              {overstayAmount > 0 && <><span style={{ color: C.slate }}>+</span><span style={{ color: C.slate }}>Overstay charge <strong style={{ color: '#1a1a1a' }}>{fmtAmt(overstayAmount)}</strong></span></>}
+              {minimumCharge > 0 && <><span style={{ color: C.slate }}>+</span><span style={{ color: C.slate }}>Minimum charge adjustment <strong style={{ color: '#1a1a1a' }}>{fmtAmt(minimumCharge)}</strong></span></>}
               <span style={{ color: C.slate }}>=</span>
               <span style={{ color: C.green, fontWeight: 700 }}>{fmtAmt(totalAmount)}</span>
+            </div>
+          )}
+          {minimumCharge > 0 && (
+            <div style={{ marginTop: 6, fontSize: 11, color: C.slate }}>
+              A minimum charge of {fmtAmt(MINIMUM_CHARGE)} applies — this bill was topped up to meet it.
             </div>
           )}
         </div>
@@ -466,7 +479,8 @@ export function CorporateStatementPDF({ stmt, billingMonth }: PDFProps) {
   const { company, goparkinRows, spRows, totalKwh, appliedRate, totalAmount } = stmt;
   const overstayRows = stmt.overstayRows ?? [];
   const overstayAmount = stmt.overstayAmount ?? Math.round(overstayRows.reduce((s, r) => s + r.amount, 0) * 100) / 100;
-  const energyAmount = stmt.energyAmount ?? Math.round((totalAmount - overstayAmount) * 100) / 100;
+  const minimumCharge = stmt.minimumCharge ?? 0;
+  const energyAmount = stmt.energyAmount ?? Math.round((totalAmount - overstayAmount - minimumCharge) * 100) / 100;
 
   const gpByPlate = goparkinRows.reduce<Record<string, GoParkinRow[]>>((acc, r) => {
     (acc[r.plate] = acc[r.plate] ?? []).push(r);
@@ -563,15 +577,26 @@ export function CorporateStatementPDF({ stmt, billingMonth }: PDFProps) {
           </View>
         </View>
 
-        {overstayAmount > 0 && (
-          <View style={{ flexDirection: 'row', marginTop: -12, marginBottom: 18 }}>
+        {(overstayAmount > 0 || minimumCharge > 0) && (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: -12, marginBottom: minimumCharge > 0 ? 4 : 18 }}>
             <Text style={{ fontSize: 10, color: pdfSlate }}>Energy charge </Text>
             <Text style={{ fontSize: 10, fontWeight: 'bold' }}>{fmtAmt(energyAmount)}</Text>
-            <Text style={{ fontSize: 10, color: pdfSlate }}>{'  +  Overstay charge '}</Text>
-            <Text style={{ fontSize: 10, fontWeight: 'bold' }}>{fmtAmt(overstayAmount)}</Text>
+            {overstayAmount > 0 && <>
+              <Text style={{ fontSize: 10, color: pdfSlate }}>{'  +  Overstay charge '}</Text>
+              <Text style={{ fontSize: 10, fontWeight: 'bold' }}>{fmtAmt(overstayAmount)}</Text>
+            </>}
+            {minimumCharge > 0 && <>
+              <Text style={{ fontSize: 10, color: pdfSlate }}>{'  +  Minimum charge adjustment '}</Text>
+              <Text style={{ fontSize: 10, fontWeight: 'bold' }}>{fmtAmt(minimumCharge)}</Text>
+            </>}
             <Text style={{ fontSize: 10, color: pdfSlate }}>{'  =  '}</Text>
             <Text style={{ fontSize: 10, fontWeight: 'bold', color: pdfGreen }}>{fmtAmt(totalAmount)}</Text>
           </View>
+        )}
+        {minimumCharge > 0 && (
+          <Text style={{ fontSize: 9, color: pdfSlate, marginBottom: 18 }}>
+            A minimum charge of {fmtAmt(MINIMUM_CHARGE)} applies — this bill was topped up to meet it.
+          </Text>
         )}
 
         {/* ── Section 2: Vehicle Breakdown ── */}
@@ -1003,6 +1028,7 @@ export function ScreenCorporateInvoicing() {
   const [pulling, setPulling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedStatement, setSelectedStatement] = useState<CompanyStatement | null>(null);
+  const [statementSearch, setStatementSearch] = useState('');
   const [publishing, setPublishing] = useState<{ done: number; total: number } | null>(null);
   const [publishResult, setPublishResult] = useState<string | null>(null);
   const [rowBusyId, setRowBusyId] = useState<string | null>(null); // company id currently downloading/publishing
@@ -1398,6 +1424,10 @@ export function ScreenCorporateInvoicing() {
     .filter((s) => s.totalKwh > 0 || (s.overstayAmount ?? 0) > 0)
     .sort((a, b) => b.totalAmount - a.totalAmount);
 
+  const shownStatements = statementSearch.trim()
+    ? statements.filter((s) => s.company.name.toLowerCase().includes(statementSearch.trim().toLowerCase()))
+    : statements;
+
   const totalBillingKwh = statements.reduce((s, st) => s + st.totalKwh, 0);
   const totalBillingAmt = statements.reduce((s, st) => s + st.totalAmount, 0);
   const totalOverstayAmt = statements.reduce((s, st) => s + (st.overstayAmount ?? 0), 0);
@@ -1617,6 +1647,7 @@ export function ScreenCorporateInvoicing() {
                     'Rate Tier',
                     'Energy Amount (SGD)',
                     'Overstay (SGD)',
+                    'Minimum Charge (SGD)',
                     'Total Amount (SGD)',
                   ];
                   const rows: (string | number)[][] = [header];
@@ -1625,7 +1656,8 @@ export function ScreenCorporateInvoicing() {
                     const spKwh = Math.round(stmt.spRows.reduce((s, r) => s + r.energyKwh, 0) * 100) / 100;
                     const tier = stmt.totalKwh >= Number(stmt.company.threshold_kwh) ? 'Discounted' : 'Base';
                     const overstayAmt = stmt.overstayAmount ?? 0;
-                    const energyAmt = stmt.energyAmount ?? Math.round((stmt.totalAmount - overstayAmt) * 100) / 100;
+                    const minCharge = stmt.minimumCharge ?? 0;
+                    const energyAmt = stmt.energyAmount ?? Math.round((stmt.totalAmount - overstayAmt - minCharge) * 100) / 100;
                     rows.push([
                       stmt.company.name,
                       Number(stmt.company.threshold_kwh),
@@ -1638,9 +1670,11 @@ export function ScreenCorporateInvoicing() {
                       tier,
                       energyAmt.toFixed(2),
                       overstayAmt.toFixed(2),
+                      minCharge.toFixed(2),
                       stmt.totalAmount.toFixed(2),
                     ]);
                   }
+                  const totalMinCharge = statements.reduce((s, st) => s + (st.minimumCharge ?? 0), 0);
                   rows.push([
                     'TOTAL',
                     '', '', '',
@@ -1648,8 +1682,9 @@ export function ScreenCorporateInvoicing() {
                     statements.reduce((s, st) => s + st.spRows.reduce((a, r) => a + r.energyKwh, 0), 0).toFixed(2),
                     totalBillingKwh.toFixed(2),
                     '', '',
-                    (totalBillingAmt - totalOverstayAmt).toFixed(2),
+                    (totalBillingAmt - totalOverstayAmt - totalMinCharge).toFixed(2),
                     totalOverstayAmt.toFixed(2),
+                    totalMinCharge.toFixed(2),
                     totalBillingAmt.toFixed(2),
                   ]);
                   downloadCSV(`corporate_invoicing_master_${billingMonth}.csv`, rows);
@@ -1672,6 +1707,18 @@ export function ScreenCorporateInvoicing() {
               )}
             </div>
           )}
+          {statements.length > 0 && (
+            <div style={{ padding: '12px 20px', borderBottom: '1px solid #F3F3F3', display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ position: 'relative', width: 280 }}>
+                <input value={statementSearch} onChange={(e) => setStatementSearch(e.target.value)} placeholder="Search company…"
+                  style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
+                <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, display: 'inline-flex' }}><Search size={14} /></span>
+              </div>
+              {statementSearch.trim() && (
+                <span style={{ fontSize: 12, color: C.slate }}>{shownStatements.length} of {statements.length} compan{statements.length === 1 ? 'y' : 'ies'}</span>
+              )}
+            </div>
+          )}
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
@@ -1682,7 +1729,7 @@ export function ScreenCorporateInvoicing() {
                 </tr>
               </thead>
               <tbody>
-                {statements.map((stmt) => {
+                {shownStatements.map((stmt) => {
                   const gpKwh = stmt.goparkinRows.reduce((s, r) => s + r.kwh, 0);
                   const spKwh = stmt.spRows.reduce((s, r) => s + r.energyKwh, 0);
                   const overstayAmt = stmt.overstayAmount ?? 0;
@@ -1737,6 +1784,9 @@ export function ScreenCorporateInvoicing() {
                 })}
                 {statements.length === 0 && (
                   <tr><td colSpan={8} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No companies matched the loaded records.</td></tr>
+                )}
+                {statements.length > 0 && shownStatements.length === 0 && (
+                  <tr><td colSpan={8} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No companies match “{statementSearch.trim()}”.</td></tr>
                 )}
               </tbody>
             </table>

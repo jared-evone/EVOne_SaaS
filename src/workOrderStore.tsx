@@ -10,7 +10,7 @@ export type WorkOrderStatus =
   | 'reviewed'    // PIC amended, ready to approve
   | 'completed';  // approved, archived
 
-export type FieldType = 'section' | 'text' | 'textarea' | 'checkbox';
+export type FieldType = 'section' | 'text' | 'textarea' | 'checkbox' | 'photo' | 'group';
 
 export type TemplateKind = 'structured' | 'overlay';
 
@@ -19,6 +19,10 @@ export interface FormField {
   type: FieldType;
   label: string;
   required?: boolean;
+  // Group-only: a checkbox question bundled with a photo + a remarks text.
+  // Sub-values are stored under `${id}::photo` and `${id}::remark`.
+  photoLabel?: string;
+  remarkLabel?: string;
   // Overlay-only positioning (percent of form image, 0-100)
   x?: number;
   y?: number;
@@ -48,18 +52,24 @@ export interface FormResponse {
   editedBy?: string;
 }
 
+// Sentinel templateId for non-templated jobs whose report is a manually-uploaded PDF.
+export const OTHER_FORM_ID = 'other';
+
 export interface WorkOrder {
   id: string;
   title: string;
   customerId: string | null;   // link to Customer registry (preferred)
   customer: string;            // denormalised name for display + legacy
   address: string;
-  product: string;
+  product?: string;
   scheduledDate: string;
   priority: 'low' | 'normal' | 'high';
   status: WorkOrderStatus;
   assignedTo: string | null;
-  templateId: string;
+  templateId: string;          // a FormTemplate id, or OTHER_FORM_ID for PDF-report jobs
+  // Non-templated ("Other") jobs carry a manually-uploaded PDF report instead of a form.
+  reportFileName?: string;
+  reportPdfBase64?: string;
   response: FormResponse | null;
 }
 
@@ -184,6 +194,8 @@ interface Store {
   // admin actions
   createWorkOrder(input: Omit<WorkOrder, 'id' | 'status' | 'response'>): void;
   reassign(workOrderId: string, technicianName: string | null): void;
+  reschedule(workOrderId: string, date: string): void;
+  deleteWorkOrder(workOrderId: string): void;
   saveTemplate(template: FormTemplate): void;
   deleteTemplate(templateId: string): void;
 
@@ -276,6 +288,11 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
             : w,
         ),
       ),
+
+    reschedule: (id, date) =>
+      setWorkOrders((ws) => ws.map((w) => (w.id === id ? { ...w, scheduledDate: date } : w))),
+
+    deleteWorkOrder: (id) => setWorkOrders((ws) => ws.filter((w) => w.id !== id)),
 
     saveTemplate: (tpl) =>
       setTemplates((ts) => {

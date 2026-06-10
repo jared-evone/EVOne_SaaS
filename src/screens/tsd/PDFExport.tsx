@@ -375,8 +375,50 @@ function StructuredField({
     );
   }
 
+  if (field.type === 'group') {
+    const checked = values[field.id] === true;
+    const photo = stringValue(values, `${field.id}::photo`);
+    const remark = stringValue(values, `${field.id}::remark`);
+    return (
+      <View wrap={false} style={styles.field}>
+        <View style={checked ? styles.checkboxRow : [styles.checkboxRow, styles.checkboxRowUnchecked]}>
+          <View style={checked ? [styles.checkboxBox, styles.checkboxBoxChecked] : styles.checkboxBox}>
+            {checked && <CheckMark />}
+          </View>
+          <Text style={styles.checkboxLabel}>{field.label}</Text>
+        </View>
+        {photo ? (
+          <View style={{ marginTop: 6 }}>
+            <Text style={styles.fieldLabel}>{field.photoLabel || 'Photo'}</Text>
+            <PDFImage src={photo} style={{ width: 200, marginTop: 4, borderRadius: 4 }} />
+          </View>
+        ) : null}
+        {remark ? (
+          <View style={{ marginTop: 6 }}>
+            <Text style={styles.fieldLabel}>{field.remarkLabel || 'Remarks'}</Text>
+            <Text style={styles.fieldValue}>{remark}</Text>
+          </View>
+        ) : null}
+      </View>
+    );
+  }
+
   const value = stringValue(values, field.id);
   const isMissing = !!field.required && !value;
+
+  if (field.type === 'photo') {
+    return (
+      <View style={styles.field} wrap={false}>
+        <Text style={styles.fieldLabel}>
+          {field.label}
+          {field.required ? <Text style={styles.requiredStar}> *</Text> : ''}
+        </Text>
+        {value
+          ? <PDFImage src={value} style={{ width: 240, marginTop: 4, borderRadius: 4 }} />
+          : <Text style={isMissing ? [styles.fieldValue, styles.fieldValueRequiredEmpty] : styles.fieldValue}>{isMissing ? '— required —' : '— no photo —'}</Text>}
+      </View>
+    );
+  }
 
   return (
     <View style={styles.field} wrap={false}>

@@ -17,7 +17,7 @@ export type ScreenKey =
   | 'corporatecrm' | 'corporatecrm_invoicing'
   | 'cpochargers' | 'charging' | 'corporateinvoicing' | 'charging_dashboard'
   | 'charging_cpo_carparks' | 'charging_sp_price'
-  | 'tsd_technician' | 'tsd_workorders' | 'tsd_forms' | 'tsd_pic'
+  | 'tsd_technician' | 'tsd_workorders' | 'tsd_forms' | 'tsd_pic' | 'tsd_technicians'
   | 'settings' | 'dbhealth';
 
 export const SCREEN_LABELS: Record<ScreenKey, string> = {
@@ -44,6 +44,7 @@ export const SCREEN_LABELS: Record<ScreenKey, string> = {
   tsd_workorders:        'Work Orders',
   tsd_forms:             'Form Templates',
   tsd_pic:               'PIC Review',
+  tsd_technicians:       'Technicians',
   settings:              'Users & Permissions',
   dbhealth:              'DB Health',
 };
@@ -54,7 +55,7 @@ export const DEPARTMENT_SCREENS: Record<Department, ScreenKey[]> = {
           'charging_cpo_carparks', 'charging_sp_price',
           'corporateinvoicing', 'settings', 'dbhealth'],
   sales: ['dashboard', 'customers', 'projects', 'settings', 'dbhealth'],
-  tech:  ['dashboard', 'tsd_technician', 'tsd_workorders', 'tsd_forms', 'tsd_pic', 'customers', 'projects', 'settings', 'dbhealth'],
+  tech:  ['tsd_technician', 'tsd_workorders', 'tsd_forms', 'tsd_pic', 'tsd_technicians', 'customers', 'settings', 'dbhealth'],
   pm:    ['dashboard', 'customers', 'projects', 'settings', 'dbhealth'],
 };
 
