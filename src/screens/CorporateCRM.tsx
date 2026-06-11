@@ -4,7 +4,7 @@ import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { AccountOpening } from './crm/AccountOpening';
 import { usePermissions } from '../permissions';
-import { Search, Download as DownloadIcon } from 'lucide-react';
+import { Search, Download as DownloadIcon, Mail } from 'lucide-react';
 import { FileText } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ interface CRMVehicle {
   crm_companies: { name: string } | null;
 }
 
-type CRMTab = 'companies' | 'vehicles' | 'sp' | 'opening';
+type CRMTab = 'companies' | 'vehicles' | 'sp' | 'opening' | 'email' | 'email_design';
 
 interface CRMDriver {
   id: string;
@@ -1379,6 +1379,8 @@ export function ScreenCorporateCRM() {
     { id: 'vehicles',  label: 'GoParkin Vehicles' },
     { id: 'sp',        label: 'SP Vehicles' },
     { id: 'opening',   label: 'Account Opening' },
+    { id: 'email',     label: 'Notifications' },
+    { id: 'email_design', label: 'Email Designer' },
   ];
 
   if (loading) {
@@ -1403,6 +1405,351 @@ export function ScreenCorporateCRM() {
       {tab === 'vehicles'  && <VehiclesTab  companies={companies} error={error} />}
       {tab === 'sp'        && <SPDriversTab companies={companies} error={error} />}
       {tab === 'opening'   && <AccountOpening />}
+      {tab === 'email'     && <NotificationsTab companies={companies} />}
+      {tab === 'email_design' && <EmailDesignerTab />}
+    </div>
+  );
+}
+
+// ── Notifications (Resend email) ──────────────────────────────────
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+interface EmailBrand { logoUrl: string; headerTitle: string; footerText: string; accent: string; }
+
+function buildEmailHtml(body: string, companyName: string, brand: EmailBrand): string {
+  const safe = escapeHtml(body).replace(/\{\{\s*company\s*\}\}/gi, escapeHtml(companyName)).replace(/\n/g, '<br>');
+  const accent = brand.accent || '#2A9A47';
+  const title = (brand.headerTitle || '').trim();
+  const header = brand.logoUrl
+    ? `<img src="${brand.logoUrl}" alt="${escapeHtml(title || 'Logo')}" style="max-height:44px;max-width:220px;display:block;" />${title ? `<div style="margin-top:8px;color:#5B6B7A;font-size:13px;font-weight:600;">${escapeHtml(title)}</div>` : ''}`
+    : `<span style="font-weight:700;color:${accent};font-size:20px;letter-spacing:-0.02em;">${escapeHtml(title || 'EVOne')}</span>`;
+  return `<div style="font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;max-width:600px;margin:0 auto;padding:0 16px;">
+  <div style="border-top:4px solid ${accent};padding:18px 0 14px;">
+    ${header}
+  </div>
+  <div style="font-size:14px;line-height:1.65;">${safe}</div>
+  ${brand.footerText ? `<div style="margin-top:26px;border-top:1px solid #EBEBEB;padding-top:12px;font-size:12px;color:#5B6B7A;">${escapeHtml(brand.footerText).replace(/\n/g, '<br>')}</div>` : ''}
+</div>`;
+}
+
+const SENDER_STORAGE = 'evone_email_sender';
+function loadSender(): { fromName: string; fromEmail: string; replyTo: string } {
+  try {
+    const raw = localStorage.getItem(SENDER_STORAGE);
+    if (raw) return { fromName: 'EVOne Corporate Charging', fromEmail: '', replyTo: '', ...JSON.parse(raw) };
+  } catch { /* ignore */ }
+  return { fromName: 'EVOne Corporate Charging', fromEmail: '', replyTo: '' };
+}
+
+const BRAND_STORAGE = 'evone_email_brand';
+const DEFAULT_BRAND: EmailBrand = { logoUrl: '', headerTitle: 'EVOne Corporate Charging', footerText: 'This is a notification from EVOne Corporate Charging.', accent: '#2A9A47' };
+function loadBrand(): EmailBrand {
+  try {
+    const raw = localStorage.getItem(BRAND_STORAGE);
+    if (raw) return { ...DEFAULT_BRAND, ...JSON.parse(raw) };
+  } catch { /* ignore */ }
+  return DEFAULT_BRAND;
+}
+
+function NotificationsTab({ companies }: { companies: CRMCompany[] }) {
+  const { can } = usePermissions();
+  const canSend = can('corporatecrm', 'can_edit');
+
+  const recipients = companies.filter((c) => !!(c.invoice_email && c.invoice_email.trim()));
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState('');
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
+  const [includeCc, setIncludeCc] = useState(true);
+  const [sending, setSending] = useState<{ done: number; total: number } | null>(null);
+  const [result, setResult] = useState<{ sent: number; failed: { name: string; error: string }[] } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Sender identity — kept in this browser so it doesn't need re-typing.
+  const initial = loadSender();
+  const [fromName, setFromName] = useState(initial.fromName);
+  const [fromEmail, setFromEmail] = useState(initial.fromEmail);
+  const [replyTo, setReplyTo] = useState(initial.replyTo);
+  useEffect(() => {
+    try { localStorage.setItem(SENDER_STORAGE, JSON.stringify({ fromName, fromEmail, replyTo })); } catch { /* ignore */ }
+  }, [fromName, fromEmail, replyTo]);
+  const fromAddress = fromName.trim() ? `${fromName.trim()} <${fromEmail.trim()}>` : fromEmail.trim();
+
+  // Branding (logo + header + footer) is designed in the Email Designer tab.
+  const brand = loadBrand();
+
+  const filtered = recipients.filter((c) => {
+    const q = search.trim().toLowerCase();
+    return !q || c.name.toLowerCase().includes(q) || (c.invoice_email ?? '').toLowerCase().includes(q);
+  });
+  const allSelected = recipients.length > 0 && selected.size === recipients.length;
+  const toggle = (id: string) => setSelected((p) => { const s = new Set(p); s.has(id) ? s.delete(id) : s.add(id); return s; });
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(recipients.map((c) => c.id)));
+
+  const targets = recipients.filter((c) => selected.has(c.id));
+  const canSubmit = canSend && targets.length > 0 && !!subject.trim() && !!body.trim() && !!fromEmail.trim() && !sending;
+
+  const send = async () => {
+    if (!canSubmit) return;
+    setError(null); setResult(null);
+    setSending({ done: 0, total: targets.length });
+    let sent = 0;
+    const failed: { name: string; error: string }[] = [];
+    for (let i = 0; i < targets.length; i++) {
+      const c = targets[i];
+      const subj = subject.replace(/\{\{\s*company\s*\}\}/gi, c.name);
+      const html = buildEmailHtml(body, c.name, brand);
+      try {
+        const { data, error: err } = await supabase.functions.invoke('send-customer-email', {
+          body: { to: [c.invoice_email], cc: includeCc ? (c.invoice_cc_emails ?? []) : [], subject: subj, html, from: fromAddress, replyTo: replyTo.trim() || undefined },
+        });
+        const e = (data as { error?: string } | null)?.error ?? err?.message;
+        if (e) failed.push({ name: c.name, error: e }); else sent++;
+      } catch (e) {
+        failed.push({ name: c.name, error: (e as Error).message ?? 'failed' });
+      }
+      setSending({ done: i + 1, total: targets.length });
+    }
+    setSending(null);
+    setResult({ sent, failed });
+  };
+
+  const field: React.CSSProperties = { width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: 16, alignItems: 'start' }}>
+      {/* Recipients */}
+      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: 14, borderBottom: '1px solid #F3F3F3', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Recipients · {selected.size}/{recipients.length}</span>
+            <button onClick={toggleAll} style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, border: '1px solid #EBEBEB', background: C.white, color: C.slate, cursor: 'pointer', fontFamily: 'Figtree' }}>
+              {allSelected ? 'Clear all' : 'Select all'}
+            </button>
+          </div>
+          <div style={{ position: 'relative' }}>
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search companies…"
+              style={{ width: '100%', padding: '7px 12px 7px 30px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', background: C.seasalt, boxSizing: 'border-box' }} />
+            <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: C.slate, display: 'inline-flex' }}><Search size={13} /></span>
+          </div>
+        </div>
+        <div style={{ maxHeight: '62vh', overflowY: 'auto', padding: 8 }}>
+          {filtered.map((c) => {
+            const isSel = selected.has(c.id);
+            return (
+              <label key={c.id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '9px 10px', borderRadius: 10, cursor: 'pointer', background: isSel ? C.honeydew : 'transparent' }}
+                onMouseEnter={(e) => { if (!isSel) e.currentTarget.style.background = C.seasalt; }}
+                onMouseLeave={(e) => { if (!isSel) e.currentTarget.style.background = 'transparent'; }}>
+                <input type="checkbox" checked={isSel} onChange={() => toggle(c.id)} style={{ accentColor: C.green, marginTop: 2 }} />
+                <div style={{ overflow: 'hidden' }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: isSel ? C.green : '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</div>
+                  <div style={{ fontSize: 11, color: C.slate, fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.invoice_email}</div>
+                  {includeCc && (c.invoice_cc_emails?.length ?? 0) > 0 && (
+                    <div style={{ fontSize: 10, color: C.slate }}>+{c.invoice_cc_emails.length} cc</div>
+                  )}
+                </div>
+              </label>
+            );
+          })}
+          {filtered.length === 0 && (
+            <div style={{ padding: 24, textAlign: 'center', color: C.slate, fontSize: 12 }}>
+              {recipients.length === 0 ? 'No companies have an invoice email. Add one on the Companies tab.' : 'No matches.'}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Compose */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 16px', fontSize: 13, fontWeight: 600 }}>{error}</div>}
+        {result && (
+          <div style={{ background: result.failed.length === 0 ? C.honeydew : '#FFF8E1', color: result.failed.length === 0 ? C.green : '#B07D00', borderRadius: 12, padding: '12px 16px', fontSize: 13 }}>
+            <div style={{ fontWeight: 700 }}>✓ Sent {result.sent} email{result.sent === 1 ? '' : 's'}{result.failed.length > 0 ? ` · ${result.failed.length} failed` : ''}.</div>
+            {result.failed.slice(0, 5).map((f) => <div key={f.name} style={{ fontSize: 11, marginTop: 2 }}>{f.name}: {f.error}</div>)}
+          </div>
+        )}
+
+        <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>Compose notification</div>
+            <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
+              Sent via Resend to each selected company's invoice email. Use <code style={{ background: C.seasalt, padding: '1px 5px', borderRadius: 4 }}>{'{{company}}'}</code> to insert the company name.
+            </div>
+          </div>
+
+          <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Sender</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div>
+                <FieldLabel>From Name</FieldLabel>
+                <input value={fromName} onChange={(e) => setFromName(e.target.value)} placeholder="EVOne Corporate Charging" style={{ ...field, background: C.white }} />
+              </div>
+              <div>
+                <FieldLabel>From Email</FieldLabel>
+                <input type="email" value={fromEmail} onChange={(e) => setFromEmail(e.target.value)} placeholder="billing@yourdomain.com" style={{ ...field, background: C.white }} />
+              </div>
+            </div>
+            <div>
+              <FieldLabel>Reply-To</FieldLabel>
+              <input type="email" value={replyTo} onChange={(e) => setReplyTo(e.target.value)} placeholder="replies@yourdomain.com (your inbox)" style={{ ...field, background: C.white }} />
+              <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>
+                The From email must be on your Resend-verified domain. Replies route to the Reply-To inbox.
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <FieldLabel>Subject</FieldLabel>
+            <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="e.g. Your April charging statement is ready" style={field} />
+          </div>
+          <div>
+            <FieldLabel>Message</FieldLabel>
+            <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={10} placeholder={'Dear {{company}},\n\n…'}
+              style={{ ...field, resize: 'vertical', lineHeight: 1.6 }} />
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#1a1a1a', cursor: 'pointer' }}>
+            <input type="checkbox" checked={includeCc} onChange={(e) => setIncludeCc(e.target.checked)} style={{ accentColor: C.green }} />
+            Include each company's CC list
+          </label>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {sending && <span style={{ fontSize: 13, color: C.green, fontWeight: 700 }}>Sending {sending.done} / {sending.total}…</span>}
+            <button onClick={send} disabled={!canSubmit}
+              style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 24px', borderRadius: 10, border: 'none', background: canSubmit ? C.green : '#ccc', color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: canSubmit ? 'pointer' : 'default' }}>
+              <Mail size={15} strokeWidth={2.25} /> {sending ? 'Sending…' : `Send to ${targets.length} compan${targets.length === 1 ? 'y' : 'ies'}`}
+            </button>
+          </div>
+          {!canSend && <div style={{ fontSize: 12, color: '#B07D00' }}>You don't have permission to send emails.</div>}
+        </div>
+
+        {/* Live preview */}
+        <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>Preview</div>
+            <div style={{ fontSize: 11, color: C.slate }}>as {targets[0]?.name ?? 'Sample Company Pte Ltd'}</div>
+          </div>
+          <div style={{ fontSize: 12, color: C.slate }}><strong style={{ color: '#1a1a1a' }}>Subject:</strong> {(subject || '(no subject)').replace(/\{\{\s*company\s*\}\}/gi, targets[0]?.name ?? 'Sample Company Pte Ltd')}</div>
+          <div style={{ border: '1px solid #EBEBEB', borderRadius: 12, padding: 16, background: '#FFFFFF', maxHeight: 460, overflowY: 'auto' }}
+            dangerouslySetInnerHTML={{ __html: buildEmailHtml(body || 'Your message preview appears here.', targets[0]?.name ?? 'Sample Company Pte Ltd', brand) }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Email Designer ────────────────────────────────────────────────
+
+const SAMPLE_BODY = 'Dear {{company}},\n\nThis is a preview of how your notification emails will look. Edit the message on the Notifications tab.\n\nThank you,\nEVOne Corporate Charging';
+
+function EmailDesignerTab() {
+  const { can } = usePermissions();
+  const canEdit = can('corporatecrm', 'can_edit');
+
+  const [brand, setBrand] = useState<EmailBrand>(loadBrand);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    try { localStorage.setItem(BRAND_STORAGE, JSON.stringify(brand)); } catch { /* ignore */ }
+    setSaved(true);
+    const t = window.setTimeout(() => setSaved(false), 1500);
+    return () => window.clearTimeout(t);
+  }, [brand]);
+
+  const uploadLogo = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setUploadingLogo(true);
+    setError(null);
+    try {
+      const safe = file.name.replace(/[^a-zA-Z0-9.]/g, '_');
+      const path = `logo_${Date.now()}_${safe}`;
+      const { error: upErr } = await supabase.storage.from('email-assets').upload(path, file, { upsert: true, contentType: file.type });
+      if (upErr) throw upErr;
+      const url = supabase.storage.from('email-assets').getPublicUrl(path).data.publicUrl;
+      setBrand((b) => ({ ...b, logoUrl: url }));
+    } catch (err) {
+      setError(`Logo upload failed: ${(err as Error).message}`);
+    } finally {
+      setUploadingLogo(false);
+    }
+  };
+
+  const field: React.CSSProperties = { width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
+  const disabled = !canEdit;
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' }}>
+      {/* Editor */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 16px', fontSize: 13, fontWeight: 600 }}>{error}</div>}
+        <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>Email Designer</div>
+              <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>The logo, header and footer applied to every notification email. Saved automatically.</div>
+            </div>
+            {saved && <span style={{ fontSize: 11, fontWeight: 700, color: C.green, background: C.honeydew, padding: '3px 10px', borderRadius: 99 }}>Saved</span>}
+          </div>
+
+          <div>
+            <FieldLabel>Logo</FieldLabel>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+              {brand.logoUrl
+                ? <img src={brand.logoUrl} alt="logo" style={{ maxHeight: 48, maxWidth: 220, borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, padding: 4 }} />
+                : <div style={{ height: 48, padding: '0 16px', display: 'inline-flex', alignItems: 'center', borderRadius: 8, border: '1px dashed #CBD5DD', background: C.seasalt, color: C.slate, fontSize: 12 }}>No logo</div>}
+              {canEdit && (
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: uploadingLogo ? 'default' : 'pointer' }}>
+                  {uploadingLogo ? 'Uploading…' : brand.logoUrl ? 'Replace logo' : 'Upload logo'}
+                  <input type="file" accept="image/*" disabled={uploadingLogo} style={{ display: 'none' }} onChange={uploadLogo} />
+                </label>
+              )}
+              {canEdit && brand.logoUrl && (
+                <button onClick={() => setBrand((b) => ({ ...b, logoUrl: '' }))}
+                  style={{ padding: 0, border: 'none', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer', textDecoration: 'underline' }}>Remove</button>
+              )}
+            </div>
+            <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>Hosted so it displays in email clients (data-URI images are blocked). PNG with transparent background works best.</div>
+          </div>
+
+          <div>
+            <FieldLabel>Header Title</FieldLabel>
+            <input value={brand.headerTitle} disabled={disabled} onChange={(e) => setBrand((b) => ({ ...b, headerTitle: e.target.value }))} placeholder="EVOne Corporate Charging" style={field} />
+            <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Appears under the logo (and becomes the wordmark when no logo is set).</div>
+          </div>
+
+          <div>
+            <FieldLabel>Accent Colour</FieldLabel>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <input type="color" value={brand.accent || '#2A9A47'} disabled={disabled} onChange={(e) => setBrand((b) => ({ ...b, accent: e.target.value }))}
+                style={{ width: 44, height: 36, borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, cursor: disabled ? 'default' : 'pointer' }} />
+              <input value={brand.accent || '#2A9A47'} disabled={disabled} onChange={(e) => setBrand((b) => ({ ...b, accent: e.target.value }))} style={{ ...field, width: 140 }} />
+              <button onClick={() => setBrand((b) => ({ ...b, accent: '#2A9A47' }))} disabled={disabled}
+                style={{ padding: '7px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: disabled ? 'default' : 'pointer' }}>Brand green</button>
+            </div>
+          </div>
+
+          <div>
+            <FieldLabel>Footer Text</FieldLabel>
+            <textarea value={brand.footerText} disabled={disabled} rows={2} onChange={(e) => setBrand((b) => ({ ...b, footerText: e.target.value }))}
+              placeholder="This is a notification from EVOne Corporate Charging." style={{ ...field, resize: 'vertical' }} />
+          </div>
+
+          {!canEdit && <div style={{ fontSize: 12, color: '#B07D00' }}>You don't have permission to edit the email design.</div>}
+        </div>
+      </div>
+
+      {/* Live preview */}
+      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 10, position: 'sticky', top: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>Preview</div>
+        <div style={{ border: '1px solid #EBEBEB', borderRadius: 12, padding: 16, background: '#FFFFFF', maxHeight: '70vh', overflowY: 'auto' }}
+          dangerouslySetInnerHTML={{ __html: buildEmailHtml(SAMPLE_BODY, 'Sample Company Pte Ltd', brand) }} />
+      </div>
     </div>
   );
 }
