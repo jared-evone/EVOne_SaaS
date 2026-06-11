@@ -70,6 +70,8 @@ export function ScreenProjects() {
 
   const [projects, setProjects]   = useState<Project[]>([]);
   const [customers, setCustomers] = useState<CustomerLite[]>([]);
+  const [siteCounts, setSiteCounts]       = useState<Record<string, number>>({});
+  const [chargerCounts, setChargerCounts] = useState<Record<string, number>>({});
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState<string | null>(null);
   const [search, setSearch]       = useState('');
@@ -79,24 +81,32 @@ export function ScreenProjects() {
 
   const fetchAll = async () => {
     setLoading(true);
-    const [{ data: ps, error: pErr }, { data: cs }] = await Promise.all([
+    const [{ data: ps, error: pErr }, { data: cs }, { data: siteData }, { data: chargerData }] = await Promise.all([
       supabase.from('projects').select('*').order('created_at', { ascending: false }),
       supabase.from('customers').select('id, name, type').order('name'),
+      supabase.from('project_sites').select('id, project_id'),
+      supabase.from('site_chargers').select('site_id'),
     ]);
     setLoading(false);
     if (pErr) { setError(pErr.message); return; }
     setError(null);
     setProjects((ps ?? []) as Project[]);
     setCustomers((cs ?? []) as CustomerLite[]);
+
+    // Site + charger counts per registry entry (project).
+    const sites = (siteData ?? []) as { id: string; project_id: string }[];
+    const chargers = (chargerData ?? []) as { site_id: string }[];
+    const siteToProject = new Map(sites.map((s) => [s.id, s.project_id]));
+    const sc: Record<string, number> = {};
+    for (const s of sites) sc[s.project_id] = (sc[s.project_id] ?? 0) + 1;
+    const cc: Record<string, number> = {};
+    for (const ch of chargers) { const pid = siteToProject.get(ch.site_id); if (pid) cc[pid] = (cc[pid] ?? 0) + 1; }
+    setSiteCounts(sc);
+    setChargerCounts(cc);
   };
   useEffect(() => { void fetchAll(); }, []);
 
   const customerById = (id: string | null) => id ? customers.find((c) => c.id === id) ?? null : null;
-
-  const counts = {
-    active:   projects.filter((p) => p.status === 'active').length,
-    inactive: projects.filter((p) => p.status === 'inactive').length,
-  };
 
   const visible = projects.filter((p) => {
     if (statusFilter !== 'all' && p.status !== statusFilter) return false;
@@ -133,9 +143,9 @@ export function ScreenProjects() {
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
-        <KPICard label="Total Projects" value={String(projects.length)} sub="all statuses" accent />
-        <KPICard label="Active"         value={String(counts.active)}   sub="ongoing" />
-        <KPICard label="Inactive"       value={String(counts.inactive)} sub="paused / closed" />
+        <KPICard label="Companies" value={String(projects.length)} sub="in registry" accent />
+        <KPICard label="Sites"     value={String(Object.values(siteCounts).reduce((a, b) => a + b, 0))} sub="across all customers" />
+        <KPICard label="Chargers"  value={String(Object.values(chargerCounts).reduce((a, b) => a + b, 0))} sub="registered" />
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -148,14 +158,14 @@ export function ScreenProjects() {
           ))}
         </div>
         <div style={{ position: 'relative', width: 260 }}>
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search projects…"
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search chargers…"
             style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
           <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, display: 'inline-flex' }}><Search size={14} /></span>
         </div>
         {canEdit && (
           <button onClick={() => setAdding(true)}
             style={{ marginLeft: 'auto', padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-            + New Project
+            + New Charger
           </button>
         )}
       </div>
@@ -165,17 +175,17 @@ export function ScreenProjects() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
-                {['Project', 'Status', 'Customer', 'Updated'].map((h) => (
+                {['Customer', 'Status', 'Sites', 'Chargers', 'Updated'].map((h) => (
                   <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={4} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</td></tr>
+                <tr><td colSpan={5} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</td></tr>
               ) : visible.length === 0 ? (
-                <tr><td colSpan={4} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
-                  {projects.length === 0 ? 'No projects yet. Click "+ New Project" to add one.' : 'No projects match your filters.'}
+                <tr><td colSpan={5} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
+                  {projects.length === 0 ? 'No customers yet. Click "+ New Charger" to add one.' : 'No customers match your filters.'}
                 </td></tr>
               ) : visible.map((p) => {
                 const palette = PROJECT_STATUS_PALETTE[p.status];
@@ -186,7 +196,14 @@ export function ScreenProjects() {
                     onMouseEnter={(e) => (e.currentTarget.style.background = '#FAFAFA')}
                     onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
                     <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer' }}>
-                      <div style={{ fontWeight: 700, color: '#1a1a1a', fontSize: 13 }}>{p.name}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontWeight: 700, color: '#1a1a1a', fontSize: 13 }}>{p.name}</span>
+                        {cust && (
+                          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: TYPE_PALETTE[cust.type].bg, color: TYPE_PALETTE[cust.type].color }}>
+                            {TYPE_LABEL[cust.type]}
+                          </span>
+                        )}
+                      </div>
                       {p.notes && (
                         <div style={{ fontSize: 11, color: C.slate, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 480 }}>{p.notes}</div>
                       )}
@@ -196,18 +213,8 @@ export function ScreenProjects() {
                         {PROJECT_STATUS_LABEL[p.status]}
                       </span>
                     </td>
-                    <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer' }}>
-                      {cust ? (
-                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                          <span style={{ fontWeight: 600, color: '#1a1a1a', fontSize: 13 }}>{cust.name}</span>
-                          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: TYPE_PALETTE[cust.type].bg, color: TYPE_PALETTE[cust.type].color }}>
-                            {TYPE_LABEL[cust.type]}
-                          </span>
-                        </div>
-                      ) : (
-                        <span style={{ fontSize: 12, color: C.slate, fontStyle: 'italic' }}>Unlinked</span>
-                      )}
-                    </td>
+                    <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer', fontSize: 13, color: '#1a1a1a' }}>{siteCounts[p.id] ?? 0}</td>
+                    <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.green }}>{chargerCounts[p.id] ?? 0}</td>
                     <td onClick={open} style={{ padding: '13px 16px', color: C.slate, fontSize: 12, whiteSpace: 'nowrap', cursor: 'pointer' }}>
                       {new Date(p.updated_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
                     </td>
@@ -220,7 +227,7 @@ export function ScreenProjects() {
       </div>
 
       {adding && (
-        <ProjectModal title="New Project" initial={blankProject()} customers={customers}
+        <ProjectModal title="New Charger" initial={blankProject()} customers={customers}
           onSave={addProject} onClose={() => setAdding(false)} />
       )}
     </div>
@@ -307,12 +314,12 @@ function ProjectModal({ initial, title, customers, onSave, onClose }: ProjectMod
             ))}
           </select>
           <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
-            Customers are shared across Project Management, Sales, and Technical Service. Deleting a customer keeps this project — the link just goes blank.
+            Customers are shared across Project Management, Sales, and Technical Service. Deleting a customer keeps this charger — the link just goes blank.
           </div>
         </div>
 
         <div>
-          <FieldLabel>Project Name</FieldLabel>
+          <FieldLabel>Charger Name</FieldLabel>
           <input value={form.name} onChange={(e) => onNameChange(e.target.value)}
             placeholder={form.customer_id ? 'Auto-filled from customer — edit if needed' : 'Pick a customer first…'}
             disabled={!form.customer_id}
@@ -482,12 +489,12 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
   if (loading || !project) {
     return (
       <div style={{ padding: 40, textAlign: 'center', color: C.slate, fontSize: 14 }}>
-        {loading ? 'Loading project…' : (
+        {loading ? 'Loading charger…' : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <div>Project not found.</div>
+            <div>Charger not found.</div>
             <button onClick={() => void onBack()}
               style={{ alignSelf: 'center', padding: '9px 20px', borderRadius: 10, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-              ← Back to Projects
+              ← Back to Charger Registry
             </button>
           </div>
         )}
@@ -503,7 +510,7 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <button onClick={() => void onBack()}
           style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-          ← Projects
+          ← Charger Registry
         </button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
           <div style={{ width: 44, height: 44, borderRadius: 10, background: C.honeydew, color: C.green, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, fontWeight: 700, flexShrink: 0 }}>
@@ -521,7 +528,7 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
         {canDelete && (
           <button onClick={() => setConfirmDelete(true)}
             style={{ marginLeft: 'auto', padding: '7px 14px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-            Delete project
+            Delete charger
           </button>
         )}
       </div>
@@ -701,7 +708,7 @@ function ProjectDetailsCard({ project, customers, canEdit, onSaved }: {
   return (
     <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Project Details</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Charger Details</div>
         {canEdit && !editing && (
           <button onClick={() => setEditing(true)}
             style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
@@ -735,7 +742,7 @@ function ProjectDetailsCard({ project, customers, canEdit, onSaved }: {
             </select>
           </div>
           <div>
-            <FieldLabel>Project Name</FieldLabel>
+            <FieldLabel>Charger Name</FieldLabel>
             <input value={name} onChange={(e) => onNameChange(e.target.value)}
               disabled={!customerId}
               style={{ ...inputStyle(), background: customerId ? C.white : C.seasalt, cursor: customerId ? 'text' : 'not-allowed' }} />
@@ -787,7 +794,7 @@ function LinkedCustomerCard({ customer, contacts, hasLink }: { customer: Custome
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: 18, display: 'flex', flexDirection: 'column', gap: 8 }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Linked Customer</div>
         <div style={{ background: '#FDEAEA', borderRadius: 10, padding: '10px 12px', fontSize: 12, fontWeight: 600, color: '#C0321A', lineHeight: 1.5 }}>
-          Linked customer was deleted — pick a new one from <strong>Project Details</strong> to keep this project connected.
+          Linked customer was deleted — pick a new one from <strong>Charger Details</strong> to keep this charger connected.
         </div>
       </div>
     );

@@ -33,6 +33,7 @@ import { WorkOrdersAdmin, FormBuilder } from './screens/tsd/TSDAdminApp';
 import { TechniciansAdmin } from './screens/tsd/TechniciansAdmin';
 import { PICReviewBoard } from './screens/tsd/PICApp';
 import { PublicApplication } from './screens/crm/PublicApplication';
+import { FormTestPage } from './screens/tsd/FormTestPage';
 import {
   PermissionsProvider, usePermissions,
   DEPARTMENT_LABELS, DEPARTMENT_SCREENS,
@@ -52,7 +53,7 @@ const NAV_ALL: NavEntry[] = [
   { kind: 'leaf', id: 'orders',            icon: Receipt,         label: 'Invoices' },
   { kind: 'leaf', id: 'installations',     icon: Wrench,          label: 'Installations' },
   { kind: 'leaf', id: 'customers',         icon: Users,           label: 'Customers' },
-  { kind: 'leaf', id: 'projects',          icon: FolderKanban,    label: 'Projects' },
+  { kind: 'leaf', id: 'projects',          icon: FolderKanban,    label: 'Charger Registry' },
   { kind: 'leaf', id: 'social',            icon: CalendarDays,    label: 'Social Media Planner' },
   { kind: 'leaf', id: 'sales',             icon: Handshake,       label: 'Sales' },
   { kind: 'leaf', id: 'purchaseorders',    icon: ClipboardList,   label: 'Purchase Orders' },
@@ -83,7 +84,7 @@ const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
   orders:         'Invoices',
   installations:  'Installations',
   customers:      'Customers',
-  projects:       'Projects',
+  projects:       'Charger Registry',
   social:         'Social Media Planner',
   sales:          'Sales',
   purchaseorders: 'Purchase Orders',
@@ -354,6 +355,12 @@ export default function App() {
   const applyToken = new URLSearchParams(window.location.search).get('apply');
   if (applyToken) {
     return <PublicApplication token={applyToken} />;
+  }
+
+  // QR-code form test from the Form Builder: bypass login, render the saved template.
+  const formPreviewId = new URLSearchParams(window.location.search).get('formPreview');
+  if (formPreviewId) {
+    return <FormTestPage templateId={formPreviewId} />;
   }
 
   if (!user) {

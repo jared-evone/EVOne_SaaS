@@ -30,8 +30,8 @@ Font.register({
   ],
 });
 import { C } from '../../theme';
-import { isOverlay } from './OverlayForm';
-import type { FormField, FormTemplate, FormValues, WorkOrder } from '../../workOrderStore';
+import { isOverlay, pagesOf } from './OverlayForm';
+import type { FormField, FormTemplate, FormValues, OverlayPage, WorkOrder, WorkOrderForm } from '../../workOrderStore';
 
 // ─── Brand tokens scoped to react-pdf (no media queries / no `var`) ──
 
@@ -247,86 +247,83 @@ function stringValue(values: FormValues, id: string): string {
 
 export function WorkOrderDocument({
   workOrder,
-  template,
-  values,
+  forms,
+  getTemplate,
 }: {
   workOrder: WorkOrder;
-  template: FormTemplate;
-  values: FormValues;
+  forms: WorkOrderForm[];
+  getTemplate: (id: string) => FormTemplate | undefined;
 }) {
-  const overlay = isOverlay(template);
+  const docForms = forms
+    .map((f) => ({ f, t: getTemplate(f.templateId) }))
+    .filter((x): x is { f: WorkOrderForm; t: FormTemplate } => !!x.t);
+
+  // Flatten to printable pages: a structured form is one page; an overlay form
+  // expands to one page per uploaded form page.
+  type DocPage = { f: WorkOrderForm; t: FormTemplate; overlay: boolean; page?: OverlayPage; pageIndex: number; pageCount: number };
+  const docPages: DocPage[] = docForms.flatMap(({ f, t }): DocPage[] => {
+    if (isOverlay(t)) {
+      const pgs = pagesOf(t);
+      return pgs.map((op, i) => ({ f, t, overlay: true, page: op, pageIndex: i, pageCount: pgs.length }));
+    }
+    return [{ f, t, overlay: false, page: undefined, pageIndex: 0, pageCount: 1 }];
+  });
+
   return (
     <Document
-      title={`${workOrder.id} · ${template.name}`}
+      title={`${workOrder.id} · ${workOrder.customer}`}
       author="EVOne Sdn Bhd"
       creator="EVOne TSD"
     >
-      <Page size="A4" style={styles.page}>
-        {/* Letterhead */}
-        <View style={styles.header} fixed>
-          <PDFImage src={logoSrc} style={styles.logo} />
-          <View style={styles.headerCenter}>
-            <Text style={styles.templateName}>{template.name}</Text>
-            {template.description ? (
-              <Text style={styles.templateDesc}>{template.description}</Text>
-            ) : null}
-          </View>
-          <View style={styles.headerMeta}>
-            <Text style={styles.metaLine}>
-              <Text style={styles.metaLabel}>Ref: </Text>
-              {workOrder.id}
-            </Text>
-            <Text style={styles.metaLine}>
-              <Text style={styles.metaLabel}>Customer: </Text>
-              {workOrder.customer}
-            </Text>
-            <Text style={styles.metaLine}>
-              <Text style={styles.metaLabel}>Scheduled: </Text>
-              {workOrder.scheduledDate}
-            </Text>
-            <Text style={styles.metaLine}>
-              <Text style={styles.metaLabel}>Technician: </Text>
-              {workOrder.assignedTo ?? '—'}
-            </Text>
-          </View>
-        </View>
+      {docPages.map(({ f, t, overlay, page, pageIndex, pageCount }) => {
+        const values = f.values ?? {};
+        const subtitle = pageCount > 1
+          ? `${f.label} — page ${pageIndex + 1} of ${pageCount}`
+          : (docForms.length > 1 ? f.label : t.description);
+        return (
+          <Page key={`${f.id}-${pageIndex}`} size="A4" style={styles.page}>
+            {/* Letterhead */}
+            <View style={styles.header} fixed>
+              <PDFImage src={logoSrc} style={styles.logo} />
+              <View style={styles.headerCenter}>
+                <Text style={styles.templateName}>{t.name}</Text>
+                {subtitle ? <Text style={styles.templateDesc}>{subtitle}</Text> : null}
+              </View>
+              <View style={styles.headerMeta}>
+                <Text style={styles.metaLine}><Text style={styles.metaLabel}>Ref: </Text>{workOrder.id}</Text>
+                <Text style={styles.metaLine}><Text style={styles.metaLabel}>Customer: </Text>{workOrder.customer}</Text>
+                <Text style={styles.metaLine}><Text style={styles.metaLabel}>Scheduled: </Text>{workOrder.scheduledDate}</Text>
+                <Text style={styles.metaLine}><Text style={styles.metaLabel}>Technician: </Text>{workOrder.assignedTo ?? '—'}</Text>
+              </View>
+            </View>
 
-        {/* Body */}
-        {overlay ? (
-          <OverlayBody template={template} values={values} />
-        ) : (
-          <StructuredBody template={template} values={values} />
-        )}
+            {/* Body */}
+            {overlay && page
+              ? <OverlayBody page={page} fields={t.fields.filter((fl: FormField) => (fl.page ?? 0) === pageIndex)} values={values} />
+              : <StructuredBody template={t} values={values} />}
 
-        {/* Audit */}
-        {workOrder.response && (
-          <View style={styles.audit} wrap={false}>
-            <Text style={styles.auditTitle}>Audit trail</Text>
-            {workOrder.response.submittedBy && (
-              <Text>
-                Submitted by {workOrder.response.submittedBy} on{' '}
-                {workOrder.response.submittedAt}
-              </Text>
+            {/* Audit */}
+            {workOrder.response && (
+              <View style={styles.audit} wrap={false}>
+                <Text style={styles.auditTitle}>Audit trail</Text>
+                {workOrder.response.submittedBy && (
+                  <Text>Submitted by {workOrder.response.submittedBy} on {workOrder.response.submittedAt}</Text>
+                )}
+                {workOrder.response.editedBy && (
+                  <Text>Edited by {workOrder.response.editedBy} on {workOrder.response.editedAt}</Text>
+                )}
+                {workOrder.status === 'completed' && <Text>Approved & marked completed.</Text>}
+              </View>
             )}
-            {workOrder.response.editedBy && (
-              <Text>
-                Edited by {workOrder.response.editedBy} on {workOrder.response.editedAt}
-              </Text>
-            )}
-            {workOrder.status === 'completed' && <Text>Approved & marked completed.</Text>}
-          </View>
-        )}
 
-        {/* Footer */}
-        <View style={styles.footer} fixed>
-          <Text>EVOne Sdn Bhd · evone.com.my</Text>
-          <Text
-            render={({ pageNumber, totalPages }) =>
-              `${workOrder.id} · Page ${pageNumber} of ${totalPages}`
-            }
-          />
-        </View>
-      </Page>
+            {/* Footer */}
+            <View style={styles.footer} fixed>
+              <Text>EVOne Sdn Bhd · evone.com.my</Text>
+              <Text render={({ pageNumber, totalPages }) => `${workOrder.id} · Page ${pageNumber} of ${totalPages}`} />
+            </View>
+          </Page>
+        );
+      })}
     </Document>
   );
 }
@@ -371,6 +368,19 @@ function StructuredField({
           {checked && <CheckMark />}
         </View>
         <Text style={styles.checkboxLabel}>{field.label}</Text>
+      </View>
+    );
+  }
+
+  if (field.type === 'group' && field.children) {
+    return (
+      <View style={styles.field}>
+        <Text style={[styles.fieldLabel, { fontSize: 9, marginBottom: 2 }]}>{field.label}</Text>
+        <View style={{ paddingLeft: 8, borderLeftWidth: 1.5, borderLeftColor: '#E4F3E3' }}>
+          {field.children.map((c) => (
+            <StructuredField key={c.id} field={c} values={values} />
+          ))}
+        </View>
       </View>
     );
   }
@@ -420,6 +430,20 @@ function StructuredField({
     );
   }
 
+  if (field.type === 'signature') {
+    return (
+      <View style={styles.field} wrap={false}>
+        <Text style={styles.fieldLabel}>
+          {field.label}
+          {field.required ? <Text style={styles.requiredStar}> *</Text> : ''}
+        </Text>
+        {value
+          ? <PDFImage src={value} style={{ width: 200, marginTop: 4, borderBottomWidth: 1, borderBottomColor: PDF_SLATE }} />
+          : <Text style={isMissing ? [styles.fieldValue, styles.fieldValueRequiredEmpty] : styles.fieldValue}>{isMissing ? '— required —' : '— not signed —'}</Text>}
+      </View>
+    );
+  }
+
   return (
     <View style={styles.field} wrap={false}>
       <Text style={styles.fieldLabel}>
@@ -436,13 +460,15 @@ function StructuredField({
 // ─── Overlay body ────────────────────────────────────────────────
 
 function OverlayBody({
-  template,
+  page,
+  fields,
   values,
 }: {
-  template: FormTemplate;
+  page: OverlayPage;
+  fields: FormField[];
   values: FormValues;
 }) {
-  if (!template.imageSrc) {
+  if (!page.imageSrc) {
     return (
       <View style={{ padding: 20, alignItems: 'center' }}>
         <Text style={{ color: PDF_SLATE }}>No form image attached.</Text>
@@ -453,8 +479,8 @@ function OverlayBody({
   // Compute the image's display dimensions in points so that absolute-positioned
   // children can use percentages. Page content area is PAGE_CONTENT_WIDTH wide.
   const aspect =
-    template.imageWidth && template.imageHeight
-      ? template.imageWidth / template.imageHeight
+    page.imageWidth && page.imageHeight
+      ? page.imageWidth / page.imageHeight
       : 210 / 297;
   const displayWidth = PAGE_CONTENT_WIDTH;
   const displayHeight = displayWidth / aspect;
@@ -466,8 +492,8 @@ function OverlayBody({
         { width: displayWidth, height: displayHeight },
       ]}
     >
-      <PDFImage src={template.imageSrc} style={styles.overlayImage} />
-      {template.fields.map((f) => (
+      <PDFImage src={page.imageSrc} style={styles.overlayImage} />
+      {fields.map((f) => (
         <OverlayField key={f.id} field={f} values={values} />
       ))}
     </View>
@@ -503,6 +529,15 @@ function OverlayField({
   }
 
   const value = stringValue(values, field.id);
+
+  if ((field.type === 'photo' || field.type === 'signature') && value) {
+    return (
+      <View style={[styles.overlayCell, { left, top, width, height, padding: 0 }]}>
+        <PDFImage src={value} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+      </View>
+    );
+  }
+
   return (
     <View
       style={[
@@ -519,20 +554,20 @@ function OverlayField({
 
 interface PDFPreviewModalProps {
   workOrder: WorkOrder;
-  template: FormTemplate;
-  values: FormValues;
+  forms: WorkOrderForm[];
+  getTemplate: (id: string) => FormTemplate | undefined;
   onClose: () => void;
 }
 
 export function PDFPreviewModal({
   workOrder,
-  template,
-  values,
+  forms,
+  getTemplate,
   onClose,
 }: PDFPreviewModalProps) {
   const [downloading, setDownloading] = useState(false);
 
-  const fileBase = `${workOrder.id} ${template.name}`
+  const fileBase = `${workOrder.id} ${workOrder.customer}`
     .replace(/[\\/:*?"<>|]/g, '')
     .replace(/\s+/g, '_');
   const fileName = `${fileBase}.pdf`;
@@ -541,7 +576,7 @@ export function PDFPreviewModal({
     setDownloading(true);
     try {
       const blob = await pdf(
-        <WorkOrderDocument workOrder={workOrder} template={template} values={values} />,
+        <WorkOrderDocument workOrder={workOrder} forms={forms} getTemplate={getTemplate} />,
       ).toBlob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -584,7 +619,7 @@ export function PDFPreviewModal({
             PDF Preview
           </div>
           <div style={{ fontSize: 11, opacity: 0.7 }}>
-            {workOrder.id} · {workOrder.customer} · {template.name}
+            {workOrder.id} · {workOrder.customer} · {forms.length} form{forms.length === 1 ? '' : 's'}
           </div>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -640,7 +675,7 @@ export function PDFPreviewModal({
           showToolbar={false}
           style={{ width: '100%', height: '100%', border: 'none', borderRadius: 8 }}
         >
-          <WorkOrderDocument workOrder={workOrder} template={template} values={values} />
+          <WorkOrderDocument workOrder={workOrder} forms={forms} getTemplate={getTemplate} />
         </PDFViewer>
       </div>
     </div>

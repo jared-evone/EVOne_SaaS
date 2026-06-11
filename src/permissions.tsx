@@ -26,7 +26,7 @@ export const SCREEN_LABELS: Record<ScreenKey, string> = {
   orders:                'Invoices',
   installations:         'Installations',
   customers:             'Customers',
-  projects:              'Projects',
+  projects:              'Charger Registry',
   social:                'Social Media Planner',
   sales:                 'Sales',
   purchaseorders:        'Purchase Orders',
@@ -55,7 +55,7 @@ export const DEPARTMENT_SCREENS: Record<Department, ScreenKey[]> = {
           'charging_cpo_carparks', 'charging_sp_price',
           'corporateinvoicing', 'settings', 'dbhealth'],
   sales: ['dashboard', 'customers', 'projects', 'settings', 'dbhealth'],
-  tech:  ['tsd_technician', 'tsd_workorders', 'tsd_forms', 'tsd_pic', 'tsd_technicians', 'customers', 'settings', 'dbhealth'],
+  tech:  ['tsd_technician', 'tsd_workorders', 'tsd_forms', 'tsd_pic', 'tsd_technicians', 'customers', 'projects', 'settings', 'dbhealth'],
   pm:    ['dashboard', 'customers', 'projects', 'settings', 'dbhealth'],
 };
 

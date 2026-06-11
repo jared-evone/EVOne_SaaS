@@ -1,19 +1,19 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { C } from '../../theme';
 import { Logo } from '../../components/Logo';
 import {
   DEMO_TECHNICIAN,
-  OTHER_FORM_ID,
   STATUS_COLORS,
   useWorkOrderStore,
   type FormField,
   type FormValues,
   type WorkOrder,
+  type WorkOrderForm,
 } from '../../workOrderStore';
 import { OverlayFormRenderer, isOverlay } from './OverlayForm';
 import { usePermissions } from '../../permissions';
 import { supabase } from '../../lib/supabase';
-import { Power, Calendar, User, Camera } from 'lucide-react';
+import { Power, Calendar, User, Camera, Search, ChevronDown } from 'lucide-react';
 
 interface TechAppProps {
   onBack?: () => void;
@@ -560,35 +560,48 @@ export function openBase64Pdf(base64: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-function OtherJobView({ workOrder, onBack, onSignOut }: { workOrder: WorkOrder; onBack: () => void; onSignOut?: () => void }) {
-  const store = useWorkOrderStore();
-  const { user } = usePermissions();
-  const me = user.full_name || DEMO_TECHNICIAN;
-  const submitted = workOrder.status === 'submitted' || workOrder.status === 'reviewed' || workOrder.status === 'completed';
+// A single non-templated ("Other") form instance — its report is an uploaded PDF.
+export function OtherFormCard({ inst, disabled, onUpload, onRemove }: {
+  inst: WorkOrderForm;
+  disabled: boolean;
+  onUpload: (name: string, base64: string) => void;
+  onRemove: () => void;
+}) {
+  const read = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onloadend = () => onUpload(file.name, String(reader.result).split(',')[1] ?? '');
+    reader.readAsDataURL(file);
+  };
   return (
-    <Shell onBack={onBack} onSignOut={onSignOut} title={workOrder.title} subtitle={`${workOrder.id} · ${workOrder.customer}`} crumb="Technician">
-      <div style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <div style={{ fontSize: 13, color: C.slate }}>Non-templated job — the report is a manually-uploaded PDF.</div>
-        {workOrder.reportPdfBase64 ? (
-          <button onClick={() => openBase64Pdf(workOrder.reportPdfBase64!, workOrder.reportFileName ?? `${workOrder.id}.pdf`)}
-            style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 18px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-            ⬇ {workOrder.reportFileName ?? 'Download report PDF'}
+    <div style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ fontSize: 13, color: C.slate }}>Non-templated — upload the PDF report for this job.</div>
+      {inst.reportPdfBase64 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <button onClick={() => openBase64Pdf(inst.reportPdfBase64!, inst.reportFileName ?? 'report.pdf')}
+            style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 8, padding: '9px 16px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+            ⬇ {inst.reportFileName ?? 'Download report PDF'}
           </button>
-        ) : (
-          <div style={{ fontSize: 13, color: '#B45309' }}>No report PDF attached.</div>
-        )}
-      </div>
-      {submitted ? (
-        <div style={{ marginTop: 18, padding: '12px 16px', background: C.honeydew, color: C.green, borderRadius: 12, fontSize: 13, fontWeight: 600, textAlign: 'center' }}>
-          This report has been submitted. The PIC handles it from here.
+          {!disabled && (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                Replace<input type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} onChange={read} />
+              </label>
+              <button type="button" onClick={onRemove} style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Remove</button>
+            </div>
+          )}
         </div>
+      ) : disabled ? (
+        <div style={{ fontSize: 13, color: '#B45309' }}>No report PDF attached.</div>
       ) : (
-        <button onClick={() => { store.submit(workOrder.id, {}, me); onBack(); }}
-          style={{ marginTop: 18, padding: '12px', borderRadius: 12, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>
-          Submit report
-        </button>
+        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '18px', borderRadius: 10, border: '1.5px dashed #CBD5DD', background: '#F9F9F9', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+          ⬆ Upload PDF report
+          <input type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} onChange={read} />
+        </label>
       )}
-    </Shell>
+    </div>
   );
 }
 
@@ -606,44 +619,42 @@ function TechFillFormView({
   const store = useWorkOrderStore();
   const { user } = usePermissions();
   const me = user.full_name || DEMO_TECHNICIAN;
-  const template = store.getTemplate(workOrder.templateId);
-  const [values, setValues] = useState<FormValues>(() => workOrder.response?.values ?? {});
+  const [forms, setForms] = useState<WorkOrderForm[]>(() => workOrder.forms.map((f) => ({ ...f, values: { ...(f.values ?? {}) } })));
   const [savedAt, setSavedAt] = useState<string | null>(null);
 
-  if (!template) {
-    if (workOrder.templateId === OTHER_FORM_ID) {
-      return <OtherJobView workOrder={workOrder} onBack={onBack} onSignOut={onSignOut} />;
+  const setField = (i: number, id: string, val: string | boolean) =>
+    setForms((fs) => fs.map((f, idx) => (idx === i ? { ...f, values: { ...(f.values ?? {}), [id]: val } } : f)));
+  const setReport = (i: number, name: string, base64: string) =>
+    setForms((fs) => fs.map((f, idx) => (idx === i ? { ...f, reportFileName: name || undefined, reportPdfBase64: base64 || undefined } : f)));
+
+  const missingRequired = useMemo(() => {
+    const out: string[] = [];
+    for (const inst of forms) {
+      const tpl = store.getTemplate(inst.templateId);
+      if (!tpl) {
+        if (!inst.reportPdfBase64) out.push(`${inst.label}: PDF report`);
+        continue;
+      }
+      // container groups contribute their children, not themselves
+      const flat = tpl.fields.flatMap((f) => (f.type === 'group' && f.children ? f.children : [f]));
+      for (const f of flat) {
+        if (!f.required) continue;
+        const v = (inst.values ?? {})[f.id];
+        if (v === undefined || v === '' || v === false) out.push(`${inst.label}: ${f.label}`);
+      }
     }
-    return (
-      <Shell onBack={onBack} onSignOut={onSignOut} title="Form not found" subtitle="" crumb="Technician">
-        <div>This work order references a missing template.</div>
-      </Shell>
-    );
-  }
-
-  const setField = (id: string, val: string | boolean) =>
-    setValues((v) => ({ ...v, [id]: val }));
-
-  const missingRequired = useMemo(
-    () =>
-      template.fields
-        .filter((f) => f.required)
-        .filter((f) => {
-          const v = values[f.id];
-          return v === undefined || v === '' || v === false;
-        }),
-    [template.fields, values],
-  );
+    return out;
+  }, [forms, store]);
 
   const readOnly = workOrder.status === 'submitted' || workOrder.status === 'reviewed' || workOrder.status === 'completed';
 
   const handleSaveDraft = () => {
-    store.saveDraft(workOrder.id, values);
+    store.saveDraft(workOrder.id, forms);
     setSavedAt(new Date().toLocaleTimeString());
   };
   const handleSubmit = () => {
     if (missingRequired.length > 0) return;
-    store.submit(workOrder.id, values, me);
+    store.submit(workOrder.id, forms, me);
     onBack();
   };
 
@@ -651,28 +662,34 @@ function TechFillFormView({
     <Shell
       onBack={onBack}
       onSignOut={onSignOut}
-      title={template.name}
-      subtitle={`${workOrder.id} · ${workOrder.customer}`}
+      title={workOrder.title || 'Work Order'}
+      subtitle={`${workOrder.id} · ${workOrder.customer} · ${forms.length} form${forms.length === 1 ? '' : 's'}`}
       crumb="Technician"
     >
-      {isOverlay(template) ? (
-        <OverlayFormRenderer
-          template={template}
-          values={values}
-          onChange={setField}
-          disabled={readOnly}
-        />
-      ) : (
-        <FormPaper>
-          <FormHeader template={template} workOrder={workOrder} />
-          <FieldList
-            fields={template.fields}
-            values={values}
-            onChange={setField}
-            disabled={readOnly}
-          />
-        </FormPaper>
-      )}
+      {forms.map((inst, i) => {
+        const tpl = store.getTemplate(inst.templateId);
+        return (
+          <div key={inst.id} style={{ marginBottom: 18 }}>
+            {forms.length > 1 && (
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+                Form {i + 1} of {forms.length} · {inst.label}
+              </div>
+            )}
+            {tpl ? (
+              isOverlay(tpl) ? (
+                <OverlayFormRenderer template={tpl} values={inst.values ?? {}} onChange={(fid, val) => setField(i, fid, val)} disabled={readOnly} />
+              ) : (
+                <FormPaper>
+                  <FormHeader template={tpl} workOrder={workOrder} />
+                  <FieldList fields={tpl.fields} values={inst.values ?? {}} onChange={(fid, val) => setField(i, fid, val)} disabled={readOnly} chargerCustomerId={workOrder.customerId} />
+                </FormPaper>
+              )
+            ) : (
+              <OtherFormCard inst={inst} disabled={readOnly} onUpload={(name, b64) => setReport(i, name, b64)} onRemove={() => setReport(i, '', '')} />
+            )}
+          </div>
+        );
+      })}
 
       {readOnly ? (
         <div
@@ -712,7 +729,7 @@ function TechFillFormView({
                 borderRadius: 8,
               }}
             >
-              Required: {missingRequired.map((f) => f.label).join(', ')}
+              Required: {missingRequired.join(', ')}
             </div>
           )}
           {savedAt && (
@@ -862,17 +879,267 @@ export function FieldList({
   values,
   onChange,
   disabled = false,
+  chargerCustomerId,
 }: {
   fields: FormField[];
   values: FormValues;
   onChange: (id: string, val: string | boolean) => void;
   disabled?: boolean;
+  // Scope charger-field options to this work order's customer (Registry project
+  // id or CPO location id). Omit to list all chargers.
+  chargerCustomerId?: string | null;
 }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {fields.map((f) => (
-        <FieldRow key={f.id} field={f} values={values} onChange={onChange} disabled={disabled} />
+        <FieldRow key={f.id} field={f} values={values} onChange={onChange} disabled={disabled} chargerCustomerId={chargerCustomerId} />
       ))}
+    </div>
+  );
+}
+
+// Combined charger list — Charger Registry (site_chargers) + CPO chargers.
+// When a customerId is given (a Registry project id or a CPO location id, from the
+// work order) the list is scoped to that customer's chargers only.
+// Cached per customer so multiple charger fields don't refetch.
+const chargerOptionsCache = new Map<string, Promise<string[]>>();
+async function fetchChargerOptions(customerId?: string | null): Promise<string[]> {
+  const key = customerId ?? '__all__';
+  const hit = chargerOptionsCache.get(key);
+  if (hit) return hit;
+  const promise = (async () => {
+    const regQuery = customerId
+      ? supabase.from('site_chargers').select('asset_tag, brand_model, project_sites!inner(name, project_id)').eq('project_sites.project_id', customerId)
+      : supabase.from('site_chargers').select('asset_tag, brand_model, project_sites(name)');
+    const cpoQuery = customerId
+      ? supabase.from('cpo_chargers').select('charger_code, brand_model, cpo_locations(name)').eq('location_id', customerId)
+      : supabase.from('cpo_chargers').select('charger_code, brand_model, cpo_locations(name)');
+    const [reg, cpo] = await Promise.all([regQuery, cpoQuery]);
+    const opts: string[] = [];
+    for (const c of (reg.data ?? []) as Array<{ asset_tag?: string; brand_model?: string | null; project_sites?: { name?: string } | null }>) {
+      if (!c.asset_tag) continue;
+      const site = c.project_sites?.name;
+      opts.push(`${c.asset_tag}${c.brand_model ? ' — ' + c.brand_model : ''}${site ? ' @ ' + site : ''} · Registry`);
+    }
+    for (const c of (cpo.data ?? []) as Array<{ charger_code?: string; brand_model?: string | null; cpo_locations?: { name?: string } | null }>) {
+      if (!c.charger_code) continue;
+      const loc = c.cpo_locations?.name;
+      opts.push(`${c.charger_code}${c.brand_model ? ' — ' + c.brand_model : ''}${loc ? ' @ ' + loc : ''} · CPO`);
+    }
+    return opts.sort((a, b) => a.localeCompare(b));
+  })();
+  chargerOptionsCache.set(key, promise);
+  return promise;
+}
+
+function ChargerSelect({
+  value,
+  onChange,
+  disabled,
+  customerId,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  disabled: boolean;
+  customerId?: string | null;
+}) {
+  const [options, setOptions] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (disabled) return;
+    let live = true;
+    setLoading(true);
+    fetchChargerOptions(customerId)
+      .then((o) => { if (live) { setOptions(o); setLoading(false); } })
+      .catch(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [disabled, customerId]);
+
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [open]);
+
+  if (disabled) {
+    return (
+      <div style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, background: '#F9F9F9', color: value ? '#1a1a1a' : C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {value || '—'}
+      </div>
+    );
+  }
+
+  const all = value && !options.includes(value) ? [value, ...options] : options;
+  const ql = q.trim().toLowerCase();
+  const filtered = ql ? all.filter((o) => o.toLowerCase().includes(ql)) : all;
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        onClick={() => { setOpen((o) => !o); setQ(''); }}
+        style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: `1px solid ${open ? C.green : '#EBEBEB'}`, fontFamily: 'Figtree', fontSize: 13, background: C.white, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, textAlign: 'left' }}
+      >
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: value ? '#1a1a1a' : C.slate }}>
+          {loading ? 'Loading chargers…' : value || 'Select charger…'}
+        </span>
+        <ChevronDown size={16} strokeWidth={2.25} style={{ color: C.slate, flexShrink: 0, transition: 'transform .15s', transform: open ? 'rotate(180deg)' : 'none' }} />
+      </button>
+      {open && (
+        <div style={{ position: 'absolute', left: 0, right: 0, zIndex: 60, top: 'calc(100% + 6px)', background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, boxShadow: '0 12px 32px rgba(0,0,0,.14)', padding: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ position: 'relative' }}>
+            <input
+              autoFocus
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search chargers…"
+              style={{ width: '100%', padding: '7px 12px 7px 30px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', background: C.seasalt, boxSizing: 'border-box' }}
+            />
+            <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: C.slate, display: 'inline-flex' }}><Search size={13} /></span>
+          </div>
+          <div style={{ maxHeight: 240, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 1 }}>
+            {value && (
+              <button
+                type="button"
+                onClick={() => { onChange(''); setOpen(false); }}
+                style={{ flexShrink: 0, width: '100%', textAlign: 'left', padding: '9px 12px', borderRadius: 8, border: 'none', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 500, cursor: 'pointer' }}
+              >
+                — Clear selection —
+              </button>
+            )}
+            {filtered.length === 0 ? (
+              <div style={{ padding: '12px', textAlign: 'center', color: C.slate, fontSize: 12 }}>
+                {loading ? 'Loading chargers…' : 'No matching chargers'}
+              </div>
+            ) : filtered.map((o) => {
+              const active = o === value;
+              return (
+                <button
+                  key={o}
+                  type="button"
+                  onClick={() => { onChange(o); setOpen(false); }}
+                  onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = C.seasalt; }}
+                  onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+                  style={{ flexShrink: 0, width: '100%', textAlign: 'left', padding: '9px 12px', borderRadius: 8, border: 'none', background: active ? C.honeydew : 'transparent', color: active ? C.green : '#1a1a1a', fontFamily: 'Figtree', fontSize: 13, fontWeight: active ? 700 : 500, cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                >
+                  {o}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function SignaturePad({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  onChange: (dataUrl: string) => void;
+  disabled: boolean;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const drawing = useRef(false);
+  const dirty = useRef(false);
+
+  // Paint an already-saved signature onto the editable canvas (e.g. PIC review
+  // of a submitted report) — otherwise the pad starts blank despite a value.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (disabled || !canvas || !value || dirty.current) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const img = new Image();
+    img.onload = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    };
+    img.src = value;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [disabled]);
+
+  const pos = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current!;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * canvas.width,
+      y: ((e.clientY - rect.top) / rect.height) * canvas.height,
+    };
+  };
+
+  const start = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (disabled) return;
+    e.preventDefault();
+    drawing.current = true;
+    const ctx = canvasRef.current!.getContext('2d')!;
+    const p = pos(e);
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    canvasRef.current!.setPointerCapture(e.pointerId);
+  };
+
+  const moveDraw = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!drawing.current || disabled) return;
+    e.preventDefault();
+    const ctx = canvasRef.current!.getContext('2d')!;
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#1a1a1a';
+    const p = pos(e);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    dirty.current = true;
+  };
+
+  const end = () => {
+    if (!drawing.current) return;
+    drawing.current = false;
+    if (dirty.current) onChange(canvasRef.current!.toDataURL('image/png'));
+  };
+
+  const clear = () => {
+    const canvas = canvasRef.current!;
+    canvas.getContext('2d')!.clearRect(0, 0, canvas.width, canvas.height);
+    dirty.current = false;
+    onChange('');
+  };
+
+  if (disabled) {
+    return value ? (
+      <img src={value} alt="Signature" style={{ width: '100%', maxHeight: 160, objectFit: 'contain', borderRadius: 10, border: '1px solid #EBEBEB', background: C.white }} />
+    ) : (
+      <div style={{ padding: '24px', textAlign: 'center', color: C.slate, fontSize: 12, background: '#F9F9F9', borderRadius: 10, border: '1px dashed #EBEBEB' }}>Not signed</div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <canvas
+        ref={canvasRef}
+        width={600}
+        height={180}
+        onPointerDown={start}
+        onPointerMove={moveDraw}
+        onPointerUp={end}
+        onPointerLeave={end}
+        style={{ width: '100%', height: 160, touchAction: 'none', borderRadius: 10, border: '1.5px dashed #CBD5DD', background: C.white, cursor: 'crosshair' }}
+      />
+      <button
+        type="button"
+        onClick={clear}
+        style={{ alignSelf: 'flex-start', padding: '6px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+      >
+        Clear signature
+      </button>
     </div>
   );
 }
@@ -882,11 +1149,13 @@ function FieldRow({
   values,
   onChange,
   disabled,
+  chargerCustomerId,
 }: {
   field: FormField;
   values: FormValues;
   onChange: (id: string, val: string | boolean) => void;
   disabled: boolean;
+  chargerCustomerId?: string | null;
 }) {
   const value = values[field.id];
   if (field.type === 'section') {
@@ -936,6 +1205,21 @@ function FieldRow({
         <span>{field.label}</span>
         {field.required && <span style={{ marginLeft: 'auto', fontSize: 10, color: '#C0321A' }}>required</span>}
       </label>
+    );
+  }
+
+  if (field.type === 'group' && field.children) {
+    return (
+      <div style={{ border: '1px solid #EBEBEB', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 12, background: C.white }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{field.label}</div>
+        {field.children.length === 0 ? (
+          <div style={{ fontSize: 12, color: C.slate }}>No fields in this group.</div>
+        ) : (
+          field.children.map((c) => (
+            <FieldRow key={c.id} field={c} values={values} onChange={onChange} disabled={disabled} chargerCustomerId={chargerCustomerId} />
+          ))
+        )}
+      </div>
     );
   }
 
@@ -1038,6 +1322,75 @@ function FieldRow({
             <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={readPhoto} />
           </label>
         )}
+      </div>
+    );
+  }
+
+  if (field.type === 'date') {
+    const strVal = typeof value === 'string' ? value : '';
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+          {field.label}
+          {field.required && <span style={{ color: '#C0321A', marginLeft: 6 }}>*</span>}
+        </label>
+        <input
+          type="date"
+          value={strVal}
+          disabled={disabled}
+          onChange={(e) => onChange(field.id, e.target.value)}
+          style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: disabled ? '#F9F9F9' : C.white }}
+        />
+      </div>
+    );
+  }
+
+  if (field.type === 'select') {
+    const strVal = typeof value === 'string' ? value : '';
+    const options = (field.options ?? []).map((o) => o.trim()).filter(Boolean);
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+          {field.label}
+          {field.required && <span style={{ color: '#C0321A', marginLeft: 6 }}>*</span>}
+        </label>
+        <select
+          value={strVal}
+          disabled={disabled}
+          onChange={(e) => onChange(field.id, e.target.value)}
+          style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: disabled ? '#F9F9F9' : C.white, color: strVal ? '#1a1a1a' : C.slate }}
+        >
+          <option value="">Select…</option>
+          {options.map((opt) => (
+            <option key={opt} value={opt}>{opt}</option>
+          ))}
+        </select>
+      </div>
+    );
+  }
+
+  if (field.type === 'signature') {
+    const src = typeof value === 'string' ? value : '';
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+          {field.label}
+          {field.required && <span style={{ color: '#C0321A', marginLeft: 6 }}>*</span>}
+        </label>
+        <SignaturePad value={src} disabled={disabled} onChange={(v) => onChange(field.id, v)} />
+      </div>
+    );
+  }
+
+  if (field.type === 'charger') {
+    const strVal = typeof value === 'string' ? value : '';
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+          {field.label}
+          {field.required && <span style={{ color: '#C0321A', marginLeft: 6 }}>*</span>}
+        </label>
+        <ChargerSelect value={strVal} disabled={disabled} customerId={chargerCustomerId} onChange={(v) => onChange(field.id, v)} />
       </div>
     );
   }

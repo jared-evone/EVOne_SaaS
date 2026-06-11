@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { supabase } from './lib/supabase';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -10,7 +11,17 @@ export type WorkOrderStatus =
   | 'reviewed'    // PIC amended, ready to approve
   | 'completed';  // approved, archived
 
-export type FieldType = 'section' | 'text' | 'textarea' | 'checkbox' | 'photo' | 'group';
+export type FieldType =
+  | 'section'
+  | 'text'
+  | 'textarea'
+  | 'checkbox'
+  | 'photo'
+  | 'group'
+  | 'date'
+  | 'signature'
+  | 'select'
+  | 'charger';
 
 export type TemplateKind = 'structured' | 'overlay';
 
@@ -19,15 +30,26 @@ export interface FormField {
   type: FieldType;
   label: string;
   required?: boolean;
-  // Group-only: a checkbox question bundled with a photo + a remarks text.
-  // Sub-values are stored under `${id}::photo` and `${id}::remark`.
+  // Group-only: composed sub-fields chosen by the admin (text/photo/date/…).
+  // Each child stores its value under its own id. Legacy groups (no `children`)
+  // are a checkbox question + photo + remarks under `${id}::photo` / `${id}::remark`.
+  children?: FormField[];
   photoLabel?: string;
   remarkLabel?: string;
+  // Select-only: the dropdown choices
+  options?: string[];
   // Overlay-only positioning (percent of form image, 0-100)
   x?: number;
   y?: number;
   width?: number;
   height?: number;
+  page?: number;              // overlay page index (0-based); defaults to 0
+}
+
+export interface OverlayPage {
+  imageSrc: string;           // data URL (frontend-only mock)
+  imageWidth?: number;
+  imageHeight?: number;
 }
 
 export interface FormTemplate {
@@ -36,24 +58,36 @@ export interface FormTemplate {
   description: string;
   kind?: TemplateKind;        // undefined treated as 'structured' (backwards compat)
   fields: FormField[];
-  // Overlay-only
-  imageSrc?: string;          // data URL (frontend-only mock)
+  // Overlay-only — multiple pages supported. `imageSrc`/`imageWidth`/`imageHeight`
+  // mirror page 0 for backwards compatibility.
+  pages?: OverlayPage[];
+  imageSrc?: string;
   imageWidth?: number;
   imageHeight?: number;
 }
 
 export type FormValues = Record<string, string | boolean>;
 
+// Sentinel templateId for non-templated jobs whose report is a manually-uploaded PDF.
+export const OTHER_FORM_ID = 'other';
+
+// A work order consists of one or more form instances to complete (e.g. 2× install
+// report + 1× maintenance). Each instance holds its own filled values / PDF report.
+export interface WorkOrderForm {
+  id: string;                 // unique per instance within the work order
+  templateId: string;         // a FormTemplate id, or OTHER_FORM_ID
+  label: string;              // display, e.g. "EV Charger Installation Report (1 of 2)"
+  values?: FormValues;
+  reportFileName?: string;    // Other instances: manually-uploaded PDF
+  reportPdfBase64?: string;
+}
+
 export interface FormResponse {
-  values: FormValues;
   submittedAt?: string;
   submittedBy?: string;
   editedAt?: string;
   editedBy?: string;
 }
-
-// Sentinel templateId for non-templated jobs whose report is a manually-uploaded PDF.
-export const OTHER_FORM_ID = 'other';
 
 export interface WorkOrder {
   id: string;
@@ -66,10 +100,7 @@ export interface WorkOrder {
   priority: 'low' | 'normal' | 'high';
   status: WorkOrderStatus;
   assignedTo: string | null;
-  templateId: string;          // a FormTemplate id, or OTHER_FORM_ID for PDF-report jobs
-  // Non-templated ("Other") jobs carry a manually-uploaded PDF report instead of a form.
-  reportFileName?: string;
-  reportPdfBase64?: string;
+  forms: WorkOrderForm[];      // one or more form instances to complete
   response: FormResponse | null;
 }
 
@@ -87,91 +118,12 @@ export interface Customer {
 
 // ── Seed data ─────────────────────────────────────────────────────
 
-const CHARGER_INSTALL_TEMPLATE: FormTemplate = {
-  id: 'tpl-charger-install',
-  name: 'EV Charger Installation Report',
-  description: 'Standard report for residential / commercial AC charger installs.',
-  fields: [
-    { id: 'sec_site', type: 'section', label: 'Site & Customer Information' },
-    { id: 'customer_name',   type: 'text',     label: 'Customer Name', required: true },
-    { id: 'install_address', type: 'text',     label: 'Installation Address', required: true },
-    { id: 'install_date',    type: 'text',     label: 'Date of Installation' },
-    { id: 'serial_number',   type: 'text',     label: 'Charger Serial No.' },
+const INITIAL_TEMPLATES: FormTemplate[] = [];
 
-    { id: 'sec_pre', type: 'section', label: 'Pre-installation Checks' },
-    { id: 'pre_db_inspected',   type: 'checkbox', label: 'DB / consumer unit inspected' },
-    { id: 'pre_earthing',       type: 'checkbox', label: 'Earthing tested (< 10 Ω)' },
-    { id: 'pre_supply_capacity',type: 'checkbox', label: 'Supply capacity sufficient (1-ph / 3-ph)' },
-    { id: 'pre_breaker',        type: 'checkbox', label: 'Dedicated MCB / RCD specified' },
-    { id: 'pre_route',          type: 'checkbox', label: 'Cable route surveyed & agreed with customer' },
+const INITIAL_WORK_ORDERS: WorkOrder[] = [];
 
-    { id: 'sec_install', type: 'section', label: 'Installation Steps' },
-    { id: 'inst_mounted', type: 'checkbox', label: 'Wallbox mounted to wall / pole' },
-    { id: 'inst_cabling', type: 'checkbox', label: 'Cabling pulled, glanded, terminated' },
-    { id: 'inst_mcb',     type: 'checkbox', label: 'MCB / RCBO installed at DB' },
-    { id: 'inst_earth',   type: 'checkbox', label: 'Earth lead bonded & continuity verified' },
-    { id: 'inst_ip_seal', type: 'checkbox', label: 'IP67 seal verified, glands tight' },
-
-    { id: 'sec_post', type: 'section', label: 'Post-installation Tests' },
-    { id: 'post_powered',     type: 'checkbox', label: 'Power on, no fault LED' },
-    { id: 'post_charge_test', type: 'checkbox', label: 'Charge session test passed (min 5 min)' },
-    { id: 'post_rcd',         type: 'checkbox', label: 'RCD trip test passed' },
-    { id: 'post_app',         type: 'checkbox', label: 'App pairing / OCPP backend connected' },
-    { id: 'post_walkthrough', type: 'checkbox', label: 'Customer walkthrough completed' },
-
-    { id: 'sec_notes', type: 'section', label: 'Technician Notes' },
-    { id: 'notes', type: 'textarea', label: 'Observations, deviations, follow-ups' },
-
-    { id: 'sec_signoff', type: 'section', label: 'Sign-off' },
-    { id: 'tech_signature',     type: 'text', label: 'Technician Name',          required: true },
-    { id: 'customer_signature', type: 'text', label: 'Customer Sign-off (Name)' },
-  ],
-};
-
-const MAINTENANCE_TEMPLATE: FormTemplate = {
-  id: 'tpl-maintenance',
-  name: 'Annual Maintenance Service',
-  description: 'Periodic check for installed chargers under maintenance contract.',
-  fields: [
-    { id: 'sec_visit', type: 'section', label: 'Visit Details' },
-    { id: 'customer_name',  type: 'text', label: 'Customer Name', required: true },
-    { id: 'serial_number',  type: 'text', label: 'Charger Serial No.' },
-    { id: 'visit_date',     type: 'text', label: 'Visit Date' },
-
-    { id: 'sec_check', type: 'section', label: 'Maintenance Checks' },
-    { id: 'chk_enclosure', type: 'checkbox', label: 'Enclosure clean & undamaged' },
-    { id: 'chk_torque',    type: 'checkbox', label: 'Terminal torque verified' },
-    { id: 'chk_rcd_test',  type: 'checkbox', label: 'RCD trip test passed' },
-    { id: 'chk_firmware',  type: 'checkbox', label: 'Firmware up-to-date' },
-    { id: 'chk_session',   type: 'checkbox', label: 'Test charge session completed' },
-
-    { id: 'sec_findings', type: 'section', label: 'Findings & Recommendations' },
-    { id: 'findings', type: 'textarea', label: 'Any issues found, parts replaced, recommendations' },
-
-    { id: 'sec_sign', type: 'section', label: 'Sign-off' },
-    { id: 'tech_signature', type: 'text', label: 'Technician Name', required: true },
-  ],
-};
-
-const INITIAL_TEMPLATES: FormTemplate[] = [CHARGER_INSTALL_TEMPLATE, MAINTENANCE_TEMPLATE];
-
-const INITIAL_WORK_ORDERS: WorkOrder[] = [
-  { id: 'WO-2026-0142', title: '7kW Wallbox install',     customerId: 'cust-ahmad',    customer: 'Ahmad Razif',     address: 'Jln Riong, Bangsar, 59100 KL',          product: '7kW Home Charger',   scheduledDate: '2026-05-05', priority: 'normal', status: 'open',     assignedTo: null,           templateId: 'tpl-charger-install', response: null },
-  { id: 'WO-2026-0143', title: 'Annual maintenance',      customerId: 'cust-ytl',      customer: 'YTL PowerSeraya', address: 'Menara YTL, KL',                        product: '22kW Commercial',    scheduledDate: '2026-05-06', priority: 'normal', status: 'open',     assignedTo: null,           templateId: 'tpl-maintenance',     response: null },
-  { id: 'WO-2026-0141', title: '22kW Commercial install', customerId: 'cust-nurul',    customer: 'Nurul Ain',       address: 'Jln SS2, PJ, 47300 SL',                 product: '22kW Commercial',    scheduledDate: '2026-05-04', priority: 'high',   status: 'assigned', assignedTo: 'Zulkifli A.',  templateId: 'tpl-charger-install', response: null },
-  { id: 'WO-2026-0140', title: '7kW Wallbox install',     customerId: 'cust-lee',      customer: 'Lee Cheng Wei',   address: 'Jln Kiara, Mont Kiara, 50480 KL',       product: '7kW Home Charger',   scheduledDate: '2026-05-03', priority: 'normal', status: 'in_progress', assignedTo: 'Zulkifli A.', templateId: 'tpl-charger-install', response: { values: { customer_name: 'Lee Cheng Wei', install_address: 'Jln Kiara, Mont Kiara, 50480 KL', pre_db_inspected: true, pre_earthing: true } } },
-  { id: 'WO-2026-0139', title: '22kW Commercial install', customerId: 'cust-priya',    customer: 'Priya Rajendran', address: 'Persiaran APEC, Cyberjaya, 63000 SL',   product: '22kW Commercial',    scheduledDate: '2026-05-02', priority: 'normal', status: 'submitted', assignedTo: 'Zulkifli A.', templateId: 'tpl-charger-install', response: { submittedAt: '2026-05-02', submittedBy: 'Zulkifli A.', values: { customer_name: 'Priya Rajendran', install_address: 'Persiaran APEC, Cyberjaya', install_date: '02 May 2026', serial_number: 'EVO-22K-024891', pre_db_inspected: true, pre_earthing: true, pre_supply_capacity: true, pre_breaker: true, pre_route: true, inst_mounted: true, inst_cabling: true, inst_mcb: true, inst_earth: true, inst_ip_seal: true, post_powered: true, post_charge_test: true, post_rcd: true, post_app: true, post_walkthrough: true, notes: 'Customer requested second charger Q3 — flagged to Sales.', tech_signature: 'Zulkifli A.', customer_signature: 'P. Rajendran' } } },
-  { id: 'WO-2026-0138', title: '7kW Wallbox install',     customerId: 'cust-hafiz',    customer: 'Hafiz Mohd Noor', address: 'Jln SAS 3, Shah Alam, 40150 SL',        product: '7kW Home Charger',   scheduledDate: '2026-05-01', priority: 'high',   status: 'reviewed', assignedTo: 'Ramesh K.',    templateId: 'tpl-charger-install', response: { submittedAt: '2026-05-01', submittedBy: 'Ramesh K.', editedAt: '2026-05-02', editedBy: 'Aishah PIC', values: { customer_name: 'Hafiz Mohd Noor', install_address: 'Jln SAS 3, Shah Alam', install_date: '01 May 2026', serial_number: 'EVO-7K-019487', pre_db_inspected: true, pre_earthing: true, pre_supply_capacity: true, pre_breaker: true, pre_route: false, inst_mounted: true, inst_cabling: true, inst_mcb: true, inst_earth: true, inst_ip_seal: true, post_powered: true, post_charge_test: true, post_rcd: true, post_app: true, post_walkthrough: true, notes: 'DB overcrowded; recommended upgrade in 6 months.', tech_signature: 'Ramesh K.', customer_signature: 'H. Mohd Noor' } } },
-];
-
-const INITIAL_CUSTOMERS: Customer[] = [
-  { id: 'cust-ahmad', name: 'Ahmad Razif',         type: 'Residential', email: 'ahmad.razif@email.com',     phone: '+6012-345 6789', address: 'Jln Riong, Bangsar, 59100 Kuala Lumpur',         notes: '' },
-  { id: 'cust-nurul', name: 'Nurul Ain Bt Hassan', type: 'Commercial',  email: 'nurul.ain@company.com',     phone: '+603-7890 1234', address: 'Jln SS2, Petaling Jaya, 47300 Selangor',          notes: '3 chargers across HQ + 2 branches.' },
-  { id: 'cust-lee',   name: 'Lee Cheng Wei',       type: 'Residential', email: 'lee.cw@email.com',          phone: '+6016-234 5678', address: 'Jln Kiara, Mont Kiara, 50480 Kuala Lumpur',       notes: '' },
-  { id: 'cust-priya', name: 'Priya Rajendran',     type: 'Commercial',  email: 'priya.r@techco.com',        phone: '+603-2345 6789', address: 'Persiaran APEC, Cyberjaya, 63000 Selangor',       notes: 'Office park, 2 bays.' },
-  { id: 'cust-hafiz', name: 'Hafiz Mohd Noor',     type: 'Residential', email: 'hafiz.mn@email.com',        phone: '+6019-876 5432', address: 'Jln SAS 3, Shah Alam, 40150 Selangor',            notes: 'DB upgrade recommended.' },
-  { id: 'cust-ytl',   name: 'YTL PowerSeraya',     type: 'Enterprise',  email: 'procurement@ytl.com.my',    phone: '+603-2117 8888', address: 'Menara YTL, Jln Bukit Bintang, 55100 KL',         notes: '18 commercial chargers under deployment.' },
-];
+// Customers are seeded into Supabase (tsd_customers) by migration and loaded from there.
+const INITIAL_CUSTOMERS: Customer[] = [];
 
 // ── Store ─────────────────────────────────────────────────────────
 
@@ -184,11 +136,11 @@ interface Store {
 
   // technician actions
   pickUp(workOrderId: string, technicianName: string): void;
-  saveDraft(workOrderId: string, values: FormValues): void;
-  submit(workOrderId: string, values: FormValues, technicianName: string): void;
+  saveDraft(workOrderId: string, forms: WorkOrderForm[]): void;
+  submit(workOrderId: string, forms: WorkOrderForm[], technicianName: string): void;
 
   // pic actions
-  amend(workOrderId: string, values: FormValues, picName: string): void;
+  amend(workOrderId: string, forms: WorkOrderForm[], picName: string): void;
   approve(workOrderId: string): void;
 
   // admin actions
@@ -211,6 +163,40 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
   const [templates, setTemplates] = useState<FormTemplate[]>(INITIAL_TEMPLATES);
   const [customers, setCustomers] = useState<Customer[]>(INITIAL_CUSTOMERS);
 
+  // Templates, work orders and customers are persisted to Supabase so they survive refresh.
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      const [tpl, wo, cust] = await Promise.all([
+        supabase.from('tsd_form_templates').select('template'),
+        supabase.from('tsd_work_orders').select('data'),
+        supabase.from('tsd_customers').select('data'),
+      ]);
+      if (!live) return;
+      if (tpl.data) setTemplates(tpl.data.map((r) => (r as { template: FormTemplate }).template));
+      if (wo.data) setWorkOrders(wo.data.map((r) => (r as { data: WorkOrder }).data));
+      if (cust.data) setCustomers(cust.data.map((r) => (r as { data: Customer }).data));
+    })();
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  // NOTE: a supabase query only executes when `.then()` is called — never use bare
+  // `void supabase…`, that builds the request but never sends it.
+  const persistWorkOrder = (wo: WorkOrder) => {
+    supabase
+      .from('tsd_work_orders')
+      .upsert({ id: wo.id, data: wo, updated_at: new Date().toISOString() })
+      .then(({ error }) => { if (error) console.error('persist work order failed', error); });
+  };
+  const persistCustomer = (c: Customer) => {
+    supabase
+      .from('tsd_customers')
+      .upsert({ id: c.id, data: c, updated_at: new Date().toISOString() })
+      .then(({ error }) => { if (error) console.error('persist customer failed', error); });
+  };
+
   const today = () => new Date().toISOString().slice(0, 10);
 
   const value: Store = {
@@ -222,102 +208,133 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
 
     pickUp: (id, tech) =>
       setWorkOrders((ws) =>
-        ws.map((w) =>
-          w.id === id && w.status === 'open'
-            ? { ...w, status: 'assigned', assignedTo: tech }
-            : w,
-        ),
+        ws.map((w) => {
+          if (w.id !== id || w.status !== 'open') return w;
+          const next: WorkOrder = { ...w, status: 'assigned', assignedTo: tech };
+          persistWorkOrder(next);
+          return next;
+        }),
       ),
 
-    saveDraft: (id, values) =>
+    saveDraft: (id, forms) =>
       setWorkOrders((ws) =>
         ws.map((w) => {
           if (w.id !== id) return w;
           const nextStatus: WorkOrderStatus = w.status === 'assigned' ? 'in_progress' : w.status;
-          return {
-            ...w,
-            status: nextStatus,
-            response: { ...(w.response ?? { values: {} }), values },
-          };
+          const next: WorkOrder = { ...w, status: nextStatus, forms, response: w.response ?? {} };
+          persistWorkOrder(next);
+          return next;
         }),
       ),
 
-    submit: (id, values, tech) =>
-      setWorkOrders((ws) =>
-        ws.map((w) =>
-          w.id === id
-            ? {
-                ...w,
-                status: 'submitted',
-                response: { values, submittedAt: today(), submittedBy: tech },
-              }
-            : w,
-        ),
-      ),
-
-    amend: (id, values, pic) =>
+    submit: (id, forms, tech) =>
       setWorkOrders((ws) =>
         ws.map((w) => {
           if (w.id !== id) return w;
-          return {
-            ...w,
-            status: 'reviewed',
-            response: {
-              ...(w.response ?? { values: {} }),
-              values,
-              editedAt: today(),
-              editedBy: pic,
-            },
-          };
+          const next: WorkOrder = { ...w, status: 'submitted', forms, response: { submittedAt: today(), submittedBy: tech } };
+          persistWorkOrder(next);
+          return next;
+        }),
+      ),
+
+    amend: (id, forms, pic) =>
+      setWorkOrders((ws) =>
+        ws.map((w) => {
+          if (w.id !== id) return w;
+          const next: WorkOrder = { ...w, status: 'reviewed', forms, response: { ...(w.response ?? {}), editedAt: today(), editedBy: pic } };
+          persistWorkOrder(next);
+          return next;
         }),
       ),
 
     approve: (id) =>
-      setWorkOrders((ws) => ws.map((w) => (w.id === id ? { ...w, status: 'completed' } : w))),
+      setWorkOrders((ws) =>
+        ws.map((w) => {
+          if (w.id !== id) return w;
+          const next: WorkOrder = { ...w, status: 'completed' };
+          persistWorkOrder(next);
+          return next;
+        }),
+      ),
 
     createWorkOrder: (input) => {
       const id = `WO-2026-${String(Date.now()).slice(-4)}`;
-      setWorkOrders((ws) => [{ id, status: 'open', response: null, ...input }, ...ws]);
+      const wo: WorkOrder = { id, status: 'open', response: null, ...input };
+      setWorkOrders((ws) => [wo, ...ws]);
+      persistWorkOrder(wo);
     },
 
     reassign: (id, tech) =>
       setWorkOrders((ws) =>
-        ws.map((w) =>
-          w.id === id
-            ? { ...w, assignedTo: tech, status: tech ? 'assigned' : 'open' }
-            : w,
-        ),
+        ws.map((w) => {
+          if (w.id !== id) return w;
+          const next: WorkOrder = { ...w, assignedTo: tech, status: tech ? 'assigned' : 'open' };
+          persistWorkOrder(next);
+          return next;
+        }),
       ),
 
     reschedule: (id, date) =>
-      setWorkOrders((ws) => ws.map((w) => (w.id === id ? { ...w, scheduledDate: date } : w))),
+      setWorkOrders((ws) =>
+        ws.map((w) => {
+          if (w.id !== id) return w;
+          const next: WorkOrder = { ...w, scheduledDate: date };
+          persistWorkOrder(next);
+          return next;
+        }),
+      ),
 
-    deleteWorkOrder: (id) => setWorkOrders((ws) => ws.filter((w) => w.id !== id)),
+    deleteWorkOrder: (id) => {
+      setWorkOrders((ws) => ws.filter((w) => w.id !== id));
+      supabase.from('tsd_work_orders').delete().eq('id', id)
+        .then(({ error }) => { if (error) console.error('delete work order failed', error); });
+    },
 
-    saveTemplate: (tpl) =>
+    saveTemplate: (tpl) => {
       setTemplates((ts) => {
         if (ts.find((t) => t.id === tpl.id)) return ts.map((t) => (t.id === tpl.id ? tpl : t));
         return [...ts, tpl];
-      }),
+      });
+      supabase
+        .from('tsd_form_templates')
+        .upsert({
+          id: tpl.id,
+          name: tpl.name,
+          kind: tpl.kind ?? 'structured',
+          template: tpl,
+          updated_at: new Date().toISOString(),
+        })
+        .then(({ error }) => { if (error) console.error('persist template failed', error); });
+    },
 
-    deleteTemplate: (id) => setTemplates((ts) => ts.filter((t) => t.id !== id)),
+    deleteTemplate: (id) => {
+      setTemplates((ts) => ts.filter((t) => t.id !== id));
+      supabase.from('tsd_form_templates').delete().eq('id', id)
+        .then(({ error }) => { if (error) console.error('delete template failed', error); });
+    },
 
-    saveCustomer: (customer) =>
+    saveCustomer: (customer) => {
+      persistCustomer(customer);
       setCustomers((cs) => {
-        if (cs.find((c) => c.id === customer.id)) {
-          // also update denormalised customer name on any linked WO
-          setWorkOrders((ws) =>
-            ws.map((w) =>
-              w.customerId === customer.id ? { ...w, customer: customer.name, address: customer.address } : w,
-            ),
-          );
-          return cs.map((c) => (c.id === customer.id ? customer : c));
-        }
+        if (cs.find((c) => c.id === customer.id)) return cs.map((c) => (c.id === customer.id ? customer : c));
         return [...cs, customer];
-      }),
+      });
+      // also update denormalised customer name/address on any linked WO (and persist them)
+      setWorkOrders((ws) =>
+        ws.map((w) => {
+          if (w.customerId !== customer.id) return w;
+          const next: WorkOrder = { ...w, customer: customer.name, address: customer.address };
+          persistWorkOrder(next);
+          return next;
+        }),
+      );
+    },
 
-    deleteCustomer: (id) =>
-      setCustomers((cs) => cs.filter((c) => c.id !== id)),
+    deleteCustomer: (id) => {
+      setCustomers((cs) => cs.filter((c) => c.id !== id));
+      supabase.from('tsd_customers').delete().eq('id', id)
+        .then(({ error }) => { if (error) console.error('delete customer failed', error); });
+    },
   };
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

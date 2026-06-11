@@ -1,28 +1,85 @@
 import { useEffect, useRef, useState } from 'react';
 import { C } from '../../theme';
-import { FileText } from 'lucide-react';
+import { FileText, Camera } from 'lucide-react';
 import type {
   FieldType,
   FormField,
   FormTemplate,
   FormValues,
+  OverlayPage,
 } from '../../workOrderStore';
 
 // ── Shared helpers ────────────────────────────────────────────────
 
 const A4_ASPECT = '210 / 297';
 
-function aspectStyle(template: FormTemplate): React.CSSProperties {
-  if (template.imageWidth && template.imageHeight) {
-    return { aspectRatio: `${template.imageWidth} / ${template.imageHeight}` };
+// Lazy-load pdf.js from a CDN (no npm dep, mirroring the Leaflet pattern) so an
+// overlay form can be uploaded as a PDF — we render page 1 to a PNG.
+const PDFJS_VERSION = '3.11.174';
+let pdfjsLoader: Promise<unknown> | null = null;
+function loadPdfJs(): Promise<{ getDocument: (s: { data: Uint8Array }) => { promise: Promise<unknown> }; GlobalWorkerOptions: { workerSrc: string } }> {
+  const w = window as unknown as { pdfjsLib?: { getDocument: (s: { data: Uint8Array }) => { promise: Promise<unknown> }; GlobalWorkerOptions: { workerSrc: string } } };
+  if (w.pdfjsLib) return Promise.resolve(w.pdfjsLib);
+  if (!pdfjsLoader) {
+    pdfjsLoader = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}/pdf.min.js`;
+      s.onload = () => {
+        if (!w.pdfjsLib) { reject(new Error('pdf.js did not attach to window')); return; }
+        w.pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}/pdf.worker.min.js`;
+        resolve(w.pdfjsLib);
+      };
+      s.onerror = () => reject(new Error('Failed to load pdf.js from CDN'));
+      document.head.appendChild(s);
+    });
   }
-  return { aspectRatio: A4_ASPECT };
+  return pdfjsLoader as Promise<{ getDocument: (s: { data: Uint8Array }) => { promise: Promise<unknown> }; GlobalWorkerOptions: { workerSrc: string } }>;
+}
+
+async function pdfToImages(file: File): Promise<OverlayPage[]> {
+  const pdfjs = await loadPdfJs();
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const doc = await pdfjs.getDocument({ data: bytes }).promise as {
+    numPages: number;
+    getPage: (n: number) => Promise<{ getViewport: (o: { scale: number }) => { width: number; height: number }; render: (o: { canvasContext: CanvasRenderingContext2D; viewport: unknown }) => { promise: Promise<void> } }>;
+  };
+  const pages: OverlayPage[] = [];
+  for (let p = 1; p <= doc.numPages; p++) {
+    const page = await doc.getPage(p);
+    const viewport = page.getViewport({ scale: 2 });
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas not supported');
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    pages.push({ imageSrc: canvas.toDataURL('image/png'), imageWidth: canvas.width, imageHeight: canvas.height });
+  }
+  return pages;
+}
+
+export function pagesOf(template: FormTemplate): OverlayPage[] {
+  if (template.pages && template.pages.length) return template.pages;
+  if (template.imageSrc) return [{ imageSrc: template.imageSrc, imageWidth: template.imageWidth, imageHeight: template.imageHeight }];
+  return [];
+}
+function pageAspect(page: OverlayPage): React.CSSProperties {
+  return page.imageWidth && page.imageHeight ? { aspectRatio: `${page.imageWidth} / ${page.imageHeight}` } : { aspectRatio: A4_ASPECT };
 }
 
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 
 const fieldColor = (type: FieldType) =>
-  type === 'checkbox' ? C.opal : type === 'textarea' ? C.yellow : C.green;
+  type === 'checkbox' ? C.opal : type === 'textarea' ? C.yellow : type === 'photo' || type === 'signature' ? C.opal : C.green;
+
+const OVERLAY_FIELD_LABELS: Partial<Record<FieldType, string>> = {
+  text: 'Text',
+  textarea: 'Long text',
+  checkbox: 'Checkbox',
+  photo: 'Photo',
+  date: 'Date',
+  signature: 'Signature',
+};
 
 // ══════════════════════════════════════════════════════════════════
 // Editor (builder mode)
@@ -36,12 +93,39 @@ export function OverlayEditor({
   onChange: (t: FormTemplate) => void;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const selected = template.fields.find((f) => f.id === selectedId) ?? null;
+  const pages = pagesOf(template);
+  const pageFields = template.fields.filter((f) => (f.page ?? 0) === currentPage);
+  const activePage = pages[currentPage] ?? pages[0];
 
-  const uploadFile = (file: File) => {
+  const applyPages = (pages: OverlayPage[]) => {
+    const first = pages[0];
+    onChange({
+      ...template,
+      pages,
+      imageSrc: first?.imageSrc,
+      imageWidth: first?.imageWidth,
+      imageHeight: first?.imageHeight,
+    });
+    setCurrentPage(0);
+  };
+
+  const uploadFile = async (file: File) => {
+    const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+    if (isPdf) {
+      try {
+        const pages = await pdfToImages(file);
+        if (!pages.length) throw new Error('No pages found');
+        applyPages(pages);
+      } catch (err) {
+        alert(`Could not read that PDF: ${(err as Error).message}`);
+      }
+      return;
+    }
     if (!file.type.startsWith('image/')) {
-      alert('Please upload an image (PNG / JPEG). For PDFs, convert to image first.');
+      alert('Please upload an image (PNG / JPEG) or a PDF.');
       return;
     }
     const reader = new FileReader();
@@ -49,12 +133,7 @@ export function OverlayEditor({
       const dataUrl = e.target?.result as string;
       const img = new Image();
       img.onload = () =>
-        onChange({
-          ...template,
-          imageSrc: dataUrl,
-          imageWidth: img.naturalWidth,
-          imageHeight: img.naturalHeight,
-        });
+        applyPages([{ imageSrc: dataUrl, imageWidth: img.naturalWidth, imageHeight: img.naturalHeight }]);
       img.src = dataUrl;
     };
     reader.readAsDataURL(file);
@@ -69,14 +148,29 @@ export function OverlayEditor({
   const addField = (type: FieldType) => {
     if (type === 'section') return; // sections don't apply to overlay
     const id = `f-${Date.now()}`;
+    const sizes: Partial<Record<FieldType, { w: number; h: number }>> = {
+      checkbox: { w: 3, h: 3 },
+      textarea: { w: 40, h: 10 },
+      photo: { w: 25, h: 18 },
+      signature: { w: 30, h: 10 },
+      date: { w: 18, h: 4 },
+    };
+    const size = sizes[type] ?? { w: 30, h: 4 };
     const newField: FormField = {
       id,
       type,
-      label: type === 'checkbox' ? 'Check' : type === 'textarea' ? 'Notes' : 'Field',
+      label:
+        type === 'checkbox' ? 'Check'
+        : type === 'textarea' ? 'Notes'
+        : type === 'photo' ? 'Photo'
+        : type === 'signature' ? 'Signature'
+        : type === 'date' ? 'Date'
+        : 'Field',
+      page: currentPage,
       x: 10,
       y: 10,
-      width: type === 'checkbox' ? 3 : type === 'textarea' ? 40 : 30,
-      height: type === 'checkbox' ? 3 : type === 'textarea' ? 10 : 4,
+      width: size.w,
+      height: size.h,
     };
     onChange({ ...template, fields: [...template.fields, newField] });
     setSelectedId(id);
@@ -104,17 +198,31 @@ export function OverlayEditor({
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
+        accept="image/*,application/pdf"
         style={{ display: 'none' }}
         onChange={onFileSelect}
       />
       <Toolbar onAdd={addField} onReplace={() => fileInputRef.current?.click()} />
-      <OverlayCanvas
-        template={template}
-        selectedId={selectedId}
-        onSelect={setSelectedId}
-        onUpdate={updateField}
-      />
+      {pages.length > 1 && (
+        <PageTabs
+          count={pages.length}
+          current={currentPage}
+          counts={pages.map((_, i) => template.fields.filter((f) => (f.page ?? 0) === i).length)}
+          onSelect={(i) => {
+            setCurrentPage(i);
+            setSelectedId(null);
+          }}
+        />
+      )}
+      {activePage && (
+        <OverlayCanvas
+          page={activePage}
+          fields={pageFields}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          onUpdate={updateField}
+        />
+      )}
       {selected ? (
         <FieldInspector
           field={selected}
@@ -178,7 +286,7 @@ function UploadPrompt({
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
+        accept="image/*,application/pdf"
         style={{ display: 'none' }}
         onChange={onFileSelect}
       />
@@ -189,7 +297,7 @@ function UploadPrompt({
       <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5 }}>
         Drop an image here, or click to browse.
         <br />
-        PNG or JPEG. For PDFs, convert the page to image first.
+        PNG, JPEG, or PDF (every page becomes an editable page).
       </div>
     </div>
   );
@@ -226,7 +334,7 @@ function Toolbar({
       >
         Place field:
       </span>
-      {(['text', 'textarea', 'checkbox'] as FieldType[]).map((t) => (
+      {(['text', 'textarea', 'checkbox', 'photo', 'date', 'signature'] as FieldType[]).map((t) => (
         <button
           key={t}
           onClick={() => onAdd(t)}
@@ -242,7 +350,7 @@ function Toolbar({
             cursor: 'pointer',
           }}
         >
-          + {t === 'textarea' ? 'Long text' : t === 'text' ? 'Text' : 'Checkbox'}
+          + {OVERLAY_FIELD_LABELS[t]}
         </button>
       ))}
       <button
@@ -266,6 +374,70 @@ function Toolbar({
   );
 }
 
+function PageTabs({
+  count,
+  current,
+  counts,
+  onSelect,
+}: {
+  count: number;
+  current: number;
+  counts: number[];
+  onSelect: (i: number) => void;
+}) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        flexWrap: 'wrap',
+        background: C.white,
+        borderRadius: 12,
+        border: '1px solid #EBEBEB',
+        padding: '10px 14px',
+      }}
+    >
+      <span
+        style={{
+          fontSize: 11,
+          fontWeight: 700,
+          color: C.slate,
+          letterSpacing: '0.05em',
+          textTransform: 'uppercase',
+        }}
+      >
+        Page:
+      </span>
+      {Array.from({ length: count }, (_, i) => {
+        const active = i === current;
+        return (
+          <button
+            key={i}
+            onClick={() => onSelect(i)}
+            style={{
+              padding: '6px 12px',
+              borderRadius: 8,
+              border: `1px solid ${active ? C.green : '#EBEBEB'}`,
+              background: active ? C.green : 'transparent',
+              color: active ? C.white : C.slate,
+              fontFamily: 'Figtree',
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: 'pointer',
+            }}
+          >
+            {i + 1}
+            {counts[i] > 0 && (
+              <span style={{ opacity: 0.7, fontWeight: 600 }}> · {counts[i]}</span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Canvas with drag & resize ─────────────────────────────────────
 
 interface DragState {
@@ -277,12 +449,14 @@ interface DragState {
 }
 
 function OverlayCanvas({
-  template,
+  page,
+  fields,
   selectedId,
   onSelect,
   onUpdate,
 }: {
-  template: FormTemplate;
+  page: OverlayPage;
+  fields: FormField[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onUpdate: (id: string, patch: Partial<FormField>) => void;
@@ -352,12 +526,12 @@ function OverlayCanvas({
         border: '1px solid #EBEBEB',
         borderRadius: 10,
         overflow: 'hidden',
-        ...aspectStyle(template),
+        ...pageAspect(page),
         userSelect: 'none',
       }}
     >
       <img
-        src={template.imageSrc}
+        src={page.imageSrc}
         alt=""
         draggable={false}
         style={{
@@ -370,7 +544,7 @@ function OverlayCanvas({
           userSelect: 'none',
         }}
       />
-      {template.fields.map((f) => (
+      {fields.map((f) => (
         <FieldBox
           key={f.id}
           field={f}
@@ -609,7 +783,8 @@ export function OverlayFormRenderer({
   onChange: (id: string, val: string | boolean) => void;
   disabled?: boolean;
 }) {
-  if (!template.imageSrc) {
+  const pages = pagesOf(template);
+  if (!pages.length) {
     return (
       <div
         style={{
@@ -628,39 +803,60 @@ export function OverlayFormRenderer({
   }
 
   return (
-    <div
-      style={{
-        position: 'relative',
-        background: C.white,
-        border: '1px solid #EBEBEB',
-        borderRadius: 10,
-        overflow: 'hidden',
-        boxShadow: '0 4px 20px rgba(0,0,0,0.04)',
-        ...aspectStyle(template),
-      }}
-    >
-      <img
-        src={template.imageSrc}
-        alt=""
-        draggable={false}
-        style={{
-          position: 'absolute',
-          inset: 0,
-          width: '100%',
-          height: '100%',
-          objectFit: 'contain',
-          pointerEvents: 'none',
-          userSelect: 'none',
-        }}
-      />
-      {template.fields.map((f) => (
-        <OverlayInput
-          key={f.id}
-          field={f}
-          value={values[f.id]}
-          onChange={(v) => onChange(f.id, v)}
-          disabled={disabled}
-        />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {pages.map((page, pageIndex) => (
+        <div key={pageIndex} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {pages.length > 1 && (
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                color: C.slate,
+                letterSpacing: '0.04em',
+                textTransform: 'uppercase',
+              }}
+            >
+              Page {pageIndex + 1} of {pages.length}
+            </div>
+          )}
+          <div
+            style={{
+              position: 'relative',
+              background: C.white,
+              border: '1px solid #EBEBEB',
+              borderRadius: 10,
+              overflow: 'hidden',
+              boxShadow: '0 4px 20px rgba(0,0,0,0.04)',
+              ...pageAspect(page),
+            }}
+          >
+            <img
+              src={page.imageSrc}
+              alt=""
+              draggable={false}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain',
+                pointerEvents: 'none',
+                userSelect: 'none',
+              }}
+            />
+            {template.fields
+              .filter((f) => (f.page ?? 0) === pageIndex)
+              .map((f) => (
+                <OverlayInput
+                  key={f.id}
+                  field={f}
+                  value={values[f.id]}
+                  onChange={(v) => onChange(f.id, v)}
+                  disabled={disabled}
+                />
+              ))}
+          </div>
+        </div>
       ))}
     </div>
   );
@@ -717,6 +913,72 @@ function OverlayInput({
 
   const strVal = typeof value === 'string' ? value : '';
 
+  if (field.type === 'date') {
+    return (
+      <input
+        type="date"
+        value={strVal}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        style={{
+          ...base,
+          background: 'rgba(255,255,255,0.85)',
+          border: `1px solid ${disabled ? 'transparent' : '#DADADA'}`,
+          borderRadius: 4,
+          fontFamily: 'Figtree',
+          fontSize: 11,
+          padding: '2px 4px',
+          outline: 'none',
+          color: '#1a1a1a',
+        }}
+      />
+    );
+  }
+
+  if (field.type === 'photo') {
+    const readPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      e.target.value = '';
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onloadend = () => onChange(String(reader.result));
+      reader.readAsDataURL(file);
+    };
+    return (
+      <div
+        style={{
+          ...base,
+          border: disabled && !strVal ? '1px solid transparent' : `1px dashed ${strVal ? 'transparent' : '#CBD5DD'}`,
+          borderRadius: 4,
+          overflow: 'hidden',
+          background: strVal ? 'transparent' : 'rgba(255,255,255,0.7)',
+        }}
+      >
+        {strVal && <img src={strVal} alt={field.label} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />}
+        {!disabled && (
+          <label
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              color: C.slate,
+            }}
+          >
+            {!strVal && <Camera size={16} strokeWidth={2} />}
+            <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={readPhoto} />
+          </label>
+        )}
+      </div>
+    );
+  }
+
+  if (field.type === 'signature') {
+    return <OverlaySignature value={strVal} disabled={disabled} onChange={onChange} style={base} />;
+  }
+
   if (field.type === 'textarea') {
     return (
       <textarea
@@ -760,6 +1022,100 @@ function OverlayInput({
         color: '#1a1a1a',
       }}
     />
+  );
+}
+
+function OverlaySignature({
+  value,
+  onChange,
+  disabled,
+  style,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  disabled: boolean;
+  style: React.CSSProperties;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const drawing = useRef(false);
+  const dirty = useRef(false);
+
+  // Pre-paint an already-saved signature so editing (PIC review) doesn't start
+  // blank, and so multi-stroke signing keeps the earlier strokes.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (disabled || !canvas || !value || dirty.current) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const img = new Image();
+    img.onload = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    };
+    img.src = value;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [disabled]);
+
+  const pos = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current!;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * canvas.width,
+      y: ((e.clientY - rect.top) / rect.height) * canvas.height,
+    };
+  };
+
+  if (disabled) {
+    return (
+      <div style={{ ...style, border: '1px solid transparent', overflow: 'hidden' }}>
+        {value && <img src={value} alt="Signature" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ ...style }}>
+      <canvas
+        ref={canvasRef}
+        width={400}
+        height={160}
+        onPointerDown={(e) => {
+          e.preventDefault();
+          drawing.current = true;
+          const ctx = canvasRef.current!.getContext('2d')!;
+          const p = pos(e);
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          canvasRef.current!.setPointerCapture(e.pointerId);
+        }}
+        onPointerMove={(e) => {
+          if (!drawing.current) return;
+          e.preventDefault();
+          const ctx = canvasRef.current!.getContext('2d')!;
+          ctx.lineWidth = 2.5;
+          ctx.lineCap = 'round';
+          ctx.strokeStyle = '#1a1a1a';
+          const p = pos(e);
+          ctx.lineTo(p.x, p.y);
+          ctx.stroke();
+          dirty.current = true;
+        }}
+        onPointerUp={() => {
+          if (!drawing.current) return;
+          drawing.current = false;
+          if (dirty.current) onChange(canvasRef.current!.toDataURL('image/png'));
+        }}
+        style={{
+          width: '100%',
+          height: '100%',
+          touchAction: 'none',
+          background: 'rgba(255,255,255,0.7)',
+          border: '1px dashed #CBD5DD',
+          borderRadius: 4,
+          cursor: 'crosshair',
+        }}
+      />
+    </div>
   );
 }
 

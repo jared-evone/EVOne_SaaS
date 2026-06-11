@@ -1435,13 +1435,52 @@ function buildEmailHtml(body: string, companyName: string, brand: EmailBrand): s
 </div>`;
 }
 
-const SENDER_STORAGE = 'evone_email_sender';
-function loadSender(): { fromName: string; fromEmail: string; replyTo: string } {
-  try {
-    const raw = localStorage.getItem(SENDER_STORAGE);
-    if (raw) return { fromName: 'EVOne Corporate Charging', fromEmail: '', replyTo: '', ...JSON.parse(raw) };
-  } catch { /* ignore */ }
-  return { fromName: 'EVOne Corporate Charging', fromEmail: '', replyTo: '' };
+// Sender identities are admin-managed (Email Designer tab) and stored in the DB.
+interface EmailSender { id: string; from_name: string; from_email: string; reply_to: string | null; }
+const LAST_SENDER_STORAGE = 'evone_email_sender_id';
+async function fetchSenders(): Promise<EmailSender[]> {
+  const { data } = await supabase.from('email_senders').select('*').order('from_name');
+  return (data as EmailSender[]) ?? [];
+}
+
+// Brand dropdown for choosing a sender identity.
+function SenderSelect({ value, senders, onChange }: { value: string; senders: EmailSender[]; onChange: (id: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [open]);
+  const selected = senders.find((s) => s.id === value);
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button type="button" onClick={() => setOpen((o) => !o)} disabled={senders.length === 0}
+        style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: `1px solid ${open ? C.green : '#EBEBEB'}`, fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: senders.length === 0 ? '#F9F9F9' : C.white, cursor: senders.length === 0 ? 'default' : 'pointer', textAlign: 'left', display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: selected ? '#1a1a1a' : C.slate, boxSizing: 'border-box' }}>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {senders.length === 0 ? 'No sender identities configured' : selected ? `${selected.from_name} <${selected.from_email}>` : '— Select sender —'}
+        </span>
+        <span style={{ fontSize: 10, color: C.slate, marginLeft: 8 }}>{open ? '▲' : '▼'}</span>
+      </button>
+      {open && senders.length > 0 && (
+        <div style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, background: C.white, borderRadius: 12, border: '1px solid #EBEBEB', boxShadow: '0 8px 32px rgba(0,0,0,.12)', zIndex: 2000, maxHeight: 260, overflowY: 'auto' }}>
+          {senders.map((s) => {
+            const isActive = s.id === value;
+            return (
+              <div key={s.id} onClick={() => { onChange(s.id); setOpen(false); }}
+                onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = C.seasalt; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = isActive ? C.honeydew : 'transparent'; }}
+                style={{ padding: '9px 14px', cursor: 'pointer', background: isActive ? C.honeydew : 'transparent' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: isActive ? C.green : '#1a1a1a' }}>{s.from_name}</div>
+                <div style={{ fontSize: 11, color: C.slate, fontFamily: 'monospace' }}>{s.from_email}{s.reply_to ? ` · reply ${s.reply_to}` : ''}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 const BRAND_STORAGE = 'evone_email_brand';
@@ -1469,14 +1508,18 @@ function NotificationsTab({ companies }: { companies: CRMCompany[] }) {
   const [error, setError] = useState<string | null>(null);
 
   // Sender identity — kept in this browser so it doesn't need re-typing.
-  const initial = loadSender();
-  const [fromName, setFromName] = useState(initial.fromName);
-  const [fromEmail, setFromEmail] = useState(initial.fromEmail);
-  const [replyTo, setReplyTo] = useState(initial.replyTo);
+  const [senders, setSenders] = useState<EmailSender[]>([]);
+  const [senderId, setSenderId] = useState<string>(() => { try { return localStorage.getItem(LAST_SENDER_STORAGE) ?? ''; } catch { return ''; } });
   useEffect(() => {
-    try { localStorage.setItem(SENDER_STORAGE, JSON.stringify({ fromName, fromEmail, replyTo })); } catch { /* ignore */ }
-  }, [fromName, fromEmail, replyTo]);
-  const fromAddress = fromName.trim() ? `${fromName.trim()} <${fromEmail.trim()}>` : fromEmail.trim();
+    fetchSenders().then((list) => {
+      setSenders(list);
+      setSenderId((cur) => (cur && list.some((s) => s.id === cur) ? cur : (list[0]?.id ?? '')));
+    });
+  }, []);
+  useEffect(() => { try { localStorage.setItem(LAST_SENDER_STORAGE, senderId); } catch { /* ignore */ } }, [senderId]);
+  const selectedSender = senders.find((s) => s.id === senderId) ?? null;
+  const fromAddress = selectedSender ? `${selectedSender.from_name} <${selectedSender.from_email}>` : '';
+  const replyToVal = selectedSender?.reply_to ?? '';
 
   // Branding (logo + header + footer) is designed in the Email Designer tab.
   const brand = loadBrand();
@@ -1490,7 +1533,7 @@ function NotificationsTab({ companies }: { companies: CRMCompany[] }) {
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(recipients.map((c) => c.id)));
 
   const targets = recipients.filter((c) => selected.has(c.id));
-  const canSubmit = canSend && targets.length > 0 && !!subject.trim() && !!body.trim() && !!fromEmail.trim() && !sending;
+  const canSubmit = canSend && targets.length > 0 && !!subject.trim() && !!body.trim() && !!selectedSender && !sending;
 
   const send = async () => {
     if (!canSubmit) return;
@@ -1504,7 +1547,7 @@ function NotificationsTab({ companies }: { companies: CRMCompany[] }) {
       const html = buildEmailHtml(body, c.name, brand);
       try {
         const { data, error: err } = await supabase.functions.invoke('send-customer-email', {
-          body: { to: [c.invoice_email], cc: includeCc ? (c.invoice_cc_emails ?? []) : [], subject: subj, html, from: fromAddress, replyTo: replyTo.trim() || undefined },
+          body: { to: [c.invoice_email], cc: includeCc ? (c.invoice_cc_emails ?? []) : [], subject: subj, html, from: fromAddress, replyTo: replyToVal || undefined },
         });
         const e = (data as { error?: string } | null)?.error ?? err?.message;
         if (e) failed.push({ name: c.name, error: e }); else sent++;
@@ -1580,25 +1623,19 @@ function NotificationsTab({ companies }: { companies: CRMCompany[] }) {
             </div>
           </div>
 
-          <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Sender</div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <div>
-                <FieldLabel>From Name</FieldLabel>
-                <input value={fromName} onChange={(e) => setFromName(e.target.value)} placeholder="EVOne Corporate Charging" style={{ ...field, background: C.white }} />
+          <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <FieldLabel>Sender</FieldLabel>
+            <SenderSelect value={senderId} senders={senders} onChange={setSenderId} />
+            {selectedSender ? (
+              <div style={{ fontSize: 12, color: C.slate, display: 'flex', flexWrap: 'wrap', gap: 14 }}>
+                <span>From <strong style={{ color: '#1a1a1a' }}>{selectedSender.from_name} &lt;{selectedSender.from_email}&gt;</strong></span>
+                <span>Reply-To <strong style={{ color: '#1a1a1a' }}>{selectedSender.reply_to || '—'}</strong></span>
               </div>
-              <div>
-                <FieldLabel>From Email</FieldLabel>
-                <input type="email" value={fromEmail} onChange={(e) => setFromEmail(e.target.value)} placeholder="billing@yourdomain.com" style={{ ...field, background: C.white }} />
+            ) : (
+              <div style={{ fontSize: 11, color: '#B07D00' }}>
+                No sender identities yet. An admin can add them in the <strong>Email Designer</strong> tab.
               </div>
-            </div>
-            <div>
-              <FieldLabel>Reply-To</FieldLabel>
-              <input type="email" value={replyTo} onChange={(e) => setReplyTo(e.target.value)} placeholder="replies@yourdomain.com (your inbox)" style={{ ...field, background: C.white }} />
-              <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>
-                The From email must be on your Resend-verified domain. Replies route to the Reply-To inbox.
-              </div>
-            </div>
+            )}
           </div>
 
           <div>
@@ -1647,11 +1684,39 @@ const SAMPLE_BODY = 'Dear {{company}},\n\nThis is a preview of how your notifica
 function EmailDesignerTab() {
   const { can } = usePermissions();
   const canEdit = can('corporatecrm', 'can_edit');
+  const canManageSenders = can('corporatecrm', 'can_delete');
 
   const [brand, setBrand] = useState<EmailBrand>(loadBrand);
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+
+  // Sender identities — admin-managed (delete permission), used by the Notifications dropdown.
+  const [senders, setSenders] = useState<EmailSender[]>([]);
+  const [newSender, setNewSender] = useState({ from_name: '', from_email: '', reply_to: '' });
+  const [senderBusy, setSenderBusy] = useState(false);
+  const loadSenderList = () => fetchSenders().then(setSenders);
+  useEffect(() => { loadSenderList(); }, []);
+
+  const addSender = async () => {
+    if (!newSender.from_name.trim() || !newSender.from_email.trim()) return;
+    setSenderBusy(true);
+    setError(null);
+    const { error: err } = await supabase.from('email_senders').insert({
+      from_name: newSender.from_name.trim(),
+      from_email: newSender.from_email.trim(),
+      reply_to: newSender.reply_to.trim() || null,
+    });
+    if (err) setError(err.message);
+    else { setNewSender({ from_name: '', from_email: '', reply_to: '' }); await loadSenderList(); }
+    setSenderBusy(false);
+  };
+  const removeSender = async (id: string) => {
+    setSenderBusy(true);
+    const { error: err } = await supabase.from('email_senders').delete().eq('id', id);
+    if (err) setError(err.message); else await loadSenderList();
+    setSenderBusy(false);
+  };
 
   useEffect(() => {
     try { localStorage.setItem(BRAND_STORAGE, JSON.stringify(brand)); } catch { /* ignore */ }
@@ -1742,6 +1807,47 @@ function EmailDesignerTab() {
 
           {!canEdit && <div style={{ fontSize: 12, color: '#B07D00' }}>You don't have permission to edit the email design.</div>}
         </div>
+
+        {canManageSenders && (
+          <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>Sender Identities</div>
+              <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>The From / Reply-To options shown in the Notifications dropdown. The From email must be on your Resend-verified domain.</div>
+            </div>
+            {senders.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {senders.map((s) => (
+                  <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10, border: '1px solid #EBEBEB' }}>
+                    <div style={{ flex: 1, overflow: 'hidden' }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{s.from_name}</div>
+                      <div style={{ fontSize: 11, color: C.slate, fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.from_email}{s.reply_to ? ` · reply ${s.reply_to}` : ''}</div>
+                    </div>
+                    <button onClick={() => removeSender(s.id)} disabled={senderBusy}
+                      style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #FDEAEA', background: C.white, color: '#C0321A', fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: senderBusy ? 'default' : 'pointer' }}>Remove</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div>
+                <FieldLabel>From Name</FieldLabel>
+                <input value={newSender.from_name} onChange={(e) => setNewSender((v) => ({ ...v, from_name: e.target.value }))} placeholder="EVOne Corporate Charging" style={field} />
+              </div>
+              <div>
+                <FieldLabel>From Email</FieldLabel>
+                <input type="email" value={newSender.from_email} onChange={(e) => setNewSender((v) => ({ ...v, from_email: e.target.value }))} placeholder="billing@yourdomain.com" style={field} />
+              </div>
+            </div>
+            <div>
+              <FieldLabel>Reply-To</FieldLabel>
+              <input type="email" value={newSender.reply_to} onChange={(e) => setNewSender((v) => ({ ...v, reply_to: e.target.value }))} placeholder="replies@yourdomain.com" style={field} />
+            </div>
+            <button onClick={addSender} disabled={senderBusy || !newSender.from_name.trim() || !newSender.from_email.trim()}
+              style={{ alignSelf: 'flex-start', padding: '9px 20px', borderRadius: 10, border: 'none', background: (senderBusy || !newSender.from_name.trim() || !newSender.from_email.trim()) ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              + Add sender identity
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Live preview */}
