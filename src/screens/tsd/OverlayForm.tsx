@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { C } from '../../theme';
 import { FileText, Camera } from 'lucide-react';
+import { compressImage } from '../../lib/compressImage';
 import type {
   FieldType,
   FormField,
@@ -940,9 +941,9 @@ function OverlayInput({
       const file = e.target.files?.[0];
       e.target.value = '';
       if (!file) return;
-      const reader = new FileReader();
-      reader.onloadend = () => onChange(String(reader.result));
-      reader.readAsDataURL(file);
+      compressImage(file)
+        .then((dataUrl) => onChange(dataUrl))
+        .catch(() => alert('Could not read that photo — please try another image.'));
     };
     return (
       <div

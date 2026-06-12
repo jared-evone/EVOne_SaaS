@@ -14,6 +14,7 @@ import {
 import { OverlayFormRenderer, isOverlay } from './OverlayForm';
 import { usePermissions } from '../../permissions';
 import { supabase } from '../../lib/supabase';
+import { compressImage } from '../../lib/compressImage';
 import { Power, Calendar, User, Camera, Search, ChevronDown } from 'lucide-react';
 
 interface TechAppProps {
@@ -1237,9 +1238,9 @@ function FieldRow({
       const file = e.target.files?.[0];
       e.target.value = '';
       if (!file) return;
-      const reader = new FileReader();
-      reader.onloadend = () => onChange(photoKey, String(reader.result));
-      reader.readAsDataURL(file);
+      compressImage(file)
+        .then((dataUrl) => onChange(photoKey, dataUrl))
+        .catch(() => alert('Could not read that photo — please try another image.'));
     };
     return (
       <div style={{ border: `1px solid ${checked ? C.green : '#EBEBEB'}`, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 12, background: C.white }}>
@@ -1292,9 +1293,9 @@ function FieldRow({
       const file = e.target.files?.[0];
       e.target.value = '';
       if (!file) return;
-      const reader = new FileReader();
-      reader.onloadend = () => onChange(field.id, String(reader.result));
-      reader.readAsDataURL(file);
+      compressImage(file)
+        .then((dataUrl) => onChange(field.id, dataUrl))
+        .catch(() => alert('Could not read that photo — please try another image.'));
     };
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>

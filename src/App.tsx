@@ -6,7 +6,7 @@ import {
   LayoutDashboard, Home, Receipt, Wrench, Users, FolderKanban, CalendarDays,
   Handshake, ClipboardList, Boxes, Truck, Building2, Plug, Zap, FileText,
   Hammer, Settings as SettingsIcon, ShieldCheck, Database, ChevronRight, ChevronDown,
-  Power, Menu,
+  Power, Menu, TrendingUp,
   type LucideIcon,
 } from 'lucide-react';
 import { useIsMobile } from './lib/useIsMobile';
@@ -17,6 +17,7 @@ import { ScreenCustomers } from './screens/Customers';
 import { ScreenProjects } from './screens/Projects';
 import { ScreenSocial } from './screens/Social';
 import { ScreenSales } from './screens/Sales';
+import { ScreenSalesManager } from './screens/SalesManager';
 import { ScreenPurchaseOrders } from './screens/PurchaseOrders';
 import { ScreenInventory } from './screens/Inventory';
 import { ScreenSuppliers } from './screens/Suppliers';
@@ -56,7 +57,8 @@ const NAV_ALL: NavEntry[] = [
   { kind: 'leaf', id: 'customers',         icon: Users,           label: 'Customers' },
   { kind: 'leaf', id: 'projects',          icon: FolderKanban,    label: 'Charger Registry' },
   { kind: 'leaf', id: 'social',            icon: CalendarDays,    label: 'Social Media Planner' },
-  { kind: 'leaf', id: 'sales',             icon: Handshake,       label: 'Sales' },
+  { kind: 'leaf', id: 'sales',             icon: Handshake,       label: 'Sales Pipeline' },
+  { kind: 'leaf', id: 'sales_manager',     icon: TrendingUp,      label: 'Sales Manager' },
   { kind: 'leaf', id: 'purchaseorders',    icon: ClipboardList,   label: 'Purchase Orders' },
   { kind: 'leaf', id: 'inventory',         icon: Boxes,           label: 'Inventory & Products' },
   { kind: 'leaf', id: 'suppliers',         icon: Truck,           label: 'Suppliers' },
@@ -87,7 +89,8 @@ const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
   customers:      'Customers',
   projects:       'Charger Registry',
   social:         'Social Media Planner',
-  sales:          'Sales',
+  sales:          'Sales Pipeline',
+  sales_manager:  'Sales Manager',
   purchaseorders: 'Purchase Orders',
   inventory:      'Inventory & Products',
   suppliers:      'Suppliers',
@@ -114,6 +117,7 @@ const screens: Partial<Record<ScreenId, JSX.Element>> = {
   projects:       <ScreenProjects />,
   social:         <ScreenSocial />,
   sales:          <ScreenSales />,
+  sales_manager:  <ScreenSalesManager />,
   purchaseorders: <ScreenPurchaseOrders />,
   inventory:      <ScreenInventory />,
   suppliers:      <ScreenSuppliers />,

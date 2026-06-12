@@ -163,10 +163,13 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
   const [templates, setTemplates] = useState<FormTemplate[]>(INITIAL_TEMPLATES);
   const [customers, setCustomers] = useState<Customer[]>(INITIAL_CUSTOMERS);
 
-  // Templates, work orders and customers are persisted to Supabase so they survive refresh.
+  // Templates, work orders and customers are persisted to Supabase so they survive
+  // refresh — and synced across devices (technician phone → PIC desktop) via
+  // Supabase Realtime + a refetch whenever the tab returns to the foreground.
   useEffect(() => {
     let live = true;
-    void (async () => {
+
+    const loadAll = async () => {
       const [tpl, wo, cust] = await Promise.all([
         supabase.from('tsd_form_templates').select('template'),
         supabase.from('tsd_work_orders').select('data'),
@@ -176,9 +179,46 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
       if (tpl.data) setTemplates(tpl.data.map((r) => (r as { template: FormTemplate }).template));
       if (wo.data) setWorkOrders(wo.data.map((r) => (r as { data: WorkOrder }).data));
       if (cust.data) setCustomers(cust.data.map((r) => (r as { data: Customer }).data));
-    })();
+    };
+
+    const refetchWorkOrder = async (id: string) => {
+      const { data } = await supabase.from('tsd_work_orders').select('data').eq('id', id).maybeSingle();
+      if (!live) return;
+      if (!data) {
+        setWorkOrders((ws) => ws.filter((w) => w.id !== id));
+        return;
+      }
+      const wo = (data as { data: WorkOrder }).data;
+      setWorkOrders((ws) => (ws.some((w) => w.id === wo.id) ? ws.map((w) => (w.id === wo.id ? wo : w)) : [wo, ...ws]));
+    };
+
+    void loadAll();
+
+    // Realtime rows can exceed the broadcast payload limit (photo-laden jsonb),
+    // so treat events as change *signals* and refetch the affected row by id.
+    const channel = supabase
+      .channel('tsd-sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tsd_work_orders' }, (payload) => {
+        const id =
+          ((payload.new as { id?: string } | null)?.id) ??
+          ((payload.old as { id?: string } | null)?.id);
+        if (id) void refetchWorkOrder(id);
+        else void loadAll();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tsd_form_templates' }, () => void loadAll())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tsd_customers' }, () => void loadAll())
+      .subscribe();
+
+    // Mobile browsers kill websockets in the background — refetch on return.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void loadAll();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
     return () => {
       live = false;
+      document.removeEventListener('visibilitychange', onVisible);
+      void supabase.removeChannel(channel);
     };
   }, []);
 
@@ -188,7 +228,12 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
     supabase
       .from('tsd_work_orders')
       .upsert({ id: wo.id, data: wo, updated_at: new Date().toISOString() })
-      .then(({ error }) => { if (error) console.error('persist work order failed', error); });
+      .then(({ error }) => {
+        if (error) {
+          console.error('persist work order failed', error);
+          alert(`Saving to the server failed — your changes are NOT synced yet.\n\n${error.message}`);
+        }
+      });
   };
   const persistCustomer = (c: Customer) => {
     supabase

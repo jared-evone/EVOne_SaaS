@@ -12,7 +12,7 @@ export const DEPARTMENT_LABELS: Record<Department, string> = {
 
 export type ScreenKey =
   | 'dashboard'
-  | 'overview' | 'orders' | 'installations' | 'customers' | 'projects' | 'social' | 'sales'
+  | 'overview' | 'orders' | 'installations' | 'customers' | 'projects' | 'social' | 'sales' | 'sales_manager'
   | 'purchaseorders' | 'inventory' | 'suppliers'
   | 'corporatecrm' | 'corporatecrm_invoicing'
   | 'cpochargers' | 'charging' | 'corporateinvoicing' | 'charging_dashboard'
@@ -28,7 +28,8 @@ export const SCREEN_LABELS: Record<ScreenKey, string> = {
   customers:             'Customers',
   projects:              'Charger Registry',
   social:                'Social Media Planner',
-  sales:                 'Sales',
+  sales:                 'Sales Pipeline',
+  sales_manager:         'Sales Manager',
   purchaseorders:        'Purchase Orders',
   inventory:             'Inventory & Products',
   suppliers:             'Suppliers',
@@ -54,7 +55,7 @@ export const DEPARTMENT_SCREENS: Record<Department, ScreenKey[]> = {
   cpo:   ['charging_dashboard', 'corporatecrm', 'corporatecrm_invoicing', 'cpochargers', 'charging',
           'charging_cpo_carparks', 'charging_sp_price',
           'corporateinvoicing', 'settings', 'dbhealth'],
-  sales: ['dashboard', 'customers', 'projects', 'settings', 'dbhealth'],
+  sales: ['customers', 'sales', 'sales_manager', 'settings', 'dbhealth'],
   tech:  ['tsd_technician', 'tsd_workorders', 'tsd_forms', 'tsd_pic', 'tsd_technicians', 'customers', 'projects', 'settings', 'dbhealth'],
   pm:    ['dashboard', 'customers', 'projects', 'settings', 'dbhealth'],
 };

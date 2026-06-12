@@ -1,628 +1,708 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
-import { Search } from 'lucide-react';
+import { supabase } from '../lib/supabase';
+import { usePermissions } from '../permissions';
+import { useIsMobile } from '../lib/useIsMobile';
+import { Search, ChevronDown, Handshake, Plus, X } from 'lucide-react';
 
-const QUOTE_STATUSES = ['Draft', 'Sent', 'Viewed', 'Accepted', 'Declined', 'Expired'] as const;
-type QuoteStatus = (typeof QUOTE_STATUSES)[number];
+// ── Types ─────────────────────────────────────────────────────────
 
-const QUOTE_STATUS_COLORS: Record<QuoteStatus, { bg: string; color: string }> = {
-  Draft:    { bg: '#F3F3F3', color: '#767B77' },
-  Sent:     { bg: '#E3F0FF', color: '#1A62C0' },
-  Viewed:   { bg: '#F0E8FF', color: '#6B21A8' },
-  Accepted: { bg: '#E4F3E3', color: '#1B512D' },
-  Declined: { bg: '#FDEAEA', color: '#C0321A' },
-  Expired:  { bg: '#FFF0E0', color: '#B45309' },
+export type QuoteStatus = 'Draft' | 'Sent' | 'Won' | 'Lost';
+export const QUOTE_STATUSES: QuoteStatus[] = ['Draft', 'Sent', 'Won', 'Lost'];
+
+export const QUOTE_STATUS_COLORS: Record<QuoteStatus, { bg: string; color: string }> = {
+  Draft: { bg: '#F3F3F3', color: '#767B77' },
+  Sent:  { bg: '#E3F0FF', color: '#1A62C0' },
+  Won:   { bg: '#E4F3E3', color: '#1B512D' },
+  Lost:  { bg: '#FDEAEA', color: '#C0321A' },
 };
 
-interface SalesProduct {
+export interface QuoteItem {
+  description: string;
+  qty: number;
+  unit_price: number;
+}
+
+export interface Quote {
+  id: string;
+  ref: string;
+  customer_id: string | null;
+  customer_name: string;
+  contact_name: string | null;
+  contact_email: string | null;
+  salesperson_id: string | null;
+  salesperson_name: string;
+  type: 'Quotation' | 'Proposal';
+  status: QuoteStatus;
+  items: QuoteItem[];
+  discount: number;
+  total: number;
+  notes: string | null;
+  quote_date: string;
+  expiry_date: string | null;
+  won_at: string | null;
+}
+
+interface CustomerOpt {
   id: string;
   name: string;
-  price: number;
-  install: number;
+  email: string | null;
+  contact_name?: string | null;
+  contact_email?: string | null;
 }
-const PRODUCTS: SalesProduct[] = [
-  { id: '7kw',  name: '7kW Home Charger',        price: 2800,  install: 599 },
-  { id: '22kw', name: '22kW Commercial Charger', price: 6800,  install: 2000 },
-  { id: 'dc50', name: 'DC Fast Charger (50kW)',  price: 18000, install: 4500 },
-];
 
-interface QuoteLine {
-  product: string;
-  qty: number;
-}
-interface Quote {
+interface SalesUser {
   id: string;
-  customer: string;
-  contact: string;
-  email: string;
-  items: QuoteLine[];
-  discount: number;
-  notes: string;
-  status: QuoteStatus;
-  created: string;
-  expiry: string;
-  type: 'Quotation' | 'Proposal';
+  full_name: string;
+  is_active: boolean;
 }
 
-const INITIAL_QUOTES: Quote[] = [
-  { id: 'QT-2026-0042', customer: 'Suria KLCC Sdn Bhd',     contact: 'Roslinda Mohd',   email: 'procurement@suriaklcc.com.my', items: [{ product: '22kw', qty: 6 }],                              discount: 5,  notes: 'Carpark Level B2–B4. Require 3-phase supply assessment.', status: 'Sent',     created: '2026-04-28', expiry: '2026-05-28', type: 'Proposal' },
-  { id: 'QT-2026-0041', customer: 'Lee Cheng Wei',          contact: 'Lee Cheng Wei',   email: 'lee.cw@email.com',             items: [{ product: '7kw',  qty: 1 }],                              discount: 0,  notes: 'Terrace house, single phase.',                           status: 'Accepted', created: '2026-04-25', expiry: '2026-05-25', type: 'Quotation' },
-  { id: 'QT-2026-0040', customer: 'EcoMall Setia Alam',     contact: 'Faizal Hamid',    email: 'faizal@ecomall.my',            items: [{ product: '22kw', qty: 4 }, { product: 'dc50', qty: 1 }], discount: 8,  notes: 'Phase 1 deployment. Option for Phase 2 in Q3.',          status: 'Viewed',   created: '2026-04-22', expiry: '2026-05-22', type: 'Proposal' },
-  { id: 'QT-2026-0039', customer: 'Ahmad Razif Bin Hamid',  contact: 'Ahmad Razif',     email: 'ahmad.razif@email.com',        items: [{ product: '7kw',  qty: 1 }],                              discount: 0,  notes: '',                                                       status: 'Accepted', created: '2026-04-20', expiry: '2026-05-20', type: 'Quotation' },
-  { id: 'QT-2026-0038', customer: 'Tropicana Golf & CC',    contact: 'Suresh Nair',     email: 'suresh@tropicana.com.my',      items: [{ product: '22kw', qty: 8 }],                              discount: 10, notes: 'Clubhouse + Valet area. Branded fascia required.',       status: 'Draft',    created: '2026-04-18', expiry: '2026-05-18', type: 'Proposal' },
-  { id: 'QT-2026-0037', customer: 'Priya Rajendran',        contact: 'Priya Rajendran', email: 'priya.r@techco.com',           items: [{ product: '22kw', qty: 2 }],                              discount: 0,  notes: 'Office carpark, 2 bays.',                                status: 'Accepted', created: '2026-04-15', expiry: '2026-05-15', type: 'Quotation' },
-  { id: 'QT-2026-0036', customer: 'Pavilion Bukit Jalil',   contact: 'Nancy Lim',       email: 'nancy.lim@pavilion.com.my',    items: [{ product: '22kw', qty: 10 }, { product: 'dc50', qty: 2 }],discount: 12, notes: 'Level 3 carpark. Phased delivery preferred.',            status: 'Declined', created: '2026-04-10', expiry: '2026-05-10', type: 'Proposal' },
-  { id: 'QT-2026-0035', customer: 'Tan Siew Ling',          contact: 'Tan Siew Ling',   email: 'siewling@email.com',           items: [{ product: '7kw',  qty: 1 }],                              discount: 0,  notes: 'Semi-D, double garage.',                                 status: 'Accepted', created: '2026-04-08', expiry: '2026-05-08', type: 'Quotation' },
-  { id: 'QT-2026-0034', customer: 'KL Eco City',            contact: 'Hafizuddin Aris', email: 'hafiz@klcc.com.my',            items: [{ product: '22kw', qty: 5 }],                              discount: 7,  notes: 'Tower B podium carpark.',                                status: 'Expired',  created: '2026-03-28', expiry: '2026-04-28', type: 'Proposal' },
+// Quick-pick catalog for line items (prices in RM, install included).
+const CATALOG: { label: string; price: number }[] = [
+  { label: '7kW AC Home Charger (incl. installation)', price: 4800 },
+  { label: '22kW AC Commercial Charger (incl. installation)', price: 9200 },
+  { label: '50kW DC Fast Charger (incl. installation)', price: 68000 },
 ];
 
-function calcQuoteTotal(items: QuoteLine[], discount: number): number {
-  const sub = items.reduce((s, item) => {
-    const p = PRODUCTS.find((pr) => pr.id === item.product);
-    return s + (p ? (p.price + p.install) * item.qty : 0);
-  }, 0);
-  return sub * (1 - discount / 100);
+export const fmtRM = (n: number) => `RM ${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+
+export const calcTotal = (items: QuoteItem[], discount: number) => {
+  const sub = items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unit_price) || 0), 0);
+  return Math.max(0, sub * (1 - (Number(discount) || 0) / 100));
+};
+
+const todayIso = () => new Date().toISOString().slice(0, 10);
+export const isExpired = (q: Quote) => q.status === 'Sent' && !!q.expiry_date && q.expiry_date < todayIso();
+
+// ── Brand searchable dropdown (local copy of the TSD pattern) ─────
+
+interface SelectOption { value: string; label: string; }
+
+function SearchSelect({ value, options, onChange, disabled, placeholder }: {
+  value: string;
+  options: SelectOption[];
+  onChange: (v: string) => void;
+  disabled?: boolean;
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [open]);
+
+  const selected = options.find((o) => o.value === value);
+  const ql = q.trim().toLowerCase();
+  const filtered = ql ? options.filter((o) => o.label.toLowerCase().includes(ql)) : options;
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button type="button" disabled={disabled} onClick={() => { setOpen((o) => !o); setQ(''); }}
+        style={{ width: '100%', padding: '9px 12px', borderRadius: 10, border: `1px solid ${open ? C.green : '#EBEBEB'}`, background: disabled ? '#F9F9F9' : C.white, fontFamily: 'Figtree', fontSize: 13, cursor: disabled ? 'default' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, textAlign: 'left' }}>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: selected ? '#1a1a1a' : C.slate }}>
+          {selected?.label ?? placeholder ?? 'Select…'}
+        </span>
+        <ChevronDown size={16} strokeWidth={2.25} style={{ color: C.slate, flexShrink: 0, transition: 'transform .15s', transform: open ? 'rotate(180deg)' : 'none' }} />
+      </button>
+      {open && !disabled && (
+        <div style={{ position: 'absolute', left: 0, right: 0, zIndex: 60, top: 'calc(100% + 6px)', background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, boxShadow: '0 12px 32px rgba(0,0,0,.14)', padding: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ position: 'relative' }}>
+            <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search…"
+              style={{ width: '100%', padding: '7px 12px 7px 30px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', background: C.seasalt, boxSizing: 'border-box' }} />
+            <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: C.slate, display: 'inline-flex' }}><Search size={13} /></span>
+          </div>
+          <div style={{ maxHeight: 240, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 1 }}>
+            {filtered.length === 0 ? (
+              <div style={{ padding: '12px', textAlign: 'center', color: C.slate, fontSize: 12 }}>No matches</div>
+            ) : filtered.map((o) => {
+              const active = o.value === value;
+              return (
+                <button key={o.value} type="button" onClick={() => { onChange(o.value); setOpen(false); }}
+                  onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = C.seasalt; }}
+                  onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+                  style={{ flexShrink: 0, width: '100%', textAlign: 'left', padding: '9px 12px', borderRadius: 8, border: 'none', background: active ? C.honeydew : 'transparent', color: active ? C.green : '#1a1a1a', fontFamily: 'Figtree', fontSize: 13, fontWeight: active ? 700 : 500, cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {o.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
+
+// ── Screen ────────────────────────────────────────────────────────
+
+export function ScreenSales() {
+  const { can, user } = usePermissions();
+  const canEdit = can('sales', 'can_edit');
+  const canDelete = can('sales', 'can_delete');
+  const isMobile = useIsMobile();
+
+  const [quotes, setQuotes] = useState<Quote[]>([]);
+  const [customers, setCustomers] = useState<CustomerOpt[]>([]);
+  const [salesUsers, setSalesUsers] = useState<SalesUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const [view, setView] = useState<'pipeline' | 'list'>('pipeline');
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | QuoteStatus>('all');
+  const [typeFilter, setTypeFilter] = useState<'all' | 'Quotation' | 'Proposal'>('all');
+  const [ownerFilter, setOwnerFilter] = useState<'all' | 'mine'>('all');
+  const [modal, setModal] = useState<{ mode: 'new' } | { mode: 'edit'; quote: Quote } | null>(null);
+
+  const fetchAll = async () => {
+    setError(null);
+    const [q, c, cc, u] = await Promise.all([
+      supabase.from('sales_quotations').select('*').order('quote_date', { ascending: false }).order('created_at', { ascending: false }),
+      supabase.from('customers').select('id, name, email').order('name'),
+      supabase.from('customer_contacts').select('customer_id, name, email, position, created_at').order('position').order('created_at'),
+      supabase.from('app_users').select('id, full_name, is_active').eq('department', 'sales').order('full_name'),
+    ]);
+    const err = q.error ?? c.error ?? cc.error ?? u.error;
+    if (err) { setError(err.message); setLoading(false); return; }
+    setQuotes((q.data ?? []) as Quote[]);
+    const firstContact = new Map<string, { name: string | null; email: string | null }>();
+    for (const row of (cc.data ?? []) as Array<{ customer_id: string; name: string | null; email: string | null }>) {
+      if (!firstContact.has(row.customer_id)) firstContact.set(row.customer_id, { name: row.name, email: row.email });
+    }
+    setCustomers(((c.data ?? []) as Array<{ id: string; name: string; email: string | null }>).map((row) => ({
+      ...row,
+      contact_name: firstContact.get(row.id)?.name ?? null,
+      contact_email: firstContact.get(row.id)?.email ?? row.email,
+    })));
+    setSalesUsers((u.data ?? []) as SalesUser[]);
+    setLoading(false);
+  };
+
+  useEffect(() => { void fetchAll(); }, []);
+
+  const setStatus = async (quote: Quote, status: QuoteStatus) => {
+    if (!canEdit || quote.status === status) return;
+    const won_at = status === 'Won' ? new Date().toISOString() : null;
+    setQuotes((qs) => qs.map((q) => (q.id === quote.id ? { ...q, status, won_at } : q)));
+    const { error: err } = await supabase
+      .from('sales_quotations')
+      .update({ status, won_at, updated_at: new Date().toISOString() })
+      .eq('id', quote.id);
+    if (err) { setError(err.message); void fetchAll(); }
+  };
+
+  // Filters
+  const visible = quotes.filter((q) => {
+    if (statusFilter !== 'all' && q.status !== statusFilter) return false;
+    if (typeFilter !== 'all' && q.type !== typeFilter) return false;
+    if (ownerFilter === 'mine' && q.salesperson_id !== user.id) return false;
+    const s = search.trim().toLowerCase();
+    if (s && !`${q.ref} ${q.customer_name} ${q.salesperson_name}`.toLowerCase().includes(s)) return false;
+    return true;
+  });
+
+  // KPIs
+  const open = quotes.filter((q) => q.status === 'Draft' || q.status === 'Sent');
+  const won = quotes.filter((q) => q.status === 'Won');
+  const lost = quotes.filter((q) => q.status === 'Lost');
+  const pipelineValue = open.reduce((s, q) => s + Number(q.total), 0);
+  const wonValue = won.reduce((s, q) => s + Number(q.total), 0);
+  const winRate = won.length + lost.length > 0 ? Math.round((won.length / (won.length + lost.length)) * 100) : null;
+
+  const pill = (active: boolean): React.CSSProperties => ({
+    padding: '7px 14px', borderRadius: 99, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700,
+    cursor: 'pointer', border: active ? 'none' : '1px solid #EBEBEB',
+    background: active ? C.green : C.white, color: active ? C.white : C.slate,
+  });
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {/* KPI row */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
+        <KPICard accent label="Pipeline Value" value={fmtRM(pipelineValue)} sub={`${open.length} open quote${open.length === 1 ? '' : 's'}`} />
+        <KPICard label="Won Value" value={fmtRM(wonValue)} sub={`${won.length} won`} />
+        <KPICard label="Awaiting Response" value={String(quotes.filter((q) => q.status === 'Sent').length)} sub="quotes sent" />
+        <KPICard label="Win Rate" value={winRate === null ? '—' : `${winRate}%`} sub={`${won.length} won · ${lost.length} lost`} />
+      </div>
+
+      {error && (
+        <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 12, padding: '12px 16px', fontSize: 13, fontWeight: 600 }}>{error}</div>
+      )}
+
+      {/* Toolbar */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ position: 'relative', width: isMobile ? '100%' : 220 }}>
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search ref / customer…"
+            style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
+          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, display: 'inline-flex' }}>
+            <Search size={14} />
+          </span>
+        </div>
+        {(['all', ...QUOTE_STATUSES] as const).map((s) => (
+          <button key={s} onClick={() => setStatusFilter(s)} style={pill(statusFilter === s)}>{s === 'all' ? 'All' : s}</button>
+        ))}
+        <span style={{ width: 1, height: 22, background: '#EBEBEB' }} />
+        {(['all', 'Quotation', 'Proposal'] as const).map((t) => (
+          <button key={t} onClick={() => setTypeFilter(t)} style={pill(typeFilter === t)}>{t === 'all' ? 'All types' : t}</button>
+        ))}
+        <span style={{ width: 1, height: 22, background: '#EBEBEB' }} />
+        <button onClick={() => setOwnerFilter(ownerFilter === 'mine' ? 'all' : 'mine')} style={pill(ownerFilter === 'mine')}>Mine</button>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 4, background: C.white, borderRadius: 10, padding: 3, border: '1px solid #EBEBEB' }}>
+            {([['pipeline', 'Pipeline'], ['list', 'List']] as const).map(([k, l]) => (
+              <button key={k} onClick={() => setView(k)}
+                style={{ padding: '6px 14px', borderRadius: 8, border: 'none', fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', background: view === k ? C.green : 'transparent', color: view === k ? C.white : C.slate }}>
+                {l}
+              </button>
+            ))}
+          </div>
+          {canEdit && (
+            <button onClick={() => setModal({ mode: 'new' })}
+              style={{ padding: '9px 18px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              + New Quote
+            </button>
+          )}
+        </div>
+      </div>
+
+      {loading ? (
+        <div style={{ padding: '60px 20px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading quotations…</div>
+      ) : quotes.length === 0 ? (
+        <div style={{ background: C.white, borderRadius: 16, border: '1px dashed #EBEBEB', padding: '60px 24px', textAlign: 'center' }}>
+          <div style={{ marginBottom: 12, display: 'inline-flex' }}><Handshake size={32} strokeWidth={1.5} color={C.slate} /></div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.green, marginBottom: 4 }}>No quotations yet</div>
+          <div style={{ fontSize: 12, color: C.slate }}>Create your first quote for a customer from the Customers tab.</div>
+        </div>
+      ) : view === 'pipeline' ? (
+        <PipelineBoard quotes={visible} canEdit={canEdit} onOpen={(q) => setModal({ mode: 'edit', quote: q })} onDropStatus={setStatus} />
+      ) : (
+        <QuoteTable quotes={visible} onOpen={(q) => setModal({ mode: 'edit', quote: q })} />
+      )}
+
+      {modal && (
+        <QuoteModal
+          quote={modal.mode === 'edit' ? modal.quote : null}
+          customers={customers}
+          salesUsers={salesUsers}
+          canEdit={canEdit}
+          canDelete={canDelete}
+          onClose={() => setModal(null)}
+          onSaved={() => { setModal(null); void fetchAll(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Status badge ─────────────────────────────────────────────────
 
 function QuoteBadge({ status }: { status: QuoteStatus }) {
-  const s = QUOTE_STATUS_COLORS[status] ?? QUOTE_STATUS_COLORS.Draft;
+  const sc = QUOTE_STATUS_COLORS[status];
   return (
-    <span style={{ background: s.bg, color: s.color, fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, whiteSpace: 'nowrap' }}>
+    <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, background: sc.bg, color: sc.color }}>
       {status}
     </span>
   );
 }
 
-interface QuoteModalProps {
-  quote: Quote | null;
-  onClose: () => void;
-  onSave: (q: Quote) => void;
-  onDelete: (id: string) => void;
-}
+// ── Kanban pipeline ──────────────────────────────────────────────
 
-function QuoteModal({ quote, onClose, onSave, onDelete }: QuoteModalProps) {
-  const isNew = !quote;
-  const [form, setForm] = useState<Quote>(
-    quote
-      ? { ...quote, items: quote.items.map((i) => ({ ...i })) }
-      : {
-          id: '',
-          customer: '',
-          contact: '',
-          email: '',
-          type: 'Quotation',
-          items: [{ product: '7kw', qty: 1 }],
-          discount: 0,
-          notes: '',
-          status: 'Draft',
-          created: '2026-05-04',
-          expiry: '2026-06-04',
-        },
-  );
-
-  const total = calcQuoteTotal(form.items, form.discount);
-  const subtotal = calcQuoteTotal(form.items, 0);
-
-  const addItem = () => setForm((f) => ({ ...f, items: [...f.items, { product: '7kw', qty: 1 }] }));
-  const removeItem = (i: number) => setForm((f) => ({ ...f, items: f.items.filter((_, idx) => idx !== i) }));
-  const updateItem = (i: number, key: keyof QuoteLine, val: string | number) =>
-    setForm((f) => ({ ...f, items: f.items.map((it, idx) => (idx === i ? { ...it, [key]: val } : it)) }));
+function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
+  quotes: Quote[];
+  canEdit: boolean;
+  onOpen: (q: Quote) => void;
+  onDropStatus: (q: Quote, s: QuoteStatus) => void;
+}) {
+  const [dragOver, setDragOver] = useState<QuoteStatus | null>(null);
 
   return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-    >
-      <div style={{ background: C.white, borderRadius: 20, width: 640, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', padding: 28, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
-        {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>
-              {isNew ? 'New Quotation / Proposal' : form.id}
-            </div>
-            <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
-              {isNew ? 'Fill in the details below' : `Created ${form.created} · Expires ${form.expiry}`}
-            </div>
-          </div>
-          <button onClick={onClose} style={{ border: 'none', background: '#F3F3F3', borderRadius: 8, width: 32, height: 32, cursor: 'pointer', fontSize: 16, color: C.slate }}>×</button>
-        </div>
-
-        {/* Type + Status */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Document Type</label>
-            <div style={{ display: 'flex', gap: 8 }}>
-              {(['Quotation', 'Proposal'] as const).map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setForm((f) => ({ ...f, type: t }))}
+    <div style={{ overflowX: 'auto' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${QUOTE_STATUSES.length}, minmax(230px, 1fr))`, gap: 12, minWidth: 720 }}>
+        {QUOTE_STATUSES.map((status) => {
+          const col = quotes.filter((q) => q.status === status);
+          const colValue = col.reduce((s, q) => s + Number(q.total), 0);
+          const sc = QUOTE_STATUS_COLORS[status];
+          const isTarget = dragOver === status;
+          return (
+            <div key={status}
+              onDragOver={canEdit ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dragOver !== status) setDragOver(status); } : undefined}
+              onDragLeave={canEdit ? () => setDragOver((d) => (d === status ? null : d)) : undefined}
+              onDrop={canEdit ? (e) => {
+                e.preventDefault();
+                setDragOver(null);
+                const id = e.dataTransfer.getData('text/plain');
+                const q = quotes.find((x) => x.id === id);
+                if (q) onDropStatus(q, status);
+              } : undefined}
+              style={{
+                background: isTarget ? C.honeydew : C.seasalt,
+                border: `1.5px solid ${isTarget ? C.green : 'transparent'}`,
+                borderRadius: 14, padding: 10, display: 'flex', flexDirection: 'column', gap: 10, minHeight: 220,
+              }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 4px' }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: sc.color, background: sc.bg, padding: '3px 10px', borderRadius: 99 }}>{status}</span>
+                <span style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>{col.length}</span>
+                <span style={{ marginLeft: 'auto', fontSize: 11, color: C.slate, fontWeight: 600 }}>{fmtRM(colValue)}</span>
+              </div>
+              {col.map((q) => (
+                <button key={q.id}
+                  draggable={canEdit}
+                  onDragStart={canEdit ? (e) => { e.dataTransfer.setData('text/plain', q.id); e.dataTransfer.effectAllowed = 'move'; } : undefined}
+                  onClick={() => onOpen(q)}
                   style={{
-                    flex: 1,
-                    padding: '9px 0',
-                    borderRadius: 10,
-                    border: `2px solid ${form.type === t ? C.green : '#EBEBEB'}`,
-                    background: form.type === t ? C.honeydew : C.white,
-                    color: form.type === t ? C.green : C.slate,
-                    fontFamily: 'Figtree',
-                    fontSize: 13,
-                    fontWeight: 700,
-                    cursor: 'pointer',
-                  }}
-                >
-                  {t}
+                    textAlign: 'left', background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, padding: '12px 14px',
+                    cursor: canEdit ? 'grab' : 'pointer', fontFamily: 'Figtree', display: 'flex', flexDirection: 'column', gap: 6,
+                  }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: C.slate }}>{q.ref}</span>
+                    <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 6, background: q.type === 'Proposal' ? '#FFF0E0' : C.honeydew, color: q.type === 'Proposal' ? '#B45309' : C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{q.type}</span>
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.customer_name}</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>{fmtRM(Number(q.total))}</div>
+                  <div style={{ fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.salesperson_name}</div>
+                  {isExpired(q) && (
+                    <span style={{ alignSelf: 'flex-start', fontSize: 10, fontWeight: 700, color: '#C0321A', background: '#FDEAEA', padding: '2px 8px', borderRadius: 99 }}>
+                      Expired {q.expiry_date}
+                    </span>
+                  )}
                 </button>
               ))}
+              {col.length === 0 && (
+                <div style={{ padding: '18px 8px', textAlign: 'center', fontSize: 11, color: C.slate, border: '1px dashed #E0E5E9', borderRadius: 10 }}>
+                  {canEdit ? 'Drop quotes here' : 'Empty'}
+                </div>
+              )}
             </div>
-          </div>
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Status</label>
-            <select
-              value={form.status}
-              onChange={(e) => setForm((f) => ({ ...f, status: e.target.value as QuoteStatus }))}
-              style={{ width: '100%', padding: '9px 12px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', color: '#1a1a1a', background: C.white }}
-            >
-              {QUOTE_STATUSES.map((s) => (
-                <option key={s}>{s}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* Customer details */}
-        <div style={{ background: C.seasalt, borderRadius: 12, padding: '16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: C.green }}>Customer Details</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-            <div>
-              <label style={{ fontSize: 11, fontWeight: 600, color: C.slate, display: 'block', marginBottom: 5 }}>Company / Name</label>
-              <input
-                value={form.customer}
-                onChange={(e) => setForm((f) => ({ ...f, customer: e.target.value }))}
-                placeholder="e.g. Suria KLCC Sdn Bhd"
-                style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white }}
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: 11, fontWeight: 600, color: C.slate, display: 'block', marginBottom: 5 }}>Contact Person</label>
-              <input
-                value={form.contact}
-                onChange={(e) => setForm((f) => ({ ...f, contact: e.target.value }))}
-                placeholder="e.g. Roslinda Mohd"
-                style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white }}
-              />
-            </div>
-            <div style={{ gridColumn: '1 / -1' }}>
-              <label style={{ fontSize: 11, fontWeight: 600, color: C.slate, display: 'block', marginBottom: 5 }}>Email</label>
-              <input
-                value={form.email}
-                onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-                placeholder="e.g. procurement@company.com.my"
-                style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white }}
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Line items */}
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Line Items</label>
-            <button onClick={addItem} style={{ fontSize: 12, fontWeight: 600, color: C.green, background: C.honeydew, border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontFamily: 'Figtree' }}>+ Add Item</button>
-          </div>
-          <div style={{ overflowX: 'auto' }}>
-          <div style={{ minWidth: 560 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 100px 100px 32px', gap: 8, marginBottom: 6 }}>
-            {['Product', 'Qty', 'Unit Price', 'Subtotal', ''].map((h, i) => (
-              <div key={i} style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{h}</div>
-            ))}
-          </div>
-          {form.items.map((item, i) => {
-            const prod = PRODUCTS.find((p) => p.id === item.product);
-            const unitPrice = prod ? prod.price + prod.install : 0;
-            const lineTotal = unitPrice * item.qty;
-            return (
-              <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 80px 100px 100px 32px', gap: 8, marginBottom: 8, alignItems: 'center' }}>
-                <select
-                  value={item.product}
-                  onChange={(e) => updateItem(i, 'product', e.target.value)}
-                  style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', background: C.white }}
-                >
-                  {PRODUCTS.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
-                <input
-                  type="number"
-                  min="1"
-                  value={item.qty}
-                  onChange={(e) => updateItem(i, 'qty', parseInt(e.target.value) || 1)}
-                  style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', textAlign: 'center', background: C.white }}
-                />
-                <div style={{ fontSize: 12, color: C.slate, padding: '8px 0' }}>RM {unitPrice.toLocaleString()}</div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>RM {lineTotal.toLocaleString()}</div>
-                <button
-                  onClick={() => removeItem(i)}
-                  disabled={form.items.length === 1}
-                  style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #EBEBEB', background: 'transparent', cursor: form.items.length === 1 ? 'default' : 'pointer', color: '#C0321A', fontSize: 14, opacity: form.items.length === 1 ? 0.3 : 1 }}
-                >
-                  ×
-                </button>
-              </div>
-            );
-          })}
-          </div>
-          </div>
-
-          {/* Totals */}
-          <div style={{ borderTop: '1px solid #F3F3F3', marginTop: 8, paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: 12, color: C.slate }}>Subtotal</span>
-              <span style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a' }}>RM {subtotal.toLocaleString()}</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 12, color: C.slate }}>Discount</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  value={form.discount}
-                  onChange={(e) => setForm((f) => ({ ...f, discount: parseFloat(e.target.value) || 0 }))}
-                  style={{ width: 56, padding: '4px 8px', borderRadius: 6, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', textAlign: 'center' }}
-                />
-                <span style={{ fontSize: 12, color: C.slate }}>%</span>
-                <span style={{ fontSize: 12, color: '#C0321A' }}>− RM {((subtotal * form.discount) / 100).toLocaleString()}</span>
-              </div>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 8, borderTop: '1px solid #F3F3F3' }}>
-              <span style={{ fontSize: 14, fontWeight: 700, color: C.green }}>Total</span>
-              <span style={{ fontSize: 16, fontWeight: 700, color: C.green }}>RM {total.toLocaleString(undefined, { minimumFractionDigits: 0 })}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Dates */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Created Date</label>
-            <input type="date" value={form.created} onChange={(e) => setForm((f) => ({ ...f, created: e.target.value }))} style={{ width: '100%', padding: '9px 12px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none' }} />
-          </div>
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Expiry Date</label>
-            <input type="date" value={form.expiry} onChange={(e) => setForm((f) => ({ ...f, expiry: e.target.value }))} style={{ width: '100%', padding: '9px 12px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none' }} />
-          </div>
-        </div>
-
-        {/* Notes */}
-        <div>
-          <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Notes / Scope</label>
-          <textarea
-            value={form.notes}
-            onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
-            rows={3}
-            placeholder="Site details, scope of work, special requirements…"
-            style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', resize: 'vertical', lineHeight: 1.5, color: '#1a1a1a' }}
-          />
-        </div>
-
-        {/* Actions */}
-        <div style={{ display: 'flex', gap: 10 }}>
-          {!isNew && (
-            <button
-              onClick={() => onDelete(quote!.id)}
-              style={{ padding: '10px 16px', borderRadius: 10, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
-            >
-              Delete
-            </button>
-          )}
-          <button onClick={onClose} style={{ padding: '10px 20px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer', marginLeft: isNew ? 0 : 'auto' }}>
-            Cancel
-          </button>
-          <button
-            onClick={() => onSave({ ...form, id: form.id || `QT-2026-${String(Date.now()).slice(-4)}` })}
-            style={{ padding: '9px 24px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
-          >
-            {isNew ? 'Create' : 'Save Changes'}
-          </button>
-        </div>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-export function ScreenSales() {
-  const [quotes, setQuotes] = useState<Quote[]>(INITIAL_QUOTES);
-  const [filterType, setFilterType] = useState<'All' | 'Quotation' | 'Proposal'>('All');
-  const [filterStatus, setFilterStatus] = useState<'All' | QuoteStatus>('All');
-  const [search, setSearch] = useState('');
-  const [modal, setModal] = useState<Quote | 'new' | null>(null);
-  const [tab, setTab] = useState<'list' | 'pipeline'>('list');
+// ── List view ────────────────────────────────────────────────────
 
-  const filtered = quotes.filter(
-    (q) =>
-      (filterType === 'All' || q.type === filterType) &&
-      (filterStatus === 'All' || q.status === filterStatus) &&
-      (q.customer.toLowerCase().includes(search.toLowerCase()) ||
-        q.id.toLowerCase().includes(search.toLowerCase())),
+function QuoteTable({ quotes, onOpen }: { quotes: Quote[]; onOpen: (q: Quote) => void }) {
+  const th: React.CSSProperties = {
+    padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate,
+    letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB',
+  };
+  return (
+    <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
+      <table style={{ width: '100%', minWidth: 820, borderCollapse: 'collapse', fontSize: 13 }}>
+        <thead>
+          <tr style={{ background: C.seasalt }}>
+            {['Ref', 'Type', 'Customer', 'Salesperson', 'Value', 'Status', 'Quote Date', 'Expiry'].map((h) => <th key={h} style={th}>{h}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {quotes.map((q) => (
+            <tr key={q.id} onClick={() => onOpen(q)} style={{ borderBottom: '1px solid #F3F3F3', cursor: 'pointer' }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = '#FAFAFA'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
+              <td style={{ padding: '13px 16px', fontWeight: 700, color: C.green }}>{q.ref}</td>
+              <td style={{ padding: '13px 16px', color: C.slate }}>{q.type}</td>
+              <td style={{ padding: '13px 16px', fontWeight: 600 }}>{q.customer_name}</td>
+              <td style={{ padding: '13px 16px', color: C.slate }}>{q.salesperson_name}</td>
+              <td style={{ padding: '13px 16px', fontWeight: 700, color: C.green }}>{fmtRM(Number(q.total))}</td>
+              <td style={{ padding: '13px 16px' }}><QuoteBadge status={q.status} /></td>
+              <td style={{ padding: '13px 16px', color: C.slate }}>{q.quote_date}</td>
+              <td style={{ padding: '13px 16px', color: isExpired(q) ? '#C0321A' : C.slate, fontWeight: isExpired(q) ? 700 : 400 }}>
+                {q.expiry_date ?? '—'}{isExpired(q) ? ' · expired' : ''}
+              </td>
+            </tr>
+          ))}
+          {quotes.length === 0 && (
+            <tr><td colSpan={8} style={{ padding: '32px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No quotes match the filters.</td></tr>
+          )}
+        </tbody>
+      </table>
+    </div>
   );
+}
 
-  const handleSave = (form: Quote) => {
-    if (quotes.find((q) => q.id === form.id)) {
-      setQuotes((qs) => qs.map((q) => (q.id === form.id ? form : q)));
-    } else {
-      setQuotes((qs) => [form, ...qs]);
-    }
-    setModal(null);
+// ── Create / edit modal ──────────────────────────────────────────
+
+function QuoteModal({ quote, customers, salesUsers, canEdit, canDelete, onClose, onSaved }: {
+  quote: Quote | null;
+  customers: CustomerOpt[];
+  salesUsers: SalesUser[];
+  canEdit: boolean;
+  canDelete: boolean;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { user } = usePermissions();
+  const isNew = quote === null;
+  const readOnly = !canEdit;
+
+  const [form, setForm] = useState(() => ({
+    customer_id: quote?.customer_id ?? '',
+    customer_name: quote?.customer_name ?? '',
+    contact_name: quote?.contact_name ?? '',
+    contact_email: quote?.contact_email ?? '',
+    salesperson_id: quote?.salesperson_id ?? user.id,
+    salesperson_name: quote?.salesperson_name ?? user.full_name,
+    type: quote?.type ?? ('Quotation' as 'Quotation' | 'Proposal'),
+    status: quote?.status ?? ('Draft' as QuoteStatus),
+    items: quote?.items?.length ? quote.items.map((it) => ({ ...it })) : [{ description: '', qty: 1, unit_price: 0 }],
+    discount: quote?.discount ?? 0,
+    notes: quote?.notes ?? '',
+    quote_date: quote?.quote_date ?? todayIso(),
+    expiry_date: quote?.expiry_date ?? '',
+  }));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const customerOptions: SelectOption[] = [
+    ...customers.map((c) => ({ value: c.id, label: c.name })),
+    ...(form.customer_id && !customers.some((c) => c.id === form.customer_id)
+      ? [{ value: form.customer_id, label: `${form.customer_name} (removed)` }]
+      : []),
+  ];
+  const userOptions: SelectOption[] = [
+    ...salesUsers.filter((u) => u.is_active).map((u) => ({ value: u.id, label: u.full_name })),
+    ...(form.salesperson_id && !salesUsers.some((u) => u.is_active && u.id === form.salesperson_id)
+      ? [{ value: form.salesperson_id, label: `${form.salesperson_name} (inactive)` }]
+      : []),
+  ];
+
+  const pickCustomer = (id: string) => {
+    const c = customers.find((x) => x.id === id);
+    if (!c) { setForm((f) => ({ ...f, customer_id: id })); return; }
+    setForm((f) => ({
+      ...f,
+      customer_id: c.id,
+      customer_name: c.name,
+      contact_name: f.contact_name || (c.contact_name ?? ''),
+      contact_email: f.contact_email || (c.contact_email ?? ''),
+    }));
   };
 
-  const handleDelete = (id: string) => {
-    setQuotes((qs) => qs.filter((q) => q.id !== id));
-    setModal(null);
+  const updateItem = (i: number, patch: Partial<QuoteItem>) =>
+    setForm((f) => ({ ...f, items: f.items.map((it, idx) => (idx === i ? { ...it, ...patch } : it)) }));
+  const addItem = (prefill?: { label: string; price: number }) =>
+    setForm((f) => ({ ...f, items: [...f.items, { description: prefill?.label ?? '', qty: 1, unit_price: prefill?.price ?? 0 }] }));
+  const removeItem = (i: number) =>
+    setForm((f) => ({ ...f, items: f.items.filter((_, idx) => idx !== i) }));
+
+  const subtotal = form.items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unit_price) || 0), 0);
+  const total = calcTotal(form.items, Number(form.discount));
+
+  const validItems = form.items.filter((it) => it.description.trim() !== '');
+  const canSave = !!form.customer_id && !!form.salesperson_id && validItems.length > 0 && !saving;
+
+  const handleSave = async () => {
+    if (!canSave) return;
+    setSaving(true);
+    setError(null);
+    const payload = {
+      customer_id: form.customer_id || null,
+      customer_name: form.customer_name,
+      contact_name: form.contact_name || null,
+      contact_email: form.contact_email || null,
+      salesperson_id: form.salesperson_id || null,
+      salesperson_name: form.salesperson_name,
+      type: form.type,
+      status: form.status,
+      items: validItems.map((it) => ({ description: it.description.trim(), qty: Math.max(1, Number(it.qty) || 1), unit_price: Math.max(0, Number(it.unit_price) || 0) })),
+      discount: Math.min(100, Math.max(0, Number(form.discount) || 0)),
+      total,
+      notes: form.notes || null,
+      quote_date: form.quote_date,
+      expiry_date: form.expiry_date || null,
+      won_at: form.status === 'Won' ? (quote?.won_at ?? new Date().toISOString()) : null,
+      updated_at: new Date().toISOString(),
+    };
+    const { error: err } = isNew
+      ? await supabase.from('sales_quotations').insert(payload)
+      : await supabase.from('sales_quotations').update(payload).eq('id', quote.id);
+    setSaving(false);
+    if (err) { setError(err.message); return; }
+    onSaved();
   };
 
-  const totalValue = quotes.reduce((s, q) => s + calcQuoteTotal(q.items, q.discount), 0);
-  const acceptedValue = quotes
-    .filter((q) => q.status === 'Accepted')
-    .reduce((s, q) => s + calcQuoteTotal(q.items, q.discount), 0);
-  const pendingCount = quotes.filter((q) => (['Sent', 'Viewed'] as QuoteStatus[]).includes(q.status)).length;
-  const winRate = Math.round(
-    (quotes.filter((q) => q.status === 'Accepted').length /
-      quotes.filter((q) => (['Accepted', 'Declined'] as QuoteStatus[]).includes(q.status)).length) *
-      100,
-  );
+  const handleDelete = async () => {
+    if (!quote) return;
+    setSaving(true);
+    const { error: err } = await supabase.from('sales_quotations').delete().eq('id', quote.id);
+    setSaving(false);
+    if (err) { setError(err.message); return; }
+    onSaved();
+  };
 
-  const pipelineStatuses: QuoteStatus[] = ['Draft', 'Sent', 'Viewed', 'Accepted', 'Declined', 'Expired'];
+  const label: React.CSSProperties = { fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 };
+  const input = (disabled = false): React.CSSProperties => ({
+    width: '100%', padding: '9px 12px', borderRadius: 10, border: '1px solid #EBEBEB',
+    fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: disabled ? '#F9F9F9' : C.white, boxSizing: 'border-box',
+  });
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      {/* KPIs */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
-        <KPICard label="Pipeline Value"   value={`RM ${(totalValue / 1000).toFixed(0)}k`}    sub="All active quotes" accent />
-        <KPICard label="Accepted Value"   value={`RM ${(acceptedValue / 1000).toFixed(0)}k`} sub="Confirmed this period" trend="22%" trendUp />
-        <KPICard label="Awaiting Response" value={pendingCount}                              sub="Sent or viewed" />
-        <KPICard label="Win Rate"         value={`${winRate}%`}                              sub="Accepted vs Declined" trend="5pp" trendUp />
-      </div>
-
-      {/* Toolbar */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <div style={{ position: 'relative', width: 220 }}>
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search quotes…"
-            style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white }}
-          />
-          <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, fontSize: 15 }}><Search size={14} /></span>
-        </div>
-
-        <div style={{ display: 'flex', gap: 6 }}>
-          {(['All', 'Quotation', 'Proposal'] as const).map((t) => (
-            <button
-              key={t}
-              onClick={() => setFilterType(t)}
-              style={{
-                padding: '7px 16px',
-                borderRadius: 99,
-                border: `1px solid ${filterType === t ? C.green : '#EBEBEB'}`,
-                background: filterType === t ? C.green : C.white,
-                color: filterType === t ? C.white : C.slate,
-                fontFamily: 'Figtree',
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
-
-        <div style={{ display: 'flex', gap: 6 }}>
-          {(['All', ...QUOTE_STATUSES] as const).map((s) => (
-            <button
-              key={s}
-              onClick={() => setFilterStatus(s)}
-              style={{
-                padding: '7px 12px',
-                borderRadius: 99,
-                border: `1px solid ${filterStatus === s ? C.green : '#EBEBEB'}`,
-                background: filterStatus === s ? C.green : 'transparent',
-                color: filterStatus === s ? C.white : C.slate,
-                fontFamily: 'Figtree',
-                fontSize: 12,
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
-            >
-              {s}
-            </button>
-          ))}
-        </div>
-
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          <div style={{ display: 'flex', background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, overflow: 'hidden' }}>
-            {([['list', '≡ List'], ['pipeline', '◫ Pipeline']] as const).map(([v, l]) => (
-              <button
-                key={v}
-                onClick={() => setTab(v)}
-                style={{
-                  padding: '7px 14px',
-                  border: 'none',
-                  cursor: 'pointer',
-                  fontFamily: 'Figtree',
-                  fontSize: 12,
-                  fontWeight: 600,
-                  background: tab === v ? C.green : 'transparent',
-                  color: tab === v ? C.white : C.slate,
-                }}
-              >
-                {l}
-              </button>
-            ))}
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ background: C.white, borderRadius: 20, width: 640, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', padding: 28, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{isNew ? 'New Quote' : quote.ref}</div>
+            {!isNew && <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>Created {quote.quote_date}</div>}
           </div>
-          <button onClick={() => setModal('new')} style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-            + New Quote
-          </button>
+          <button onClick={onClose} style={{ border: 'none', background: '#F3F3F3', borderRadius: 8, width: 32, height: 32, cursor: 'pointer', fontSize: 16, color: C.slate }}>×</button>
         </div>
-      </div>
 
-      {/* List view */}
-      {tab === 'list' && (
-        <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
-          <table style={{ width: '100%', minWidth: 880, borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ background: C.seasalt }}>
-                {['Ref', 'Type', 'Customer', 'Contact', 'Items', 'Value', 'Status', 'Expiry'].map((h) => (
-                  <th
-                    key={h}
-                    style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB' }}
-                  >
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((q, i) => {
-                const total = calcQuoteTotal(q.items, q.discount);
-                const itemSummary = q.items
-                  .map((it) => {
-                    const p = PRODUCTS.find((pr) => pr.id === it.product);
-                    return `${it.qty}× ${p ? p.name.replace(' Charger', '').replace('Commercial ', '').replace('Home ', '') : it.product}`;
-                  })
-                  .join(', ');
-                return (
-                  <tr
-                    key={i}
-                    style={{ borderBottom: '1px solid #F3F3F3', cursor: 'pointer' }}
-                    onClick={() => setModal(q)}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = '#FAFAFA')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                  >
-                    <td style={{ padding: '13px 16px', fontWeight: 700, color: C.green }}>{q.id}</td>
-                    <td style={{ padding: '13px 16px' }}>
-                      <span
-                        style={{
-                          fontSize: 11,
-                          fontWeight: 700,
-                          padding: '3px 8px',
-                          borderRadius: 6,
-                          background: q.type === 'Proposal' ? C.green : C.honeydew,
-                          color: q.type === 'Proposal' ? C.white : C.green,
-                        }}
-                      >
-                        {q.type}
-                      </span>
-                    </td>
-                    <td style={{ padding: '13px 16px', fontWeight: 600, color: '#1a1a1a' }}>{q.customer}</td>
-                    <td style={{ padding: '13px 16px', color: C.slate }}>{q.contact}</td>
-                    <td style={{ padding: '13px 16px', color: C.slate, fontSize: 12 }}>{itemSummary}</td>
-                    <td style={{ padding: '13px 16px', fontWeight: 700, color: C.green }}>RM {total.toLocaleString()}</td>
-                    <td style={{ padding: '13px 16px' }}><QuoteBadge status={q.status} /></td>
-                    <td style={{ padding: '13px 16px', color: C.slate }}>{q.expiry}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          {filtered.length === 0 && (
-            <div style={{ padding: '40px', textAlign: 'center', color: C.slate, fontSize: 14 }}>No quotes match your filters.</div>
+        {error && (
+          <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{error}</div>
+        )}
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+          <div>
+            <label style={label}>Type</label>
+            <select value={form.type} disabled={readOnly} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value as 'Quotation' | 'Proposal' }))} style={input(readOnly)}>
+              <option value="Quotation">Quotation</option>
+              <option value="Proposal">Proposal</option>
+            </select>
+          </div>
+          <div>
+            <label style={label}>Status</label>
+            <select value={form.status} disabled={readOnly} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value as QuoteStatus }))} style={input(readOnly)}>
+              {QUOTE_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {/* Customer */}
+        <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <label style={label}>Customer</label>
+            <SearchSelect value={form.customer_id} options={customerOptions} onChange={pickCustomer} disabled={readOnly} placeholder="— Select customer —" />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+            <div>
+              <label style={label}>Contact Name</label>
+              <input value={form.contact_name} disabled={readOnly} onChange={(e) => setForm((f) => ({ ...f, contact_name: e.target.value }))} style={input(readOnly)} />
+            </div>
+            <div>
+              <label style={label}>Contact Email</label>
+              <input value={form.contact_email} disabled={readOnly} onChange={(e) => setForm((f) => ({ ...f, contact_email: e.target.value }))} style={input(readOnly)} />
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <label style={label}>Salesperson</label>
+          <SearchSelect value={form.salesperson_id} options={userOptions}
+            onChange={(id) => {
+              const u = salesUsers.find((x) => x.id === id);
+              setForm((f) => ({ ...f, salesperson_id: id, salesperson_name: u?.full_name ?? f.salesperson_name }));
+            }}
+            disabled={readOnly} placeholder="— Select salesperson —" />
+        </div>
+
+        {/* Line items */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <label style={{ ...label, marginBottom: 0 }}>Line Items</label>
+          <div style={{ overflowX: 'auto' }}>
+            <div style={{ minWidth: 480, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 70px 110px 110px 32px', gap: 8, fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em', padding: '0 2px' }}>
+                <span>Description</span><span>Qty</span><span>Unit Price</span><span style={{ textAlign: 'right' }}>Subtotal</span><span />
+              </div>
+              {form.items.map((it, i) => (
+                <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 70px 110px 110px 32px', gap: 8, alignItems: 'center' }}>
+                  <input value={it.description} disabled={readOnly} placeholder="Item description"
+                    onChange={(e) => updateItem(i, { description: e.target.value })} style={input(readOnly)} />
+                  <input type="number" min={1} value={it.qty} disabled={readOnly}
+                    onChange={(e) => updateItem(i, { qty: Number(e.target.value) })} style={input(readOnly)} />
+                  <input type="number" min={0} value={it.unit_price} disabled={readOnly}
+                    onChange={(e) => updateItem(i, { unit_price: Number(e.target.value) })} style={input(readOnly)} />
+                  <span style={{ fontSize: 13, fontWeight: 700, color: C.green, textAlign: 'right' }}>{fmtRM((Number(it.qty) || 0) * (Number(it.unit_price) || 0))}</span>
+                  {!readOnly ? (
+                    <button onClick={() => removeItem(i)} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <X size={12} strokeWidth={2.5} />
+                    </button>
+                  ) : <span />}
+                </div>
+              ))}
+            </div>
+          </div>
+          {!readOnly && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <button onClick={() => addItem()}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '7px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                <Plus size={12} strokeWidth={2.5} /> Add item
+              </button>
+              <span style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>From catalog:</span>
+              {CATALOG.map((p) => (
+                <button key={p.label} onClick={() => addItem(p)} title={p.label}
+                  style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                  {p.label.split(' (')[0]}
+                </button>
+              ))}
+            </div>
           )}
         </div>
-      )}
 
-      {/* Pipeline view */}
-      {tab === 'pipeline' && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12, alignItems: 'start' }}>
-          {pipelineStatuses.map((status) => {
-            const sc = QUOTE_STATUS_COLORS[status];
-            const colQuotes = quotes.filter(
-              (q) =>
-                q.status === status &&
-                (filterType === 'All' || q.type === filterType) &&
-                q.customer.toLowerCase().includes(search.toLowerCase()),
-            );
-            const colValue = colQuotes.reduce((s, q) => s + calcQuoteTotal(q.items, q.discount), 0);
-            return (
-              <div key={status}>
-                <div style={{ background: sc.bg, borderRadius: 10, padding: '10px 12px', marginBottom: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: sc.color }}>{status}</span>
-                  <span style={{ fontSize: 11, fontWeight: 600, color: sc.color, background: 'rgba(255,255,255,0.6)', padding: '1px 7px', borderRadius: 99 }}>{colQuotes.length}</span>
-                </div>
-                {colValue > 0 && (
-                  <div style={{ fontSize: 11, fontWeight: 600, color: C.slate, marginBottom: 8, paddingLeft: 2 }}>RM {colValue.toLocaleString()}</div>
-                )}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {colQuotes.map((q) => {
-                    const total = calcQuoteTotal(q.items, q.discount);
-                    return (
-                      <div
-                        key={q.id}
-                        onClick={() => setModal(q)}
-                        style={{ background: C.white, borderRadius: 10, padding: '12px', border: '1px solid #EBEBEB', cursor: 'pointer', transition: 'box-shadow .15s, transform .15s' }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.boxShadow = '0 4px 14px rgba(0,0,0,.08)';
-                          e.currentTarget.style.transform = 'translateY(-1px)';
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.boxShadow = 'none';
-                          e.currentTarget.style.transform = 'none';
-                        }}
-                      >
-                        <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, marginBottom: 4 }}>{q.id}</div>
-                        <div style={{ fontSize: 12, fontWeight: 700, color: C.green, lineHeight: 1.3, marginBottom: 6 }}>{q.customer}</div>
-                        <div style={{ fontSize: 14, fontWeight: 700, color: C.green, marginBottom: 6 }}>RM {total.toLocaleString()}</div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span
-                            style={{
-                              fontSize: 10,
-                              fontWeight: 700,
-                              padding: '2px 6px',
-                              borderRadius: 5,
-                              background: q.type === 'Proposal' ? C.green : C.honeydew,
-                              color: q.type === 'Proposal' ? C.white : C.green,
-                            }}
-                          >
-                            {q.type}
-                          </span>
-                          <span style={{ fontSize: 10, color: C.slate }}>{q.expiry}</span>
-                        </div>
-                        {q.notes && (
-                          <div
-                            style={{
-                              fontSize: 10,
-                              color: C.slate,
-                              marginTop: 6,
-                              lineHeight: 1.4,
-                              display: '-webkit-box',
-                              WebkitLineClamp: 2,
-                              WebkitBoxOrient: 'vertical',
-                              overflow: 'hidden',
-                            }}
-                          >
-                            {q.notes}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                  {colQuotes.length === 0 && (
-                    <div style={{ padding: '20px 0', textAlign: 'center', color: '#DADADA', fontSize: 12 }}>Empty</div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+        {/* Totals */}
+        <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+            <span style={{ color: C.slate }}>Subtotal</span><span style={{ fontWeight: 600 }}>{fmtRM(subtotal)}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}>
+            <span style={{ color: C.slate }}>Discount (%)</span>
+            <input type="number" min={0} max={100} value={form.discount} disabled={readOnly}
+              onChange={(e) => setForm((f) => ({ ...f, discount: Number(e.target.value) }))}
+              style={{ ...input(readOnly), width: 90, textAlign: 'right' }} />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, fontWeight: 700, color: C.green, borderTop: '1px solid #EBEBEB', paddingTop: 8 }}>
+            <span>Total</span><span>{fmtRM(total)}</span>
+          </div>
         </div>
-      )}
 
-      {modal && (
-        <QuoteModal
-          quote={modal === 'new' ? null : modal}
-          onClose={() => setModal(null)}
-          onSave={handleSave}
-          onDelete={handleDelete}
-        />
-      )}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+          <div>
+            <label style={label}>Quote Date</label>
+            <input type="date" value={form.quote_date} disabled={readOnly} onChange={(e) => setForm((f) => ({ ...f, quote_date: e.target.value }))} style={input(readOnly)} />
+          </div>
+          <div>
+            <label style={label}>Expiry Date</label>
+            <input type="date" value={form.expiry_date} disabled={readOnly} onChange={(e) => setForm((f) => ({ ...f, expiry_date: e.target.value }))} style={input(readOnly)} />
+          </div>
+        </div>
+
+        <div>
+          <label style={label}>Notes</label>
+          <textarea value={form.notes} disabled={readOnly} rows={2} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
+            style={{ ...input(readOnly), resize: 'vertical', lineHeight: 1.5 }} />
+        </div>
+
+        {confirmDelete && (
+          <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: '#C0321A', flex: 1, minWidth: 160 }}>Delete {quote?.ref}? This cannot be undone.</span>
+            <button onClick={() => setConfirmDelete(false)} style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+            <button onClick={handleDelete} style={{ padding: '7px 14px', borderRadius: 8, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Yes, Delete</button>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', alignItems: 'center' }}>
+          {!isNew && canDelete && !confirmDelete && (
+            <button onClick={() => setConfirmDelete(true)}
+              style={{ marginRight: 'auto', padding: '9px 16px', borderRadius: 10, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+              Delete
+            </button>
+          )}
+          <button onClick={onClose} style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+            {readOnly ? 'Close' : 'Cancel'}
+          </button>
+          {!readOnly && (
+            <button onClick={handleSave} disabled={!canSave}
+              style={{ padding: '9px 22px', borderRadius: 10, border: 'none', background: canSave ? C.green : '#A5D6A7', color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: canSave ? 'pointer' : 'not-allowed' }}>
+              {saving ? 'Saving…' : isNew ? 'Create quote' : 'Save changes'}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
