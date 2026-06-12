@@ -1484,14 +1484,13 @@ function SenderSelect({ value, senders, onChange }: { value: string; senders: Em
   );
 }
 
-const BRAND_STORAGE = 'evone_email_brand';
+// Email branding is shared across all users — one row in crm_email_brand.
+const BRAND_ROW_ID = 'default';
 const DEFAULT_BRAND: EmailBrand = { logoUrl: '', headerTitle: 'EVOne Corporate Charging', footerText: 'This is a notification from EVOne Corporate Charging.', accent: '#2A9A47' };
-function loadBrand(): EmailBrand {
-  try {
-    const raw = localStorage.getItem(BRAND_STORAGE);
-    if (raw) return { ...DEFAULT_BRAND, ...JSON.parse(raw) };
-  } catch { /* ignore */ }
-  return DEFAULT_BRAND;
+async function fetchBrand(): Promise<EmailBrand> {
+  const { data } = await supabase.from('crm_email_brand').select('data').eq('id', BRAND_ROW_ID).maybeSingle();
+  const stored = (data as { data?: Partial<EmailBrand> } | null)?.data ?? {};
+  return { ...DEFAULT_BRAND, ...stored };
 }
 
 function NotificationsTab({ companies }: { companies: CRMCompany[] }) {
@@ -1523,8 +1522,10 @@ function NotificationsTab({ companies }: { companies: CRMCompany[] }) {
   const fromAddress = selectedSender ? `${selectedSender.from_name} <${selectedSender.from_email}>` : '';
   const replyToVal = selectedSender?.reply_to ?? '';
 
-  // Branding (logo + header + footer) is designed in the Email Designer tab.
-  const brand = loadBrand();
+  // Branding (logo + header + footer) is designed in the Email Designer tab and
+  // shared across all users via Supabase.
+  const [brand, setBrand] = useState<EmailBrand>(DEFAULT_BRAND);
+  useEffect(() => { void fetchBrand().then(setBrand); }, []);
 
   const filtered = recipients.filter((c) => {
     const q = search.trim().toLowerCase();
@@ -1688,10 +1689,17 @@ function EmailDesignerTab() {
   const canEdit = can('corporatecrm', 'can_edit');
   const canManageSenders = can('corporatecrm', 'can_delete');
 
-  const [brand, setBrand] = useState<EmailBrand>(loadBrand);
+  const [brand, setBrand] = useState<EmailBrand>(DEFAULT_BRAND);
+  const [brandLoaded, setBrandLoaded] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    void fetchBrand().then((b) => { if (live) { setBrand(b); setBrandLoaded(true); } });
+    return () => { live = false; };
+  }, []);
 
   // Sender identities — admin-managed (delete permission), used by the Notifications dropdown.
   const [senders, setSenders] = useState<EmailSender[]>([]);
@@ -1720,12 +1728,22 @@ function EmailDesignerTab() {
     setSenderBusy(false);
   };
 
+  // Debounced shared save — every edit persists to Supabase so all users see
+  // the same design. Skips the initial load.
   useEffect(() => {
-    try { localStorage.setItem(BRAND_STORAGE, JSON.stringify(brand)); } catch { /* ignore */ }
-    setSaved(true);
-    const t = window.setTimeout(() => setSaved(false), 1500);
+    if (!brandLoaded) return;
+    const t = window.setTimeout(() => {
+      supabase
+        .from('crm_email_brand')
+        .upsert({ id: BRAND_ROW_ID, data: brand, updated_at: new Date().toISOString() })
+        .then(({ error: err }) => {
+          if (err) { setError(`Could not save design: ${err.message}`); return; }
+          setSaved(true);
+          window.setTimeout(() => setSaved(false), 1500);
+        });
+    }, 600);
     return () => window.clearTimeout(t);
-  }, [brand]);
+  }, [brand, brandLoaded]);
 
   const uploadLogo = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
