@@ -143,7 +143,7 @@ function POModal({ po, direction, onClose, onSave, onDelete }: POModalProps) {
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
     >
-      <div style={{ background: C.white, borderRadius: 20, width: 640, maxHeight: '90vh', overflowY: 'auto', padding: 28, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ background: C.white, borderRadius: 20, width: 640, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', padding: 28, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -220,7 +220,7 @@ function POModal({ po, direction, onClose, onSave, onDelete }: POModalProps) {
               )}
             </div>
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
               <div>
                 <label style={{ fontSize: 11, fontWeight: 600, color: C.slate, display: 'block', marginBottom: 5 }}>Company / Name</label>
                 <input
@@ -249,6 +249,8 @@ function POModal({ po, direction, onClose, onSave, onDelete }: POModalProps) {
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Items</label>
             <button onClick={addItem} style={{ fontSize: 12, fontWeight: 600, color: C.green, background: C.honeydew, border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontFamily: 'Figtree' }}>+ Add Item</button>
           </div>
+          <div style={{ overflowX: 'auto' }}>
+          <div style={{ minWidth: 560 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 70px 90px 90px 32px', gap: 8, marginBottom: 6 }}>
             {['Product', 'Qty', 'Unit Price', 'Subtotal', ''].map((h, i) => (
               <div key={i} style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{h}</div>
@@ -287,6 +289,8 @@ function POModal({ po, direction, onClose, onSave, onDelete }: POModalProps) {
               </div>
             );
           })}
+          </div>
+          </div>
           <div style={{ borderTop: '1px solid #F3F3F3', marginTop: 8, paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ fontSize: 12, color: C.slate }}>Subtotal</span>
@@ -315,7 +319,7 @@ function POModal({ po, direction, onClose, onSave, onDelete }: POModalProps) {
         </div>
 
         {/* Dates + ref */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
           <div>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Created</label>
             <input type="date" value={form.created} onChange={(e) => setForm((f) => ({ ...f, created: e.target.value }))} style={{ width: '100%', padding: '8px 10px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none' }} />
@@ -387,8 +391,8 @@ function POTable({
   onRowClick: (p: PO) => void;
 }) {
   return (
-    <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+    <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
+      <table style={{ width: '100%', minWidth: 880, borderCollapse: 'collapse', fontSize: 13 }}>
         <thead>
           <tr style={{ background: C.seasalt }}>
             {['PO Ref', direction === 'outgoing' ? 'Supplier' : 'Customer', 'Items', 'Total', 'Created', 'Delivery', 'Ext. Ref', 'Status'].map((h) => (
@@ -492,7 +496,7 @@ export function ScreenPurchaseOrders() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {/* KPIs */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Outgoing PO Value" value={`RM ${(totalOutValue / 1000).toFixed(0)}k`} sub="Active supplier orders" accent />
         <KPICard label="Incoming PO Value" value={`RM ${(totalInValue / 1000).toFixed(0)}k`}  sub="Customer orders received" trend="18%" trendUp />
         <KPICard label="Pending Delivery"  value={pendingDelivery}                            sub="Awaiting supplier delivery" />

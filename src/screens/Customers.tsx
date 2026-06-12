@@ -169,7 +169,7 @@ export function ScreenCustomers() {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Total Customers" value={String(rows.length)}        sub="all departments"  accent />
         <KPICard label="Residential"     value={String(counts.residential)} sub="individual accounts" />
         <KPICard label="Commercial"      value={String(counts.commercial)}  sub="business accounts" />
@@ -200,7 +200,7 @@ export function ScreenCustomers() {
 
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <table style={{ width: '100%', minWidth: 660, borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
                 {['Customer', 'Type', 'Attention', 'Email', 'Phone', 'Billing Address'].map((h) => (
@@ -353,7 +353,7 @@ function CustomerModal({ initial, title, canDelete, onSave, onDelete, onClose }:
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 520, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 520, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{title}</div>
           <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
@@ -379,7 +379,7 @@ function CustomerModal({ initial, title, canDelete, onSave, onDelete, onClose }:
             <input value={form.contact_name ?? ''} onChange={(e) => set('contact_name', e.target.value)}
               placeholder="Jane Tan" style={{ ...inputStyle(), background: C.white }} />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
             <div>
               <FieldLabel>Email</FieldLabel>
               <input type="email" value={form.contact_email ?? ''} onChange={(e) => set('contact_email', e.target.value)}

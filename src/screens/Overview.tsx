@@ -3,8 +3,10 @@ import { months, revenueData, orders } from '../data';
 import { KPICard } from '../components/KPICard';
 import { Badge } from '../components/Badge';
 import { Sparkline, MiniBar, Donut, LineChart } from '../components/charts';
+import { useIsMobile } from '../lib/useIsMobile';
 
 export function ScreenOverview() {
+  const isMobile = useIsMobile();
   const pipeline = [
     { label: 'New Enquiry',  value: 24, color: C.opal },
     { label: 'Quoted',       value: 18, color: C.yellow },
@@ -17,7 +19,7 @@ export function ScreenOverview() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       {/* KPI row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 16 }}>
         <KPICard label="Monthly Revenue"     value="RM 204k" sub="vs RM 188k last month" trend="8.5%" trendUp chart={<Sparkline data={revenueData.slice(-8)} color={C.white} />} accent />
         <KPICard label="Orders This Month"   value="52"      sub="7kW: 38 · 22kW: 14"     trend="13%"  trendUp chart={<MiniBar  data={[28, 30, 27, 35, 38, 42, 46, 52]} color={C.green} />} />
         <KPICard label="Installations Done"  value="46"      sub="6 pending · 2 overdue"  trend="9.5%" trendUp chart={<MiniBar  data={[22, 25, 23, 28, 31, 36, 40, 46]} color={C.opal} />} />
@@ -25,7 +27,7 @@ export function ScreenOverview() {
       </div>
 
       {/* Charts row */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 340px', gap: 16 }}>
         <div style={{ background: C.white, borderRadius: 16, padding: '20px 24px', border: '1px solid #EBEBEB' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
             <div>
@@ -58,7 +60,7 @@ export function ScreenOverview() {
       </div>
 
       {/* Bottom row */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 16 }}>
         {/* Recent orders mini */}
         <div style={{ background: C.white, borderRadius: 16, padding: '20px 24px', border: '1px solid #EBEBEB' }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: C.green, marginBottom: 16 }}>Recent Orders</div>

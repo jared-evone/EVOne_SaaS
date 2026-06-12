@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { C } from '../../theme';
 import { Logo } from '../../components/Logo';
 import { Search, Power, ChevronDown, Copy, CopyPlus, QrCode } from 'lucide-react';
+import { useIsMobile } from '../../lib/useIsMobile';
 import { supabase } from '../../lib/supabase';
 import { usePermissions } from '../../permissions';
 import {
@@ -219,7 +220,7 @@ export function WorkOrdersAdmin() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       {/* Status summary tiles */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 12 }}>
         {(['open', 'assigned', 'in_progress', 'submitted', 'reviewed', 'completed'] as WorkOrderStatus[]).map(
           (s) => {
             const sc = STATUS_COLORS[s];
@@ -289,8 +290,8 @@ export function WorkOrdersAdmin() {
       </div>
 
       {/* Table */}
-      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
+        <table style={{ width: '100%', minWidth: 760, borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ background: C.seasalt }}>
               {['Ref', 'Title', 'Customer', 'Form', 'Tech', 'Date', 'Priority', 'Status'].map((h) => (
@@ -537,6 +538,7 @@ function WorkOrderModal({
           background: C.white,
           borderRadius: 20,
           width: 580,
+          maxWidth: 'calc(100vw - 24px)',
           maxHeight: '90vh',
           overflowY: 'auto',
           padding: 28,
@@ -614,7 +616,7 @@ function WorkOrderModal({
             style={inputStyle(true)}
           />
         </FormRow>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <FormRow label="Scheduled date">
             <input
               type="date"
@@ -1041,7 +1043,7 @@ export function CustomersAdmin() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       {/* KPIs */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
         {(['Residential', 'Commercial', 'Enterprise'] as CustomerType[]).map((t) => {
           const sc = CUSTOMER_TYPE_COLORS[t];
           const count = store.customers.filter((c) => c.type === t).length;
@@ -1161,8 +1163,8 @@ export function CustomersAdmin() {
       </div>
 
       {/* Table */}
-      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
+        <table style={{ width: '100%', minWidth: 760, borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ background: C.seasalt }}>
               {['Customer', 'Type', 'Email', 'Phone', 'Address', 'Work Orders'].map((h) => (
@@ -1319,6 +1321,7 @@ function CustomerModal({
           background: C.white,
           borderRadius: 20,
           width: 580,
+          maxWidth: 'calc(100vw - 24px)',
           maxHeight: '90vh',
           overflowY: 'auto',
           padding: 28,
@@ -1393,7 +1396,7 @@ function CustomerModal({
           </div>
         </FormRow>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <FormRow label="Email">
             <input
               value={form.email}
@@ -1522,8 +1525,10 @@ export function FormBuilder() {
     setSelectedId(id);
   };
 
+  const isMobile = useIsMobile();
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 20 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '280px 1fr', gap: 20 }}>
       {/* Template list */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div style={{ display: 'flex', gap: 6 }}>
@@ -1734,11 +1739,13 @@ function TemplateEditor({
     });
   };
 
+  const isMobile = useIsMobile();
+
   return (
     <div
       style={{
         display: 'grid',
-        gridTemplateColumns: '1fr 440px',
+        gridTemplateColumns: isMobile ? '1fr' : '1fr 440px',
         gap: 20,
         alignItems: 'start',
       }}

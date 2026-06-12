@@ -113,7 +113,7 @@ function QuoteModal({ quote, onClose, onSave, onDelete }: QuoteModalProps) {
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
     >
-      <div style={{ background: C.white, borderRadius: 20, width: 640, maxHeight: '90vh', overflowY: 'auto', padding: 28, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ background: C.white, borderRadius: 20, width: 640, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', padding: 28, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
@@ -128,7 +128,7 @@ function QuoteModal({ quote, onClose, onSave, onDelete }: QuoteModalProps) {
         </div>
 
         {/* Type + Status */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <div>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Document Type</label>
             <div style={{ display: 'flex', gap: 8 }}>
@@ -171,7 +171,7 @@ function QuoteModal({ quote, onClose, onSave, onDelete }: QuoteModalProps) {
         {/* Customer details */}
         <div style={{ background: C.seasalt, borderRadius: 12, padding: '16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: C.green }}>Customer Details</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
             <div>
               <label style={{ fontSize: 11, fontWeight: 600, color: C.slate, display: 'block', marginBottom: 5 }}>Company / Name</label>
               <input
@@ -208,6 +208,8 @@ function QuoteModal({ quote, onClose, onSave, onDelete }: QuoteModalProps) {
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Line Items</label>
             <button onClick={addItem} style={{ fontSize: 12, fontWeight: 600, color: C.green, background: C.honeydew, border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontFamily: 'Figtree' }}>+ Add Item</button>
           </div>
+          <div style={{ overflowX: 'auto' }}>
+          <div style={{ minWidth: 560 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 100px 100px 32px', gap: 8, marginBottom: 6 }}>
             {['Product', 'Qty', 'Unit Price', 'Subtotal', ''].map((h, i) => (
               <div key={i} style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{h}</div>
@@ -247,6 +249,8 @@ function QuoteModal({ quote, onClose, onSave, onDelete }: QuoteModalProps) {
               </div>
             );
           })}
+          </div>
+          </div>
 
           {/* Totals */}
           <div style={{ borderTop: '1px solid #F3F3F3', marginTop: 8, paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -277,7 +281,7 @@ function QuoteModal({ quote, onClose, onSave, onDelete }: QuoteModalProps) {
         </div>
 
         {/* Dates */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <div>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Created Date</label>
             <input type="date" value={form.created} onChange={(e) => setForm((f) => ({ ...f, created: e.target.value }))} style={{ width: '100%', padding: '9px 12px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none' }} />
@@ -371,7 +375,7 @@ export function ScreenSales() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {/* KPIs */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Pipeline Value"   value={`RM ${(totalValue / 1000).toFixed(0)}k`}    sub="All active quotes" accent />
         <KPICard label="Accepted Value"   value={`RM ${(acceptedValue / 1000).toFixed(0)}k`} sub="Confirmed this period" trend="22%" trendUp />
         <KPICard label="Awaiting Response" value={pendingCount}                              sub="Sent or viewed" />
@@ -463,8 +467,8 @@ export function ScreenSales() {
 
       {/* List view */}
       {tab === 'list' && (
-        <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
+          <table style={{ width: '100%', minWidth: 880, borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
                 {['Ref', 'Type', 'Customer', 'Contact', 'Items', 'Value', 'Status', 'Expiry'].map((h) => (
@@ -528,7 +532,7 @@ export function ScreenSales() {
 
       {/* Pipeline view */}
       {tab === 'pipeline' && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12, alignItems: 'start' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12, alignItems: 'start' }}>
           {pipelineStatuses.map((status) => {
             const sc = QUOTE_STATUS_COLORS[status];
             const colQuotes = quotes.filter(

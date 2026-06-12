@@ -3,6 +3,7 @@ import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { SUPPLIERS } from './PurchaseOrders';
 import { Search } from 'lucide-react';
+import { useIsMobile } from '../lib/useIsMobile';
 
 const INV_CATEGORIES = ['All', 'Charger Units', 'Electrical', 'Accessories', 'Cables'] as const;
 type InvCategory = (typeof INV_CATEGORIES)[number];
@@ -102,7 +103,7 @@ function ProductModal({ item, onClose, onSave, onDelete }: ProductModalProps) {
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
     >
-      <div style={{ background: C.white, borderRadius: 20, width: 600, maxHeight: '90vh', overflowY: 'auto', padding: 28, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ background: C.white, borderRadius: 20, width: 600, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', padding: 28, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
             <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{isNew ? 'Add Product' : form.name}</div>
@@ -112,7 +113,7 @@ function ProductModal({ item, onClose, onSave, onDelete }: ProductModalProps) {
         </div>
 
         {/* Basic info */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <div style={{ gridColumn: '1/-1' }}>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Product Name</label>
             <input
@@ -143,7 +144,7 @@ function ProductModal({ item, onClose, onSave, onDelete }: ProductModalProps) {
         {/* Pricing */}
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: C.green, marginBottom: 12 }}>Pricing</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
             <div>
               <label style={{ fontSize: 11, fontWeight: 600, color: C.slate, display: 'block', marginBottom: 5 }}>Cost Price (RM)</label>
               <input type="number" min="0" value={form.cost} onChange={(e) => setForm((f) => ({ ...f, cost: parseFloat(e.target.value) || 0 }))} style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white }} />
@@ -162,7 +163,7 @@ function ProductModal({ item, onClose, onSave, onDelete }: ProductModalProps) {
         {/* Stock */}
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: C.green, marginBottom: 12 }}>Stock</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
             <div>
               <label style={{ fontSize: 11, fontWeight: 600, color: C.slate, display: 'block', marginBottom: 5 }}>Current Qty</label>
               <input
@@ -195,7 +196,7 @@ function ProductModal({ item, onClose, onSave, onDelete }: ProductModalProps) {
         </div>
 
         {/* Supplier + Location */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <div>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Supplier</label>
             <select
@@ -255,6 +256,7 @@ function ProductModal({ item, onClose, onSave, onDelete }: ProductModalProps) {
 }
 
 export function ScreenInventory() {
+  const isMobile = useIsMobile();
   const [items, setItems] = useState<InventoryItem[]>(INITIAL_INVENTORY);
   const [category, setCategory] = useState<InvCategory>('All');
   const [statusFilter, setStatusFilter] = useState<'All' | InvStatus>('All');
@@ -296,7 +298,7 @@ export function ScreenInventory() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {/* KPIs */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Total SKUs"        value={totalSKUs}                                   sub="Active products" accent />
         <KPICard label="Stock Value"       value={`RM ${(totalStockVal / 1000).toFixed(0)}k`}  sub="At cost price" trend="12%" trendUp />
         <KPICard label="Low / Out Stock"   value={`${lowStockCount} / ${outOfStock}`}          sub="Items needing reorder" />
@@ -388,8 +390,8 @@ export function ScreenInventory() {
 
       {/* Table view */}
       {view === 'table' && (
-        <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
+          <table style={{ width: '100%', minWidth: 900, borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
                 {['SKU', 'Product', 'Category', 'Stock Level', 'Reorder At', 'Cost', 'Price', 'Margin', 'Supplier', 'Status'].map((h) => (
@@ -443,7 +445,7 @@ export function ScreenInventory() {
 
       {/* Cards view */}
       {view === 'cards' && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: 14 }}>
           {filtered.map((it, i) => {
             const margin = it.price > 0 ? Math.round(((it.price - it.cost) / it.price) * 100) : 0;
             return (

@@ -119,7 +119,7 @@ export function ScreenDBHealth() {
       </div>
 
       {/* KPIs */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Database Size"   value={fmtBytes(dbSize)} sub={`${dbPct}% of free tier (500 MB)`} accent />
         <KPICard label="Total Rows"      value={fmtCount(totalRows)} sub={`across ${stats?.length ?? 0} tables`} />
         <KPICard label="Storage Used"    value={fmtBytes(totalStorageBytes)} sub={`${storagePct}% of free tier (1 GB)`} />
@@ -127,7 +127,7 @@ export function ScreenDBHealth() {
       </div>
 
       {/* Usage bars */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 14 }}>
         <UsageBar label="Database" pct={dbPct} used={dbSize} total={FREE_TIER_DB_BYTES} />
         <UsageBar label="Storage"  pct={storagePct} used={totalStorageBytes} total={FREE_TIER_STORAGE_BYTES} />
       </div>
@@ -141,7 +141,7 @@ export function ScreenDBHealth() {
           </div>
         </div>
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <table style={{ width: '100%', minWidth: 600, borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
                 {['Table', 'Rows', 'Size', 'Share of DB'].map((h) => (
@@ -179,14 +179,14 @@ export function ScreenDBHealth() {
       </div>
 
       {/* Storage buckets */}
-      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
+      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
         <div style={{ padding: '14px 20px', borderBottom: '1px solid #F3F3F3' }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>Storage Buckets</div>
           <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
             Aggregated server-side from <code style={{ background: C.seasalt, padding: '1px 5px', borderRadius: 4, fontSize: 11 }}>storage.objects</code> — includes every file in every prefix.
           </div>
         </div>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <table style={{ width: '100%', minWidth: 600, borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: C.seasalt }}>
               {['Bucket', 'Access', 'Files', 'Size'].map((h) => (

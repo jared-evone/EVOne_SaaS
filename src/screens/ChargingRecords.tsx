@@ -502,7 +502,7 @@ function NewCarparkPricesModal({ carparks, onSave, onClose }: NewCarparkPricesMo
      
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
     >
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 500, maxHeight: '80vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 500, maxWidth: 'calc(100vw - 24px)', maxHeight: '80vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 20 }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
           <div>
             <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>New Carpark Prices</div>
@@ -651,7 +651,8 @@ function SpPriceTab({ prices, onRefresh }: SpPriceTabProps) {
           </div>
         )}
 
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600 }}>
           <thead>
             <tr style={{ background: C.seasalt }}>
               {['Carpark Code', 'Price / kWh (SGD)', 'Last Updated', ''].map((h) => (
@@ -710,6 +711,7 @@ function SpPriceTab({ prices, onRefresh }: SpPriceTabProps) {
             )}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );
@@ -822,7 +824,7 @@ function UploadModal({ source, fileName, rows, warnings, dupeCount, uploaderEmai
               <div style={{ fontSize: 11, color: C.slate }}>Verify before importing</div>
             </div>
             <div style={{ border: '1px solid #EBEBEB', borderRadius: 12, overflow: 'auto', maxHeight: 280 }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: 'Figtree' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: 'Figtree', minWidth: 880 }}>
                 <thead>
                   <tr style={{ background: C.seasalt }}>
                     {['Carpark', 'Charger', 'Conn.', 'Plate', 'Start', 'End', 'kWh', 'Amt'].map((h) => (
@@ -1088,7 +1090,7 @@ function DownloadModal({ carparks, managed, initialSource, initialCpoOnly, onClo
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 560, maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 560, maxWidth: 'calc(100vw - 24px)', maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>Download Charging Records</div>
           {!busy && (
@@ -1096,7 +1098,7 @@ function DownloadModal({ carparks, managed, initialSource, initialCpoOnly, onClo
           )}
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <div>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Start Date</label>
             <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
@@ -1288,8 +1290,8 @@ function UploadHistoryTab({ onRefresh }: { onRefresh: () => Promise<void> }) {
         <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{error}</div>
       )}
 
-      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 660 }}>
           <thead>
             <tr style={{ background: C.seasalt }}>
               {['When', 'Source', 'File(s)', 'Records', 'By', ''].map((h) => (
@@ -1660,7 +1662,7 @@ export function ScreenChargingRecords() {
       )}
 
       {/* KPI row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Total Records"  value={totalCount.toLocaleString()}     sub="charging transactions" accent />
         <KPICard label="Total Energy"   value={`${totalEnergy.toFixed(1)} kWh`} sub="energy supplied" />
         <KPICard label="Total Revenue"  value={`$${totalRevenue.toFixed(2)}`}   sub="payment collected" />

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { C } from '../../theme';
+import { useIsMobile } from '../../lib/useIsMobile';
 import { StatementView } from '../CorporateInvoicing';
 import { listCompanies, listDocumentsForCompany, countDocsByCompany, downloadPdfFromBase64, blobToBase64, uploadInvoiceForCompany, uploadStatementForCompany, deleteDocument } from './portalDb';
 import type { PortalDocument, DocType } from './types';
@@ -101,7 +102,7 @@ function UploadDocumentModal({ docType, companyId, companyName, existingMonths, 
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 520, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 520, maxWidth: 'calc(100vw - 24px)', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>Upload {docLabel}</div>
           <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
@@ -116,7 +117,7 @@ function UploadDocumentModal({ docType, companyId, companyName, existingMonths, 
           </div>
         )}
 
-        <div style={{ display: 'grid', gridTemplateColumns: isInvoice ? '1fr 1fr' : '1fr 1fr', gap: 14 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14 }}>
           <div>
             <FieldLabel>Billing Month</FieldLabel>
             <input type="month" value={billingMonth} onChange={(e) => setBillingMonth(e.target.value)}
@@ -163,6 +164,7 @@ function UploadDocumentModal({ docType, companyId, companyName, existingMonths, 
 }
 
 export function MasterView() {
+  const isMobile = useIsMobile();
   const [companies, setCompanies] = useState<CompanyWithCount[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -225,7 +227,7 @@ export function MasterView() {
         </button>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 16, alignItems: 'start' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '320px 1fr', gap: 16, alignItems: 'start' }}>
       {/* Left list */}
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: 14, borderBottom: '1px solid #F3F3F3' }}>
@@ -303,7 +305,7 @@ export function MasterView() {
                 <div style={{ padding: 40, textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</div>
               ) : (
                 <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 660 }}>
                     <thead>
                       <tr style={{ background: C.seasalt }}>
                         {[

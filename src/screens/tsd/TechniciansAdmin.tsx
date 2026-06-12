@@ -127,8 +127,8 @@ export function TechniciansAdmin() {
       </div>
 
       {/* List */}
-      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
+        <table style={{ width: '100%', minWidth: 770, borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: C.seasalt }}>
               <th style={th}>Technician</th>
@@ -322,7 +322,7 @@ function TechnicianModal({ initial, existingNames, onClose, onSaved }: Technicia
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 480, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 480, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{isNew ? 'Add Technician' : 'Edit Technician'}</div>
           <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
@@ -351,7 +351,7 @@ function TechnicianModal({ initial, existingNames, onClose, onSaved }: Technicia
           <label style={label}>Name</label>
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Ahmad K." style={field} />
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <div>
             <label style={label}>FIN Number</label>
             <input value={fin} onChange={(e) => setFin(e.target.value)} placeholder="e.g. G1234567X" style={field} />
@@ -374,7 +374,7 @@ function TechnicianModal({ initial, existingNames, onClose, onSaved }: Technicia
             <label style={label}>Login Email</label>
             <input type="email" value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} placeholder="tech@evone.com.sg" style={{ ...field, background: C.white }} />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
             <div>
               <label style={label}>Password</label>
               <input type="text" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="set a password" style={{ ...field, background: C.white }} />

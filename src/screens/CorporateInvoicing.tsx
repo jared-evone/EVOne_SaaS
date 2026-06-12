@@ -297,8 +297,8 @@ export function StatementView({ stmt, billingMonth, onClose }: StatementViewProp
         {/* Section 1: Billing Summary */}
         <div>
           <div style={{ fontSize: 15, fontWeight: 700, color: C.green, marginBottom: 12 }}>1. Billing Summary</div>
-          <div style={{ borderRadius: 12, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <div style={{ borderRadius: 12, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600 }}>
               <thead>
                 <tr>
                   {['Total Energy (kWh)', 'Threshold Limit', 'Applied Rate', 'Total Amount'].map((h) => (
@@ -335,8 +335,8 @@ export function StatementView({ stmt, billingMonth, onClose }: StatementViewProp
         {/* Section 2: Vehicle Breakdown */}
         <div>
           <div style={{ fontSize: 15, fontWeight: 700, color: C.green, marginBottom: 12 }}>2. Vehicle Breakdown</div>
-          <div style={{ borderRadius: 12, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <div style={{ borderRadius: 12, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600 }}>
               <thead>
                 <tr>
                   {['Vehicle / Driver Email', 'Energy Used (kWh)'].map((h) => (
@@ -373,8 +373,8 @@ export function StatementView({ stmt, billingMonth, onClose }: StatementViewProp
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', marginBottom: 8 }}>
                     Vehicle / Driver Email: <span style={{ color: C.green }}>{b.id}</span>
                   </div>
-                  <div style={{ borderRadius: 12, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+                  <div style={{ borderRadius: 12, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', minWidth: 600 }}>
                       <colgroup>
                         <col style={{ width: '30%' }} />
                         <col style={{ width: '25%' }} />
@@ -416,8 +416,8 @@ export function StatementView({ stmt, billingMonth, onClose }: StatementViewProp
         {overstayRows.length > 0 && (
           <div>
             <div style={{ fontSize: 15, fontWeight: 700, color: C.green, marginBottom: 12 }}>4. Overstay Charges</div>
-            <div style={{ borderRadius: 12, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+            <div style={{ borderRadius: 12, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', minWidth: 660 }}>
                 <colgroup>
                   <col style={{ width: '14%' }} />
                   <col style={{ width: '26%' }} />
@@ -828,7 +828,7 @@ function SpUploadPreview({ pending, emailToCompany, onCancel, onConfirm }: SpUpl
             <div style={{ fontSize: 11, color: C.slate }}>Verify before importing</div>
           </div>
           <div style={{ border: '1px solid #EBEBEB', borderRadius: 12, overflow: 'auto', maxHeight: 280 }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: 'Figtree' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: 'Figtree', minWidth: 600 }}>
               <thead>
                 <tr style={{ background: C.seasalt }}>
                   {['Driver Email', 'Location', 'Date / Time', 'Energy (kWh)', 'CRM'].map((h) => (
@@ -963,7 +963,7 @@ function OverstayUploadPreview({ pending, corpToCompany, onCancel, onConfirm }: 
             <div style={{ fontSize: 11, color: C.slate }}>Verify before importing</div>
           </div>
           <div style={{ border: '1px solid #EBEBEB', borderRadius: 12, overflow: 'auto', maxHeight: 280 }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: 'Figtree' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, fontFamily: 'Figtree', minWidth: 600 }}>
               <thead>
                 <tr style={{ background: C.seasalt }}>
                   {['Corporate', 'Vehicle', 'Car Park', 'Overstay (mins)', 'Amount', 'CRM'].map((h) => (
@@ -1517,7 +1517,7 @@ export function ScreenCorporateInvoicing() {
       </div>
 
       {/* KPI row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Companies with Data" value={String(statements.length)} sub={`of ${companies.length} in CRM`} accent />
         <KPICard label="Total Energy" value={`${fmtKwh(totalBillingKwh)} kWh`} sub="across all companies" />
         <KPICard label="Total Billing Amount" value={fmtAmt(totalBillingAmt)} sub="combined invoices" />
@@ -1720,7 +1720,7 @@ export function ScreenCorporateInvoicing() {
             </div>
           )}
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 880 }}>
               <thead>
                 <tr style={{ background: C.seasalt }}>
                   {['Company', 'GoParkin kWh', 'SP kWh', 'Total kWh', 'Applied Rate', 'Overstay', 'Total Amount', ''].map((h) => (

@@ -275,7 +275,7 @@ function LocationModal({ initial, title, onSave, onDelete, onClose, chargerCount
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 520, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 520, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <div title={title} style={{
             fontSize: 16, fontWeight: 700, color: C.green, minWidth: 0, flex: 1,
@@ -304,7 +304,7 @@ function LocationModal({ initial, title, onSave, onDelete, onClose, chargerCount
             Powered by <a href="https://www.onemap.gov.sg" target="_blank" rel="noreferrer" style={{ color: C.green, textDecoration: 'none', fontWeight: 600 }}>OneMap</a> (data.gov.sg). Selecting a suggestion auto-fills latitude &amp; longitude.
           </div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <div>
             <FieldLabel>Latitude</FieldLabel>
             <input type="number" step="0.000001" value={form.latitude ?? ''}
@@ -491,7 +491,7 @@ function ChargerModal({ initial, title, locations, lockLocation, latestFormAPerf
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 620, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 620, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{title}</div>
           <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
@@ -509,7 +509,7 @@ function ChargerModal({ initial, title, locations, lockLocation, latestFormAPerf
         </div>
 
         {/* Identity */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <div>
             <FieldLabel>Charger ID</FieldLabel>
             <input value={form.charger_code} onChange={(e) => set('charger_code', e.target.value.toUpperCase())}
@@ -523,7 +523,7 @@ function ChargerModal({ initial, title, locations, lockLocation, latestFormAPerf
         </div>
 
         {/* Brand & approval */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <div>
             <FieldLabel>Charger Brand &amp; Model</FieldLabel>
             <input value={form.brand_model ?? ''} onChange={(e) => set('brand_model', e.target.value)}
@@ -543,7 +543,7 @@ function ChargerModal({ initial, title, locations, lockLocation, latestFormAPerf
         </div>
 
         {/* Hardware */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
           <div>
             <FieldLabel>Charger Type</FieldLabel>
             <select value={form.charger_type ?? 'AC'} onChange={(e) => set('charger_type', e.target.value)}
@@ -592,7 +592,7 @@ function ChargerModal({ initial, title, locations, lockLocation, latestFormAPerf
           return (
             <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: C.green }}>Preventive Maintenance Schedule</div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
                 <div>
                   <FieldLabel>Form A · Next Date (6-mo)</FieldLabel>
                   <div style={{ display: 'flex', gap: 8 }}>
@@ -649,7 +649,7 @@ function ChargerModal({ initial, title, locations, lockLocation, latestFormAPerf
         {/* Warranty */}
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: C.green }}>Warranty</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'start' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, alignItems: 'start' }}>
             <div>
               <FieldLabel>Warranty Expiry Date</FieldLabel>
               <input type="date" value={form.warranty_expiry_date ?? ''}
@@ -797,7 +797,7 @@ function MeterReadingForm({ chargerId, numConnectors, onAdded }: MeterReadingFor
   return (
     <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ fontSize: 12, fontWeight: 700, color: C.green }}>Log New Reading</div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
         <div>
           <FieldLabel>DB Meter Reading (kWh)</FieldLabel>
           <input type="number" step="0.01" value={reading} onChange={(e) => setReading(e.target.value)}
@@ -812,7 +812,7 @@ function MeterReadingForm({ chargerId, numConnectors, onAdded }: MeterReadingFor
       {gunLetters.length > 0 && (
         <div>
           <FieldLabel>Per-Connector Readings (kWh)</FieldLabel>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
             {gunLetters.map((letter) => (
               <div key={letter}>
                 <label style={{ fontSize: 11, fontWeight: 600, color: C.slate, display: 'block', marginBottom: 4 }}>
@@ -938,7 +938,7 @@ function MaintenanceForm({ chargerId, onAdded }: MaintenanceFormProps) {
   return (
     <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ fontSize: 12, fontWeight: 700, color: C.green }}>Log Maintenance</div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
         <div>
           <FieldLabel>Type</FieldLabel>
           <select value={type} onChange={(e) => updateType(e.target.value as MaintenanceType)}
@@ -1076,7 +1076,7 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1050, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 760, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 760, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <div>
@@ -1114,7 +1114,7 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
 
         {tab === 'overview' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
               <DetailStat label="Charger ID"  value={charger.charger_code} />
               <DetailStat label="Power"       value={charger.power_kw ? `${charger.power_kw} kW` : '—'} />
               <DetailStat label="Next Form A" value={pmFormA.label} valueColor={pmFormA.color} />
@@ -1188,8 +1188,8 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
                 No meter readings yet.
               </div>
             ) : (
-              <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, overflow: 'hidden' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600 }}>
                   <thead>
                     <tr style={{ background: C.seasalt }}>
                       {['Date', 'Reading (kWh)', ''].map((h) => (
@@ -1540,7 +1540,7 @@ function ChargerCard({ charger, latestReading, onClick }: ChargerCardProps) {
         ].filter(Boolean).join(' · ') || '—'}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, paddingTop: 4, borderTop: '1px solid #F3F3F3' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, paddingTop: 4, borderTop: '1px solid #F3F3F3' }}>
         <div>
           <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 2 }}>Type-Approval ID</div>
           <div style={{ fontSize: 12, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -1615,7 +1615,7 @@ function LocationDrilldownModal({ location, chargers, latestByCharger, canEdit, 
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 820, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 820, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <div style={{ minWidth: 0, flex: 1 }}>
@@ -1648,7 +1648,7 @@ function LocationDrilldownModal({ location, chargers, latestByCharger, canEdit, 
         </div>
 
         {/* Compact stats */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
           <DetailStat label="Chargers"    value={String(chargers.length)} />
           <DetailStat label="Next Form A" value={nextFormAValue} valueColor={nextFormA.color} />
           <DetailStat label="Next Form D" value={nextFormDValue} valueColor={nextFormD.color} />
@@ -1903,7 +1903,7 @@ export function ScreenCPOChargers() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 16px', fontSize: 13, fontWeight: 600 }}>{error}</div>}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Total Locations" value={String(locations.length)} sub="across Singapore" accent />
         <KPICard label="Total Chargers"  value={String(totalChargers)} sub={`${noPm} with no PM scheduled`} />
         <KPICard label="PM Overdue"      value={String(pmOverdue)} sub="Form A or Form D past due" />

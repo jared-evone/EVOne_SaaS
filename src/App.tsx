@@ -6,9 +6,10 @@ import {
   LayoutDashboard, Home, Receipt, Wrench, Users, FolderKanban, CalendarDays,
   Handshake, ClipboardList, Boxes, Truck, Building2, Plug, Zap, FileText,
   Hammer, Settings as SettingsIcon, ShieldCheck, Database, ChevronRight, ChevronDown,
-  Power,
+  Power, Menu,
   type LucideIcon,
 } from 'lucide-react';
+import { useIsMobile } from './lib/useIsMobile';
 import { ScreenOverview } from './screens/Overview';
 import { ScreenInvoices } from './screens/Invoices';
 import { ScreenInstallations } from './screens/Installations';
@@ -160,22 +161,39 @@ function Dashboard({ onSignOut }: DashboardProps) {
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(initialOpen);
   const toggleGroup = (key: string) => setOpenGroups((s) => ({ ...s, [key]: !s[key] }));
 
-  const contentPad = 28;
+  const isMobile = useIsMobile();
+  const [navOpen, setNavOpen] = useState(false);
+  const contentPad = isMobile ? 12 : 28;
   const userInitial = (user.full_name || user.email).trim().charAt(0).toUpperCase();
+
+  const selectScreen = (id: ScreenId) => {
+    setScreen(id);
+    if (isMobile) setNavOpen(false);
+  };
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: C.seasalt }}>
-      {/* Sidebar */}
+      {/* Mobile drawer scrim */}
+      {isMobile && navOpen && (
+        <div
+          onClick={() => setNavOpen(false)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1090 }}
+        />
+      )}
+      {/* Sidebar — fixed column on desktop, slide-over drawer on mobile */}
       <aside
         style={{
-          width: 224,
+          width: isMobile ? 264 : 224,
           flexShrink: 0,
           background: C.white,
           borderRight: '1px solid #EBEBEB',
-          display: 'flex',
+          display: isMobile && !navOpen ? 'none' : 'flex',
           flexDirection: 'column',
           padding: '0 12px',
           overflow: 'hidden',
+          ...(isMobile
+            ? { position: 'fixed' as const, left: 0, top: 0, bottom: 0, zIndex: 1100, boxShadow: '0 0 48px rgba(0,0,0,.18)' }
+            : {}),
         }}
       >
         <div style={{ padding: '20px 8px 16px', borderBottom: '1px solid #F3F3F3', marginBottom: 8 }}>
@@ -203,7 +221,7 @@ function Dashboard({ onSignOut }: DashboardProps) {
                   icon={n.icon}
                   label={n.label}
                   active={activeScreen === n.id}
-                  onClick={() => setScreen(n.id)}
+                  onClick={() => selectScreen(n.id)}
                 />
               );
             }
@@ -235,7 +253,7 @@ function Dashboard({ onSignOut }: DashboardProps) {
                         icon={c.icon}
                         label={c.label}
                         active={activeScreen === c.id}
-                        onClick={() => setScreen(c.id)}
+                        onClick={() => selectScreen(c.id)}
                       />
                     ))}
                   </div>
@@ -314,20 +332,41 @@ function Dashboard({ onSignOut }: DashboardProps) {
             borderBottom: '1px solid #EBEBEB',
             display: 'flex',
             alignItems: 'center',
-            padding: '0 28px',
-            gap: 16,
+            padding: isMobile ? '0 14px' : '0 28px',
+            gap: isMobile ? 10 : 16,
           }}
         >
-          <div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: C.green, letterSpacing: '-0.02em' }}>
+          {isMobile && (
+            <button
+              onClick={() => setNavOpen(true)}
+              aria-label="Open menu"
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 10,
+                border: '1px solid #EBEBEB',
+                background: 'transparent',
+                color: C.slate,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}
+            >
+              <Menu size={18} strokeWidth={2.25} />
+            </button>
+          )}
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: isMobile ? 16 : 18, fontWeight: 700, color: C.green, letterSpacing: '-0.02em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {SCREEN_TITLES[activeScreen]}
             </div>
-            <div style={{ fontSize: 11, color: C.slate }}>May 4, 2026 · Kuala Lumpur</div>
+            {!isMobile && <div style={{ fontSize: 11, color: C.slate }}>May 4, 2026 · Kuala Lumpur</div>}
           </div>
-          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
             <span
               style={{
-                fontSize: 11,
+                fontSize: isMobile ? 9 : 11,
                 fontWeight: 700,
                 padding: '5px 12px',
                 borderRadius: 99,
@@ -335,6 +374,9 @@ function Dashboard({ onSignOut }: DashboardProps) {
                 color: C.green,
                 letterSpacing: '0.04em',
                 textTransform: 'uppercase',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
               }}
             >
               {DEPARTMENT_LABELS[user.department]} · {user.role_label}

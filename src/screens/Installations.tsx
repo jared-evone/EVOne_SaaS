@@ -2,24 +2,26 @@ import { C } from '../theme';
 import { installations } from '../data';
 import { KPICard } from '../components/KPICard';
 import { Badge } from '../components/Badge';
+import { useIsMobile } from '../lib/useIsMobile';
 
 export function ScreenInstallations() {
+  const isMobile = useIsMobile();
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Scheduled This Week" value="14"      sub="5 technicians active" />
         <KPICard label="Completed MTD"       value="46"      sub="Target: 50"           trend="92%"        trendUp accent />
         <KPICard label="Avg. Install Time"   value="3.8 hrs" sub={<>Target: &lt;4 hrs</>} trend="0.2h faster" trendUp />
         <KPICard label="Overdue"             value="2"       sub="Requires rescheduling" trend="↓ 3 last mo" trendUp={false} />
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 16 }}>
-        <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 280px', gap: 16 }}>
+        <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
           <div style={{ padding: '16px 20px', borderBottom: '1px solid #F3F3F3', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>Installation Schedule</div>
             <button style={{ padding: '6px 14px', borderRadius: 99, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontSize: 12, fontWeight: 600, fontFamily: 'Figtree', cursor: 'pointer' }}>+ Schedule</button>
           </div>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <table style={{ width: '100%', minWidth: 770, borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
                 {['Ref', 'Customer', 'Address', 'Technician', 'Date', 'Product', 'Status'].map((h) => (

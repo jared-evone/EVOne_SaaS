@@ -3,6 +3,7 @@ import { C } from '../../theme';
 import { Logo } from '../../components/Logo';
 import { ChargerLocationMap, type ChargerMapLocation } from '../../components/ChargerLocationMap';
 import { supabase } from '../../lib/supabase';
+import { useIsMobile } from '../../lib/useIsMobile';
 import type { Application, ApplicationStatus, CustomField, FormTemplate } from './AccountOpening';
 import { INSTRUCTION_BUCKET, RFID_CARD_PRICE_SGD, KWH_PER_VEHICLE } from './AccountOpening';
 import { Download as DownloadIcon } from 'lucide-react';
@@ -36,6 +37,7 @@ function TariffCard({ baseRate, discountedRate, vehicleCount, onVehicleCountChan
   vehicleCount: number;
   onVehicleCountChange: (n: number) => void;
 }) {
+  const isMobile = useIsMobile();
   const safeCount = Math.max(0, Math.floor(vehicleCount || 0));
   const thresholdKwh = safeCount * KWH_PER_VEHICLE;
   const tiered = thresholdKwh > 0 && discountedRate > 0 && discountedRate !== baseRate;
@@ -48,7 +50,7 @@ function TariffCard({ baseRate, discountedRate, vehicleCount, onVehicleCountChan
         </div>
       </div>
       <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '180px 1fr', alignItems: 'center', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '180px 1fr', alignItems: 'center', gap: 12 }}>
           <FieldLabel>Vehicles to register</FieldLabel>
           <input type="number" min={0} step={1} value={safeCount}
             onChange={(e) => onVehicleCountChange(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
@@ -259,6 +261,7 @@ function MessageScreen({ title, message, tone }: { title: string; message: strin
 }
 
 export function PublicApplication({ token }: Props) {
+  const isMobile = useIsMobile();
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<LoadResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -468,7 +471,7 @@ export function PublicApplication({ token }: Props) {
               <div style={{ fontSize: 13, color: '#1a1a1a', lineHeight: 1.6 }}>
                 Please install both apps below and register your fleet vehicles inside them <strong>before</strong> submitting this form. We'll match the plates / emails you submit here against what's registered in those apps.
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
                 <InstructionCard
                   title="GoParkin App"
                   fallbackCopy={'Search "GoParkin" on the App Store or Google Play. Register each vehicle plate inside.'}
@@ -491,7 +494,7 @@ export function PublicApplication({ token }: Props) {
                 <FieldLabel required>Company Name</FieldLabel>
                 <input value={companyName} onChange={(e) => setCompanyName(e.target.value)} style={inputStyle()} placeholder="Acme Logistics Pte Ltd" />
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
                 <div>
                   <FieldLabel required>Contact Person</FieldLabel>
                   <input value={contactName} onChange={(e) => setContactName(e.target.value)} style={inputStyle()} placeholder="Jane Tan" />
@@ -572,7 +575,7 @@ export function PublicApplication({ token }: Props) {
               </label>
               {rfidRequested && (
                 <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', alignItems: 'center', gap: 12 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '160px 1fr', alignItems: 'center', gap: 12 }}>
                     <FieldLabel>Quantity</FieldLabel>
                     <input type="number" min={1} step={1} value={rfidQuantity}
                       onChange={(e) => setRfidQuantity(Math.max(1, Math.floor(Number(e.target.value) || 1)))}

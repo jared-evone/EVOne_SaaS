@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { C } from '../../theme';
+import { useIsMobile } from '../../lib/useIsMobile';
 import { Logo } from '../../components/Logo';
 import {
   DEMO_TECHNICIAN,
@@ -25,6 +26,7 @@ type TabKey = 'available' | 'mine' | 'all' | 'unassigned';
 export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
   const store = useWorkOrderStore();
   const { user } = usePermissions();
+  const isMobileAdmin = useIsMobile();
   const isAdmin = user.role_name === 'admin';
   const me = user.full_name || DEMO_TECHNICIAN;
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -100,7 +102,7 @@ export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
         crumb="Technician"
         wide
       >
-        <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr', gap: 16, alignItems: 'start' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobileAdmin ? '1fr' : '200px 1fr', gap: 16, alignItems: 'start' }}>
           {/* Filter rail */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <button onClick={() => setAdminFilter('all')} style={railBtn(adminFilter === 'all')}>All Jobs ({all.length})</button>
@@ -453,7 +455,8 @@ function JobCalendar({ jobs, onOpen, onReschedule }: { jobs: WorkOrder[]; onOpen
   const navBtn: React.CSSProperties = { width: 32, height: 32, borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontSize: 16, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 };
 
   return (
-    <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
+    <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
+      <div style={{ minWidth: 700 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '14px 18px', borderBottom: '1px solid #F3F3F3' }}>
         <button onClick={() => step(-1)} style={navBtn} title="Previous month">‹</button>
         <button onClick={() => step(1)} style={navBtn} title="Next month">›</button>
@@ -510,6 +513,7 @@ function JobCalendar({ jobs, onOpen, onReschedule }: { jobs: WorkOrder[]; onOpen
             </div>
           );
         })}
+      </div>
       </div>
     </div>
   );

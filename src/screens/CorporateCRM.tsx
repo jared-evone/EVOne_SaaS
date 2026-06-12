@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
+import { useIsMobile } from '../lib/useIsMobile';
 import { AccountOpening } from './crm/AccountOpening';
 import { usePermissions } from '../permissions';
 import { Search, Download as DownloadIcon, Mail } from 'lucide-react';
@@ -373,7 +374,7 @@ function CompanyModal({ initial, title, canDelete, invoicingOnly = false, onSave
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 480, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 480, maxWidth: 'calc(100vw - 24px)', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{title}</div>
           <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Figtree' }}>×</button>
@@ -381,7 +382,7 @@ function CompanyModal({ initial, title, canDelete, invoicingOnly = false, onSave
         {textField('Company Name', 'name')}
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Pricing Rates (SGD / kWh)</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
             {textField('Base Rate', 'base_rate', 'number')}
             {textField('Threshold (kWh)', 'threshold_kwh', 'number')}
             {textField('Discounted Rate', 'discounted_rate', 'number')}
@@ -542,7 +543,7 @@ function VehicleModal({ initial, title, companies, onSave, onDelete, onClose }: 
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 440, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 440, maxWidth: 'calc(100vw - 24px)', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{title}</div>
           <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Figtree' }}>×</button>
@@ -734,7 +735,7 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 16px', fontSize: 13, fontWeight: 600 }}>{error}</div>}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Total Companies"   value={String(companies.length)} sub="registered accounts" accent />
         <KPICard label="Avg Base Rate"     value={`$${avgBase.toFixed(3)}`} sub="SGD per kWh" />
         <KPICard label="Volume Discounts"  value={String(withDiscount)} sub="companies with tiered pricing" />
@@ -777,7 +778,7 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
 
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 800 }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
                 {canDelete && (
@@ -973,7 +974,7 @@ function VehiclesTab({ companies, error }: VehiclesTabProps) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 16px', fontSize: 13, fontWeight: 600 }}>{error}</div>}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Total Vehicles"     value={String(vehicles.length)} sub="registered plates" accent />
         <KPICard label="Companies Covered"  value={String(companiesCovered)} sub="with GoParkin vehicles" />
         <KPICard label="Avg per Company"    value={String(avgPerCompany)} sub="vehicles per account" />
@@ -1018,7 +1019,7 @@ function VehiclesTab({ companies, error }: VehiclesTabProps) {
 
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600 }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
                 {canDelete && (
@@ -1117,7 +1118,7 @@ function DriverModal({ initial, title, companies, onSave, onDelete, onClose }: D
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 440, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 440, maxWidth: 'calc(100vw - 24px)', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{title}</div>
           <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Figtree' }}>×</button>
@@ -1250,7 +1251,7 @@ function SPDriversTab({ companies, error }: SPDriversTabProps) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 16px', fontSize: 13, fontWeight: 600 }}>{error}</div>}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Total Drivers"      value={String(drivers.length)} sub="registered SP accounts" accent />
         <KPICard label="Companies Covered"  value={String(companiesCovered)} sub="with SP drivers" />
         <KPICard label="Avg per Company"    value={companiesCovered ? (drivers.length / companiesCovered).toFixed(1) : '—'} sub="drivers per account" />
@@ -1293,7 +1294,7 @@ function SPDriversTab({ companies, error }: SPDriversTabProps) {
 
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600 }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
                 {canDelete && (
@@ -1494,6 +1495,7 @@ function loadBrand(): EmailBrand {
 }
 
 function NotificationsTab({ companies }: { companies: CRMCompany[] }) {
+  const isMobile = useIsMobile();
   const { can } = usePermissions();
   const canSend = can('corporatecrm', 'can_edit');
 
@@ -1563,7 +1565,7 @@ function NotificationsTab({ companies }: { companies: CRMCompany[] }) {
   const field: React.CSSProperties = { width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: 16, alignItems: 'start' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '340px 1fr', gap: 16, alignItems: 'start' }}>
       {/* Recipients */}
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: 14, borderBottom: '1px solid #F3F3F3', display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -1749,7 +1751,7 @@ function EmailDesignerTab() {
   const disabled = !canEdit;
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, alignItems: 'start' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16, alignItems: 'start' }}>
       {/* Editor */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 16px', fontSize: 13, fontWeight: 600 }}>{error}</div>}
@@ -1828,7 +1830,7 @@ function EmailDesignerTab() {
                 ))}
               </div>
             )}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
               <div>
                 <FieldLabel>From Name</FieldLabel>
                 <input value={newSender.from_name} onChange={(e) => setNewSender((v) => ({ ...v, from_name: e.target.value }))} placeholder="EVOne Corporate Charging" style={field} />

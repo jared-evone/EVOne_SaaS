@@ -3,6 +3,7 @@ import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { Search } from 'lucide-react';
+import { useIsMobile } from '../lib/useIsMobile';
 import {
   DEPARTMENT_LABELS, DEPARTMENT_SCREENS, SCREEN_LABELS, usePermissions,
   type ScreenKey, type ScreenCap, type Department,
@@ -71,7 +72,7 @@ export function ScreenSettings() {
       </div>
 
       {/* KPIs */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label={`${DEPARTMENT_LABELS[department]} Users`} value={String(users.length)} sub="in this department" accent />
         <KPICard label="Active Users" value={String(users.filter((u) => u.is_active).length)} sub="can sign in" />
         <KPICard label="Total Roles"  value={String(roles.length)} sub={`${roles.filter((r) => r.is_system).length} system`} />
@@ -140,8 +141,8 @@ function UsersTab({ users, roles, department, onRefresh }: UsersTabProps) {
         </button>
       </div>
 
-      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
+        <table style={{ width: '100%', minWidth: 660, borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: C.seasalt }}>
               {['#', 'Name', 'Email', 'Role', 'Status', ''].map((h) => (
@@ -236,7 +237,7 @@ function UserModal({ initial, title, roles, onSave, onDelete, onClose }: UserMod
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 480, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 480, maxWidth: 'calc(100vw - 24px)', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{title}</div>
           <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
@@ -304,13 +305,14 @@ interface RolesTabProps {
 }
 
 function RolesTab({ roles, department, departmentScreens, onRefresh }: RolesTabProps) {
+  const isMobile = useIsMobile();
   const [selectedId, setSelectedId] = useState<string | null>(roles[0]?.id ?? null);
   const [adding, setAdding] = useState(false);
 
   const selected = roles.find((r) => r.id === selectedId) ?? null;
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 16, alignItems: 'flex-start' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '280px 1fr', gap: 16, alignItems: 'flex-start' }}>
       {/* Role list */}
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '14px 16px', borderBottom: '1px solid #F3F3F3', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
@@ -535,8 +537,8 @@ function RoleEditor({ role, departmentScreens, onRefresh, onDeleted }: RoleEdito
       )}
 
       {/* Permission matrix */}
-      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
+        <table style={{ width: '100%', minWidth: 600, borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: C.seasalt }}>
               <th style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB' }}>
@@ -625,7 +627,7 @@ function RoleModal({ initial, title, onSave, onClose }: RoleModalProps) {
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 480, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 480, maxWidth: 'calc(100vw - 24px)', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{title}</div>
           <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>

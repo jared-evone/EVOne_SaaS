@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { C } from '../../theme';
+import { useIsMobile } from '../../lib/useIsMobile';
 import { Logo } from '../../components/Logo';
 import { Download as DownloadIcon, Power } from 'lucide-react';
 import {
@@ -99,12 +100,13 @@ export function PICReviewBoard() {
   );
   const [selectedId, setSelectedId] = useState<string | null>(visible[0]?.id ?? null);
   const selected = visible.find((w) => w.id === selectedId) ?? null;
+  const isMobile = useIsMobile();
 
   return (
     <div
       style={{
         display: 'grid',
-        gridTemplateColumns: '340px 1fr',
+        gridTemplateColumns: isMobile ? '1fr' : '340px 1fr',
         gap: 20,
       }}
     >

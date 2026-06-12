@@ -129,7 +129,7 @@ function InvoiceModal({ invoice, onClose, onSave, onDelete }: InvoiceModalProps)
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
     >
       <div
-        style={{ background: C.white, borderRadius: 20, width: 640, maxHeight: '90vh', overflowY: 'auto', padding: 28, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}
+        style={{ background: C.white, borderRadius: 20, width: 640, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', padding: 28, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}
       >
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -172,7 +172,7 @@ function InvoiceModal({ invoice, onClose, onSave, onDelete }: InvoiceModalProps)
         {/* Customer details */}
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: C.green }}>Bill To</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
             <div style={{ gridColumn: '1/-1' }}>
               <label style={{ fontSize: 11, fontWeight: 600, color: C.slate, display: 'block', marginBottom: 5 }}>Customer / Company</label>
               <input
@@ -204,7 +204,7 @@ function InvoiceModal({ invoice, onClose, onSave, onDelete }: InvoiceModalProps)
         </div>
 
         {/* Dates */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <div>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Issue Date</label>
             <input
@@ -231,6 +231,8 @@ function InvoiceModal({ invoice, onClose, onSave, onDelete }: InvoiceModalProps)
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Line Items</label>
             <button onClick={addItem} style={{ fontSize: 12, fontWeight: 600, color: C.green, background: C.honeydew, border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontFamily: 'Figtree' }}>+ Add Item</button>
           </div>
+          <div style={{ overflowX: 'auto' }}>
+          <div style={{ minWidth: 560 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 70px 90px 90px 32px', gap: 8, marginBottom: 6 }}>
             {['Product', 'Qty', 'Unit Price', 'Subtotal', ''].map((h, i) => (
               <div key={i} style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{h}</div>
@@ -269,6 +271,8 @@ function InvoiceModal({ invoice, onClose, onSave, onDelete }: InvoiceModalProps)
               </div>
             );
           })}
+          </div>
+          </div>
 
           {/* Totals */}
           <div style={{ borderTop: '1px solid #F3F3F3', marginTop: 8, paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 7 }}>
@@ -404,7 +408,7 @@ export function ScreenInvoices() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {/* KPIs */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Total Invoices (YTD)"  value="412"                                     sub="vs 358 last year" trend="15.1%" trendUp accent />
         <KPICard label="Collected This Month"  value={`RM ${(totalPaid / 1000).toFixed(1)}k`}  sub="Paid invoices"    trend="13%"   trendUp />
         <KPICard label="Avg. Invoice Value"    value="RM 4,246"                                sub="7kW + 22kW blended" trend="4.2%" trendUp />
@@ -452,8 +456,8 @@ export function ScreenInvoices() {
       </div>
 
       {/* Table */}
-      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
+        <table style={{ width: '100%', minWidth: 770, borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ background: C.seasalt }}>
               {['Invoice ID', 'Customer', 'Address', 'Product', 'Amount', 'Status', 'Date'].map((h) => (

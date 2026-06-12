@@ -166,7 +166,7 @@ export function BulkInvoiceUpload({ companies, onClose, onUploaded }: BulkInvoic
             </div>
 
             <div style={{ border: '1px solid #EBEBEB', borderRadius: 12, overflow: 'auto', maxHeight: '50vh' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 770 }}>
                 <thead>
                   <tr style={{ background: C.seasalt, position: 'sticky', top: 0, zIndex: 1 }}>
                     <th style={th}>File</th>

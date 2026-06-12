@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
 import { Search, Mail, Phone, Pencil, FileText, Upload, Download as DownloadIcon } from 'lucide-react';
 import { OneMapAutocomplete } from '../components/OneMapAutocomplete';
+import { useIsMobile } from '../lib/useIsMobile';
 import {
   type Customer,
   type CustomerType,
@@ -142,7 +143,7 @@ export function ScreenProjects() {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Companies" value={String(projects.length)} sub="in registry" accent />
         <KPICard label="Sites"     value={String(Object.values(siteCounts).reduce((a, b) => a + b, 0))} sub="across all customers" />
         <KPICard label="Chargers"  value={String(Object.values(chargerCounts).reduce((a, b) => a + b, 0))} sub="registered" />
@@ -172,7 +173,7 @@ export function ScreenProjects() {
 
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <table style={{ width: '100%', minWidth: 600, borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
                 {['Customer', 'Status', 'Sites', 'Chargers', 'Updated'].map((h) => (
@@ -298,7 +299,7 @@ function ProjectModal({ initial, title, customers, onSave, onClose }: ProjectMod
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 540, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 540, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{title}</div>
           <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
@@ -430,6 +431,7 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
   canDelete: boolean;
   onBack: () => Promise<void>;
 }) {
+  const isMobile = useIsMobile();
   const [project, setProject]   = useState<Project | null>(null);
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [contacts, setContacts] = useState<CustomerContact[]>([]);
@@ -548,7 +550,7 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
       )}
 
       {/* Two-column body */}
-      <div style={{ display: 'grid', gridTemplateColumns: '360px 1fr', gap: 18, alignItems: 'start' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '360px 1fr', gap: 18, alignItems: 'start' }}>
         {/* Left column */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <ProjectDetailsCard
@@ -876,7 +878,7 @@ function OverviewTab({ project, contacts, sites, onPickSite, canEdit, onAddSite 
   const chargerCount = sites.reduce((n, s) => n + s.site_chargers.length, 0);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
         <SummaryStat label="Sites"          value={String(sites.length)} />
         <SummaryStat label="Chargers"       value={String(chargerCount)} />
         <SummaryStat label="Contacts"       value={String(contacts.length)} />
@@ -1092,7 +1094,7 @@ function SiteModal({ title, initial, onSave, onClose }: {
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 520, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 520, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{title}</div>
           <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
@@ -1910,7 +1912,7 @@ function ContractCard({ charger, canEdit, onChargerChanged }: {
             </div>
           </label>
           {active && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignItems: 'start' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, alignItems: 'start' }}>
               <div>
                 <FieldLabel>Start Date</FieldLabel>
                 <input type="date" value={startDate ?? ''} onChange={(e) => setStartDate(e.target.value || null)}
@@ -2864,13 +2866,13 @@ function ChargerModal({ title, initial, siteName, brandModels, canDelete, canMan
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 580, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 580, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{title}</div>
           <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <div>
             <FieldLabel>Serial Number</FieldLabel>
             <input value={form.asset_tag} onChange={(e) => set('asset_tag', e.target.value)} placeholder="CHG-001" style={inputStyle()} autoFocus />
@@ -2911,7 +2913,7 @@ function ChargerModal({ title, initial, siteName, brandModels, canDelete, canMan
               Form A repeats every <strong>6 months</strong>, Form D every <strong>12 months</strong> from turn-on. The system always shows the <strong>next upcoming</strong> date so cold calls stay on track.
             </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
             <ReadOnlyField label="Next Form A (auto)" value={fmtDate(nextCycleDate(form.turn_on_date, 6))}  placeholder="Set turn-on date" />
             <ReadOnlyField label="Next Form D (auto)" value={fmtDate(nextCycleDate(form.turn_on_date, 12))} placeholder="Set turn-on date" />
           </div>
@@ -2919,7 +2921,7 @@ function ChargerModal({ title, initial, siteName, brandModels, canDelete, canMan
 
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Warranty</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, alignItems: 'start' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, alignItems: 'start' }}>
             <div>
               <FieldLabel>Years</FieldLabel>
               <input type="number" min={0} max={20} step={1}
@@ -3093,7 +3095,7 @@ function BrandModelsModal({ brandModels, onClose, onChanged }: {
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 520, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 520, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
             <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>Brand &amp; Model List</div>

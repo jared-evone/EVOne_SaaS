@@ -66,7 +66,7 @@ export function CustomerLogin({ onLoginChange }: Props) {
 
   return (
     <div style={{ display: 'flex', justifyContent: 'center', padding: '40px 20px' }}>
-      <form onSubmit={handleLogin} style={{ background: C.white, borderRadius: 20, padding: 32, width: 420, boxShadow: '0 8px 32px rgba(0,0,0,.06)', border: '1px solid #EBEBEB', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <form onSubmit={handleLogin} style={{ background: C.white, borderRadius: 20, padding: 32, width: 420, maxWidth: 'calc(100vw - 24px)', boxShadow: '0 8px 32px rgba(0,0,0,.06)', border: '1px solid #EBEBEB', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 4 }}>
           <Logo height={40} />
         </div>
@@ -161,7 +161,7 @@ function CustomerDashboard({ account, onLogout }: { account: PortalAccount; onLo
           <div style={{ padding: 40, textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</div>
         ) : (
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600 }}>
               <thead>
                 <tr style={{ background: C.seasalt }}>
                   {[

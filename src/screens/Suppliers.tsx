@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { Search } from 'lucide-react';
+import { useIsMobile } from '../lib/useIsMobile';
 
 interface SupplierData {
   id: string;
@@ -147,7 +148,7 @@ function SupplierModal({ supplier, onClose, onSave, onDelete }: SupplierModalPro
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
     >
-      <div style={{ background: C.white, borderRadius: 20, width: 620, maxHeight: '90vh', overflowY: 'auto', padding: 28, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ background: C.white, borderRadius: 20, width: 620, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', padding: 28, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
             <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{isNew ? 'Add Supplier' : form.name}</div>
@@ -157,7 +158,7 @@ function SupplierModal({ supplier, onClose, onSave, onDelete }: SupplierModalPro
         </div>
 
         {/* Status + Category */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <div>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Category</label>
             <select
@@ -203,7 +204,7 @@ function SupplierModal({ supplier, onClose, onSave, onDelete }: SupplierModalPro
         {/* Company info */}
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: C.green }}>Company Details</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
             <div style={{ gridColumn: '1/-1' }}>
               <label style={{ fontSize: 11, fontWeight: 600, color: C.slate, display: 'block', marginBottom: 5 }}>Company Name</label>
               <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="e.g. EVDB Technology Sdn Bhd" style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white }} />
@@ -232,7 +233,7 @@ function SupplierModal({ supplier, onClose, onSave, onDelete }: SupplierModalPro
         </div>
 
         {/* Terms */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
           <div>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Payment Terms</label>
             <select
@@ -346,6 +347,7 @@ function SupplierModal({ supplier, onClose, onSave, onDelete }: SupplierModalPro
 }
 
 export function ScreenSuppliers() {
+  const isMobile = useIsMobile();
   const [suppliersData, setSuppliersData] = useState<SupplierData[]>(INITIAL_SUPPLIERS_DATA);
   const [categoryFilter, setCategoryFilter] = useState<SupplierCategoryAll>('All');
   const [statusFilter, setStatusFilter] = useState<SupplierStatusAll>('All');
@@ -385,7 +387,7 @@ export function ScreenSuppliers() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {/* KPIs */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Active Suppliers"    value={activeCount}                              sub={`${suppliersData.length} total`} accent />
         <KPICard label="Total Spend (YTD)"   value={`RM ${(totalSpend / 1000).toFixed(0)}k`}  sub="All suppliers combined" trend="14%" trendUp />
         <KPICard label="Avg Supplier Rating" value={`${avgRating} ★`}                         sub="Out of 5.0" />
@@ -451,7 +453,7 @@ export function ScreenSuppliers() {
       </div>
 
       {/* List + detail */}
-      <div style={{ display: 'grid', gridTemplateColumns: selected ? '1fr 340px' : '1fr', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : selected ? '1fr 340px' : '1fr', gap: 16 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {filtered.map((s, i) => {
             const sc = SUPPLIER_STATUS_COLORS[s.status] ?? SUPPLIER_STATUS_COLORS.Active;

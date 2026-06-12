@@ -123,7 +123,7 @@ export function CarparksTab({ agg: aggInput, managed, locations, onRefresh }: Ca
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Distinct Carparks"  value={String(agg.length)} sub="seen in charging records" accent />
         <KPICard label="EVOne Network"      value={String(totalEvoneNetwork)} sub={`${agg.length ? Math.round(totalEvoneNetwork * 100 / agg.length) : 0}% of total`} />
         <KPICard label="Records (Network)"  value={managedRecords.toLocaleString()} sub="charging sessions" />
@@ -172,7 +172,7 @@ export function CarparksTab({ agg: aggInput, managed, locations, onRefresh }: Ca
 
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 770 }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
                 {['Carpark', 'Sources', 'Records', 'Energy', 'Revenue', 'Category', 'CPO Location'].map((h) => (

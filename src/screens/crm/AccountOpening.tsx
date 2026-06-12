@@ -159,7 +159,7 @@ function InviteModal({ template, onCreated, onClose }: InviteModalProps) {
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 520, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 520, maxWidth: 'calc(100vw - 24px)', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>
             {created ? 'Invite Created' : 'Send Account-Opening Invite'}
@@ -184,7 +184,7 @@ function InviteModal({ template, onCreated, onClose }: InviteModalProps) {
                   Shown to the customer right after the charging-network map. Leave at 0 if you don't want to display a tariff yet. The threshold is set by the customer's declared fleet size ({KWH_PER_VEHICLE} kWh per vehicle).
                 </div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
                 <div>
                   <FieldLabel>Pre-threshold</FieldLabel>
                   <input type="number" step="0.001" min="0" value={baseRate}
@@ -347,7 +347,7 @@ function ApplicationDetailModal({ application: app, template, onChanged, onClose
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 760, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 760, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
@@ -406,7 +406,7 @@ function ApplicationDetailModal({ application: app, template, onChanged, onClose
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
               <div>
                 <div style={{ fontSize: 12, fontWeight: 700, color: C.green, marginBottom: 8 }}>GoParkin Vehicles ({app.vehicle_plates.length})</div>
                 <div style={{ background: C.seasalt, borderRadius: 12, padding: 12, minHeight: 60, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -685,7 +685,7 @@ function FormDesigner({ template, onSaved }: FormDesignerProps) {
         <div style={{ fontSize: 12, color: C.slate }}>
           Vehicle plates and SP driver emails are always captured (they're required to auto-populate GoParkin / SP Vehicles on approval). Use these toggles to make them mandatory.
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 14, background: C.seasalt, borderRadius: 12, cursor: 'pointer' }}>
             <input type="checkbox" checked={form.vehicles_required} onChange={(e) => set('vehicles_required', e.target.checked)} style={{ width: 16, height: 16, accentColor: C.green, cursor: 'pointer' }} />
             <div>
@@ -710,7 +710,7 @@ function FormDesigner({ template, onSaved }: FormDesignerProps) {
             Upload a PDF for each platform. Applicants see View / Download buttons in the public form so they can follow the steps before submitting.
           </div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <InstructionPdfBox
             title="GoParkin App"
             path={form.goparkin_pdf_path}
@@ -780,7 +780,7 @@ function ApplicationsView({ applications, template, onRefresh }: ApplicationsVie
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Total Applications" value={String(counts.all)} sub="all-time" accent />
         <KPICard label="Pending Review"     value={String(counts.pending)} sub="awaiting approval" />
         <KPICard label="Approved"           value={String(counts.approved)} sub="customers onboarded" />
@@ -814,8 +814,8 @@ function ApplicationsView({ applications, template, onRefresh }: ApplicationsVie
         </button>
       </div>
 
-      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 660 }}>
           <thead>
             <tr style={{ background: C.seasalt }}>
               {['Company', 'Contact', 'Status', 'Submitted', 'Token', ''].map((h) => (

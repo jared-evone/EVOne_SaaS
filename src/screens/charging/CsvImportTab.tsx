@@ -354,7 +354,7 @@ export function CsvImportTab({ onUploaded }: CsvImportTabProps) {
 
           {/* Stats row */}
           {stats && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
               <StatTile label="Total Rows" value={stats.total.toLocaleString()} />
               <StatTile label="Ready to Insert" value={stats.ready.toLocaleString()} accent />
               <StatTile label="Duplicates Skipped" value={stats.dupes.toLocaleString()} sub="already in DB" />

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
+import { useIsMobile } from '../lib/useIsMobile';
 
 const PLATFORMS = [
   { id: 'instagram', label: 'Instagram', color: '#E1306C', icon: '📷' },
@@ -163,7 +164,7 @@ function PostModal({ post, onClose, onSave, onDelete }: PostModalProps) {
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
     >
-      <div style={{ background: C.white, borderRadius: 20, width: 560, maxHeight: '88vh', overflowY: 'auto', padding: 28, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ background: C.white, borderRadius: 20, width: 560, maxWidth: 'calc(100vw - 24px)', maxHeight: '88vh', overflowY: 'auto', padding: 28, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{isNew ? 'New Post' : 'Edit Post'}</div>
           <button onClick={onClose} style={{ border: 'none', background: '#F3F3F3', borderRadius: 8, width: 32, height: 32, cursor: 'pointer', fontSize: 16, color: C.slate }}>×</button>
@@ -213,7 +214,7 @@ function PostModal({ post, onClose, onSave, onDelete }: PostModalProps) {
         </div>
 
         {/* Type + Status */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <div>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Post Type</label>
             <select
@@ -241,7 +242,7 @@ function PostModal({ post, onClose, onSave, onDelete }: PostModalProps) {
         </div>
 
         {/* Date + Time */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
           <div>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Date</label>
             <input
@@ -312,6 +313,7 @@ function PostModal({ post, onClose, onSave, onDelete }: PostModalProps) {
 }
 
 export function ScreenSocial() {
+  const isMobile = useIsMobile();
   const [posts, setPosts] = useState<Post[]>(INITIAL_POSTS);
   const [view, setView] = useState<'calendar' | 'list'>('calendar');
   const [filterPlatform, setFilterPlatform] = useState<'all' | PlatformId>('all');
@@ -353,7 +355,7 @@ export function ScreenSocial() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {/* KPIs */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Scheduled"    value={totalScheduled} sub="Posts ready to go" accent />
         <KPICard label="Drafts"       value={totalDraft}     sub="In progress" />
         <KPICard label="Published"    value={totalPublished} sub="This month" />
@@ -483,6 +485,8 @@ export function ScreenSocial() {
           </div>
 
           {/* Day columns */}
+          <div style={{ overflowX: 'auto' }}>
+          <div style={{ minWidth: 700 }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', borderBottom: '1px solid #F3F3F3' }}>
             {weekDates.map((d, i) => {
               const isToday = formatDate(d) === '2026-05-04';
@@ -554,6 +558,8 @@ export function ScreenSocial() {
               );
             })}
           </div>
+          </div>
+          </div>
         </div>
       )}
 
@@ -565,7 +571,7 @@ export function ScreenSocial() {
               No posts match your filters.
             </div>
           )}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(3, 1fr)', gap: 12 }}>
             {filtered
               .slice()
               .sort((a, b) => a.date.localeCompare(b.date))
