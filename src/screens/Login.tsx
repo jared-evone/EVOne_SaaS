@@ -74,14 +74,14 @@ export function Login({ onLogin }: LoginProps) {
         </div>
 
         {/* Department cards */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10 }}>
           {DEPARTMENTS.map((d) => {
             const isActive = department === d.id;
             const Icon = d.icon;
             return (
               <button key={d.id} onClick={() => setDepartment(d.id)}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 12,
+                  display: 'flex', alignItems: 'center', gap: 12, minWidth: 0,
                   padding: '14px 16px', borderRadius: 14,
                   border: `2px solid ${isActive ? C.green : '#EBEBEB'}`,
                   background: isActive ? C.honeydew : C.white,

@@ -968,7 +968,7 @@ function OverlayInput({
             }}
           >
             {!strVal && <Camera size={16} strokeWidth={2} />}
-            <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={readPhoto} />
+            <input type="file" accept="image/*" style={{ display: 'none' }} onChange={readPhoto} />
           </label>
         )}
       </div>

@@ -1260,7 +1260,7 @@ function FieldRow({
                 <div style={{ display: 'flex', gap: 8 }}>
                   <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
                     <Camera size={12} strokeWidth={2.25} /> Replace
-                    <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={readGroupPhoto} />
+                    <input type="file" accept="image/*" style={{ display: 'none' }} onChange={readGroupPhoto} />
                   </label>
                   <button type="button" onClick={() => onChange(photoKey, '')} style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Remove</button>
                 </div>
@@ -1271,7 +1271,7 @@ function FieldRow({
           ) : (
             <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '16px', borderRadius: 10, border: '1.5px dashed #CBD5DD', background: '#F9F9F9', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
               <Camera size={16} strokeWidth={2.25} /> Take or upload photo
-              <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={readGroupPhoto} />
+              <input type="file" accept="image/*" style={{ display: 'none' }} onChange={readGroupPhoto} />
             </label>
           )}
         </div>
@@ -1309,7 +1309,7 @@ function FieldRow({
               <div style={{ display: 'flex', gap: 8 }}>
                 <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
                   <Camera size={13} strokeWidth={2.25} /> Replace
-                  <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={readPhoto} />
+                  <input type="file" accept="image/*" style={{ display: 'none' }} onChange={readPhoto} />
                 </label>
                 <button type="button" onClick={() => onChange(field.id, '')}
                   style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
@@ -1323,7 +1323,7 @@ function FieldRow({
         ) : (
           <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '18px', borderRadius: 10, border: '1.5px dashed #CBD5DD', background: '#F9F9F9', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
             <Camera size={16} strokeWidth={2.25} /> Take or upload photo
-            <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={readPhoto} />
+            <input type="file" accept="image/*" style={{ display: 'none' }} onChange={readPhoto} />
           </label>
         )}
       </div>
