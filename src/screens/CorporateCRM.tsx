@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabase';
 import { useIsMobile } from '../lib/useIsMobile';
 import { AccountOpening } from './crm/AccountOpening';
 import { usePermissions } from '../permissions';
-import { Search, Download as DownloadIcon, Mail } from 'lucide-react';
+import { Search, Download as DownloadIcon, Mail, ChevronDown, RotateCw } from 'lucide-react';
 import { FileText } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -31,7 +31,7 @@ interface CRMVehicle {
   crm_companies: { name: string } | null;
 }
 
-type CRMTab = 'companies' | 'vehicles' | 'sp' | 'opening' | 'email' | 'email_design';
+type CRMTab = 'companies' | 'vehicles' | 'sp' | 'opening' | 'email' | 'email_design' | 'email_audit';
 
 interface CRMDriver {
   id: string;
@@ -1358,6 +1358,222 @@ function SPDriversTab({ companies, error }: SPDriversTabProps) {
   );
 }
 
+// ── Email Audit ───────────────────────────────────────────────────
+// History of every notification send, the Resend daily quota, and
+// one-click resend of recipients that failed (e.g. after the limit reset).
+
+const RESEND_DAILY_LIMIT = 100; // Resend free tier; quota resets at midnight UTC
+
+interface EmailBatch {
+  id: string;
+  subject: string;
+  body: string;
+  from_address: string;
+  reply_to: string | null;
+  include_cc: boolean;
+  sent_by: string | null;
+  created_at: string;
+}
+
+interface EmailLogRow {
+  id: string;
+  batch_id: string;
+  company_id: string | null;
+  company_name: string;
+  to_email: string;
+  cc: string[];
+  status: 'sent' | 'failed';
+  error: string | null;
+  attempts: number;
+  sent_at: string | null;
+}
+
+function EmailAuditTab({ companies }: { companies: CRMCompany[] }) {
+  const { can } = usePermissions();
+  const canSend = can('corporatecrm', 'can_edit');
+
+  const [batches, setBatches] = useState<EmailBatch[]>([]);
+  const [logs, setLogs] = useState<EmailLogRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [resending, setResending] = useState<{ batchId: string; done: number; total: number } | null>(null);
+  const [brand, setBrand] = useState<EmailBrand>(DEFAULT_BRAND);
+
+  const fetchAll = async () => {
+    const [b, l, br] = await Promise.all([
+      supabase.from('crm_email_batches').select('*').order('created_at', { ascending: false }).limit(100),
+      supabase.from('crm_email_log').select('*').order('created_at'),
+      fetchBrand(),
+    ]);
+    const err = b.error ?? l.error;
+    if (err) { setError(err.message); setLoading(false); return; }
+    setBatches((b.data ?? []) as EmailBatch[]);
+    setLogs((l.data ?? []) as EmailLogRow[]);
+    setBrand(br);
+    setLoading(false);
+  };
+
+  useEffect(() => { void fetchAll(); }, []);
+
+  // Resend's quota resets at midnight UTC — count successful sends today (UTC).
+  const utcToday = new Date().toISOString().slice(0, 10);
+  const sentToday = logs.filter((r) => r.sent_at && r.sent_at.slice(0, 10) === utcToday).length;
+  const remaining = Math.max(0, RESEND_DAILY_LIMIT - sentToday);
+  const usagePct = Math.min(100, Math.round((sentToday / RESEND_DAILY_LIMIT) * 100));
+
+  const logsByBatch = new Map<string, EmailLogRow[]>();
+  for (const r of logs) {
+    const arr = logsByBatch.get(r.batch_id) ?? [];
+    arr.push(r);
+    logsByBatch.set(r.batch_id, arr);
+  }
+
+  const resendFailed = async (batch: EmailBatch) => {
+    const failedRows = (logsByBatch.get(batch.id) ?? []).filter((r) => r.status === 'failed');
+    if (failedRows.length === 0 || resending) return;
+    setError(null);
+    setResending({ batchId: batch.id, done: 0, total: failedRows.length });
+    for (let i = 0; i < failedRows.length; i++) {
+      const row = failedRows[i];
+      // Prefer the company's current invoice email in case it was fixed since.
+      const company = row.company_id ? companies.find((c) => c.id === row.company_id) : undefined;
+      const to = company?.invoice_email || row.to_email;
+      const cc = batch.include_cc ? (company?.invoice_cc_emails ?? row.cc ?? []) : [];
+      const subj = batch.subject.replace(/\{\{\s*company\s*\}\}/gi, row.company_name);
+      const html = buildEmailHtml(batch.body, row.company_name, brand);
+      let errMsg: string | null = null;
+      try {
+        const { data, error: err } = await supabase.functions.invoke('send-customer-email', {
+          body: { to: [to], cc, subject: subj, html, from: batch.from_address, replyTo: batch.reply_to || undefined },
+        });
+        errMsg = (data as { error?: string } | null)?.error ?? err?.message ?? null;
+      } catch (e) {
+        errMsg = (e as Error).message || 'failed';
+      }
+      await supabase.from('crm_email_log').update({
+        status: errMsg ? 'failed' : 'sent',
+        error: errMsg,
+        attempts: row.attempts + 1,
+        to_email: to,
+        sent_at: errMsg ? null : new Date().toISOString(),
+      }).eq('id', row.id);
+      setResending({ batchId: batch.id, done: i + 1, total: failedRows.length });
+    }
+    setResending(null);
+    await fetchAll();
+  };
+
+  if (loading) {
+    return <div style={{ padding: '60px 20px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading send history…</div>;
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {error && (
+        <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 12, padding: '12px 16px', fontSize: 13, fontWeight: 600 }}>{error}</div>
+      )}
+
+      {/* Daily quota */}
+      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 14, fontWeight: 700, color: C.green }}>Resend Daily Quota</span>
+          <span style={{ fontSize: 12, color: C.slate }}>resets at midnight UTC</span>
+          <span style={{ marginLeft: 'auto', fontSize: 13, fontWeight: 700, color: remaining === 0 ? '#C0321A' : '#1a1a1a' }}>
+            {sentToday} / {RESEND_DAILY_LIMIT} sent today · {remaining} remaining
+          </span>
+        </div>
+        <div style={{ height: 10, borderRadius: 99, background: '#F3F3F3', overflow: 'hidden' }}>
+          <div style={{ width: `${usagePct}%`, height: '100%', borderRadius: 99, background: usagePct >= 100 ? '#C0321A' : usagePct >= 80 ? '#B07D00' : C.green, transition: 'width .3s' }} />
+        </div>
+        {remaining === 0 && (
+          <div style={{ fontSize: 12, color: '#C0321A', fontWeight: 600 }}>
+            Daily limit reached — failed recipients below can be resent after the quota resets.
+          </div>
+        )}
+      </div>
+
+      {/* Batch history */}
+      {batches.length === 0 ? (
+        <div style={{ background: C.white, borderRadius: 16, border: '1px dashed #EBEBEB', padding: '60px 24px', textAlign: 'center' }}>
+          <div style={{ marginBottom: 12, display: 'inline-flex' }}><Mail size={32} strokeWidth={1.5} color={C.slate} /></div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.green, marginBottom: 4 }}>No sends recorded yet</div>
+          <div style={{ fontSize: 12, color: C.slate }}>Every notification sent from the Notifications tab is logged here per recipient.</div>
+        </div>
+      ) : batches.map((b) => {
+        const rows = logsByBatch.get(b.id) ?? [];
+        const sentCount = rows.filter((r) => r.status === 'sent').length;
+        const failedCount = rows.length - sentCount;
+        const isOpen = expanded === b.id;
+        const busy = resending?.batchId === b.id;
+        const when = new Date(b.created_at).toLocaleString();
+        return (
+          <div key={b.id} style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
+            <button onClick={() => setExpanded(isOpen ? null : b.id)}
+              style={{ width: '100%', textAlign: 'left', border: 'none', background: 'transparent', cursor: 'pointer', padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 12, fontFamily: 'Figtree', flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.subject}</div>
+                <div style={{ fontSize: 11, color: C.slate, marginTop: 3 }}>
+                  {when} · {b.from_address}{b.sent_by ? ` · by ${b.sent_by}` : ''}
+                </div>
+              </div>
+              <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, background: '#E4F3E3', color: '#1B512D' }}>{sentCount} sent</span>
+              {failedCount > 0 && (
+                <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, background: '#FDEAEA', color: '#C0321A' }}>{failedCount} failed</span>
+              )}
+              <ChevronDown size={16} strokeWidth={2.25} style={{ color: C.slate, transition: 'transform .15s', transform: isOpen ? 'rotate(180deg)' : 'none', flexShrink: 0 }} />
+            </button>
+
+            {isOpen && (
+              <div style={{ borderTop: '1px solid #F3F3F3' }}>
+                {failedCount > 0 && canSend && (
+                  <div style={{ padding: '12px 20px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', background: '#FFF8E1' }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: '#B07D00', flex: 1, minWidth: 200 }}>
+                      {failedCount} recipient{failedCount === 1 ? '' : 's'} did not receive this email.
+                    </span>
+                    <button onClick={() => void resendFailed(b)} disabled={!!resending}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 10, border: 'none', background: resending ? '#A5D6A7' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: resending ? 'default' : 'pointer' }}>
+                      <RotateCw size={13} strokeWidth={2.25} />
+                      {busy ? `Resending ${resending!.done}/${resending!.total}…` : `Resend to ${failedCount} failed`}
+                    </button>
+                  </div>
+                )}
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', minWidth: 640, borderCollapse: 'collapse', fontSize: 13 }}>
+                    <thead>
+                      <tr style={{ background: C.seasalt }}>
+                        {['Company', 'Email', 'Status', 'Attempts', 'Sent At', 'Error'].map((h) => (
+                          <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((r) => (
+                        <tr key={r.id} style={{ borderBottom: '1px solid #F3F3F3' }}>
+                          <td style={{ padding: '11px 16px', fontWeight: 600 }}>{r.company_name}</td>
+                          <td style={{ padding: '11px 16px', color: C.slate }}>{r.to_email}{r.cc.length > 0 ? ` +${r.cc.length} cc` : ''}</td>
+                          <td style={{ padding: '11px 16px' }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, background: r.status === 'sent' ? '#E4F3E3' : '#FDEAEA', color: r.status === 'sent' ? '#1B512D' : '#C0321A' }}>
+                              {r.status === 'sent' ? 'Sent' : 'Failed'}
+                            </span>
+                          </td>
+                          <td style={{ padding: '11px 16px', color: C.slate }}>{r.attempts}</td>
+                          <td style={{ padding: '11px 16px', color: C.slate }}>{r.sent_at ? new Date(r.sent_at).toLocaleString() : '—'}</td>
+                          <td style={{ padding: '11px 16px', color: '#C0321A', fontSize: 12, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.error ?? ''}>{r.error ?? ''}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Root ──────────────────────────────────────────────────────────
 
 export function ScreenCorporateCRM() {
@@ -1382,6 +1598,7 @@ export function ScreenCorporateCRM() {
     { id: 'opening',   label: 'Account Opening' },
     { id: 'email',     label: 'Notifications' },
     { id: 'email_design', label: 'Email Designer' },
+    { id: 'email_audit', label: 'Email Audit' },
   ];
 
   if (loading) {
@@ -1408,6 +1625,7 @@ export function ScreenCorporateCRM() {
       {tab === 'opening'   && <AccountOpening />}
       {tab === 'email'     && <NotificationsTab companies={companies} />}
       {tab === 'email_design' && <EmailDesignerTab />}
+      {tab === 'email_audit' && <EmailAuditTab companies={companies} />}
     </div>
   );
 }
@@ -1495,7 +1713,7 @@ async function fetchBrand(): Promise<EmailBrand> {
 
 function NotificationsTab({ companies }: { companies: CRMCompany[] }) {
   const isMobile = useIsMobile();
-  const { can } = usePermissions();
+  const { can, user } = usePermissions();
   const canSend = can('corporatecrm', 'can_edit');
 
   const recipients = companies.filter((c) => !!(c.invoice_email && c.invoice_email.trim()));
@@ -1542,21 +1760,44 @@ function NotificationsTab({ companies }: { companies: CRMCompany[] }) {
     if (!canSubmit) return;
     setError(null); setResult(null);
     setSending({ done: 0, total: targets.length });
+
+    // Audit trail — every recipient gets a crm_email_log row, so partial sends
+    // (e.g. hitting the Resend daily limit) can be resumed from the Email Audit tab.
+    const { data: batchRow, error: batchErr } = await supabase
+      .from('crm_email_batches')
+      .insert({ subject, body, from_address: fromAddress, reply_to: replyToVal || null, include_cc: includeCc, sent_by: user.full_name })
+      .select('id')
+      .single();
+    if (batchErr) { setError(`Could not start the send audit log: ${batchErr.message}`); setSending(null); return; }
+    const batchId = (batchRow as { id: string }).id;
+
     let sent = 0;
     const failed: { name: string; error: string }[] = [];
     for (let i = 0; i < targets.length; i++) {
       const c = targets[i];
       const subj = subject.replace(/\{\{\s*company\s*\}\}/gi, c.name);
       const html = buildEmailHtml(body, c.name, brand);
+      const cc = includeCc ? (c.invoice_cc_emails ?? []) : [];
+      let errMsg: string | null = null;
       try {
         const { data, error: err } = await supabase.functions.invoke('send-customer-email', {
-          body: { to: [c.invoice_email], cc: includeCc ? (c.invoice_cc_emails ?? []) : [], subject: subj, html, from: fromAddress, replyTo: replyToVal || undefined },
+          body: { to: [c.invoice_email], cc, subject: subj, html, from: fromAddress, replyTo: replyToVal || undefined },
         });
-        const e = (data as { error?: string } | null)?.error ?? err?.message;
-        if (e) failed.push({ name: c.name, error: e }); else sent++;
+        errMsg = (data as { error?: string } | null)?.error ?? err?.message ?? null;
       } catch (e) {
-        failed.push({ name: c.name, error: (e as Error).message ?? 'failed' });
+        errMsg = (e as Error).message || 'failed';
       }
+      if (errMsg) failed.push({ name: c.name, error: errMsg }); else sent++;
+      await supabase.from('crm_email_log').insert({
+        batch_id: batchId,
+        company_id: c.id,
+        company_name: c.name,
+        to_email: c.invoice_email,
+        cc,
+        status: errMsg ? 'failed' : 'sent',
+        error: errMsg,
+        sent_at: errMsg ? null : new Date().toISOString(),
+      });
       setSending({ done: i + 1, total: targets.length });
     }
     setSending(null);
@@ -1615,6 +1856,11 @@ function NotificationsTab({ companies }: { companies: CRMCompany[] }) {
           <div style={{ background: result.failed.length === 0 ? C.honeydew : '#FFF8E1', color: result.failed.length === 0 ? C.green : '#B07D00', borderRadius: 12, padding: '12px 16px', fontSize: 13 }}>
             <div style={{ fontWeight: 700 }}>✓ Sent {result.sent} email{result.sent === 1 ? '' : 's'}{result.failed.length > 0 ? ` · ${result.failed.length} failed` : ''}.</div>
             {result.failed.slice(0, 5).map((f) => <div key={f.name} style={{ fontSize: 11, marginTop: 2 }}>{f.name}: {f.error}</div>)}
+            {result.failed.length > 0 && (
+              <div style={{ fontSize: 11, marginTop: 4, fontWeight: 600 }}>
+                Failed recipients are tracked in the <strong>Email Audit</strong> tab — resend them from there once the quota allows.
+              </div>
+            )}
           </div>
         )}
 
