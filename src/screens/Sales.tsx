@@ -4,7 +4,7 @@ import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
 import { useIsMobile } from '../lib/useIsMobile';
-import { Search, ChevronDown, Handshake, FileUp, FileText, X } from 'lucide-react';
+import { Search, ChevronDown, ChevronLeft, ChevronRight, Handshake, FileUp, FileText, X, Plus } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -37,11 +37,20 @@ export interface Quote {
   pdf_path: string | null;
   pdf_filename: string | null;
   files: QuoteFile[];
+  versions: QuoteVersion[];
 }
 
 export interface QuoteFile {
   path: string;
   name: string;
+}
+
+// An opportunity can carry several quotation versions, each its own amount + PDF.
+// The pipeline value uses the LARGEST amount across versions (stored in `total`).
+export interface QuoteVersion {
+  amount: number;
+  pdf_path: string | null;
+  pdf_filename: string | null;
 }
 
 interface CustomerOpt {
@@ -228,6 +237,13 @@ export function ScreenSales() {
   const wonValue = won.reduce((s, q) => s + Number(q.total), 0);
   const winRate = won.length + lost.length > 0 ? Math.round((won.length / (won.length + lost.length)) * 100) : null;
 
+  // This calendar month — open quotes by created date, won quotes by won date.
+  const thisMonth = todayStr().slice(0, 7);
+  const openThisMonth = open.filter((q) => q.quote_date?.startsWith(thisMonth));
+  const wonThisMonth = won.filter((q) => (q.outcome_date ?? q.quote_date)?.startsWith(thisMonth));
+  const pipelineThisMonth = openThisMonth.reduce((s, q) => s + Number(q.total), 0);
+  const wonValueThisMonth = wonThisMonth.reduce((s, q) => s + Number(q.total), 0);
+
   const pill = (active: boolean): React.CSSProperties => ({
     padding: '7px 14px', borderRadius: 99, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700,
     cursor: 'pointer', border: active ? 'none' : '1px solid #EBEBEB',
@@ -238,9 +254,12 @@ export function ScreenSales() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {/* KPI row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
-        <KPICard accent label="Pipeline Value" value={fmtMoney(pipelineValue)} sub={`${open.length} open quote${open.length === 1 ? '' : 's'}`} />
-        <KPICard label="Won Value" value={fmtMoney(wonValue)} sub={`${won.length} won`} />
-        <KPICard label="Engaging Leads" value={String(open.length)} sub={`${scoped.filter((q) => q.status === 'Sent').length} awaiting response`} />
+        <KPICard accent label="Pipeline Value" value={fmtMoney(pipelineValue)}
+          sub={<><div style={{ fontSize: 14, fontWeight: 700 }}>This month: {fmtMoney(pipelineThisMonth)}</div><div style={{ marginTop: 4, opacity: 0.9 }}>{open.length} open quote{open.length === 1 ? '' : 's'}</div></>} />
+        <KPICard label="Won Value" value={fmtMoney(wonValue)}
+          sub={<><div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>This month: {fmtMoney(wonValueThisMonth)}</div><div style={{ marginTop: 4 }}>{won.length} won</div></>} />
+        <KPICard label="Engaging Leads" value={String(open.length)}
+          sub={<><div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>This month: {openThisMonth.length}</div><div style={{ marginTop: 4 }}>{scoped.filter((q) => q.status === 'Sent').length} awaiting response</div></>} />
         <KPICard label="Win Rate" value={winRate === null ? '—' : `${winRate}%`} sub={`${won.length} won · ${lost.length} lost`} />
       </div>
 
@@ -368,6 +387,8 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
   onDropStatus: (q: Quote, s: QuoteStatus) => void;
 }) {
   const [dragOver, setDragOver] = useState<QuoteStatus | null>(null);
+  const [pages, setPages] = useState<Record<string, number>>({});
+  const PER_PAGE = 5;
 
   return (
     <div style={{ overflowX: 'auto' }}>
@@ -377,6 +398,10 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
           const colValue = col.reduce((s, q) => s + Number(q.total), 0);
           const sc = QUOTE_STATUS_COLORS[status];
           const isTarget = dragOver === status;
+          const totalPages = Math.max(1, Math.ceil(col.length / PER_PAGE));
+          const page = Math.min(pages[status] ?? 0, totalPages - 1);
+          const pageCol = col.slice(page * PER_PAGE, page * PER_PAGE + PER_PAGE);
+          const setPage = (p: number) => setPages((prev) => ({ ...prev, [status]: Math.max(0, Math.min(totalPages - 1, p)) }));
           return (
             <div key={status}
               onDragOver={canEdit ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dragOver !== status) setDragOver(status); } : undefined}
@@ -398,7 +423,7 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                 <span style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>{col.length}</span>
                 <span style={{ marginLeft: 'auto', fontSize: 11, color: C.slate, fontWeight: 600 }}>{fmtMoney(colValue)}</span>
               </div>
-              {col.map((q) => (
+              {pageCol.map((q) => (
                 <button key={q.id}
                   draggable={canEdit}
                   onDragStart={canEdit ? (e) => { e.dataTransfer.setData('text/plain', q.id); e.dataTransfer.effectAllowed = 'move'; } : undefined}
@@ -429,6 +454,19 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
               {col.length === 0 && (
                 <div style={{ padding: '18px 8px', textAlign: 'center', fontSize: 11, color: C.slate, border: '1px dashed #E0E5E9', borderRadius: 10 }}>
                   {canEdit ? 'Drop quotes here' : 'Empty'}
+                </div>
+              )}
+              {totalPages > 1 && (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginTop: 2 }}>
+                  <button onClick={() => setPage(page - 1)} disabled={page === 0}
+                    style={{ width: 28, height: 28, borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: page === 0 ? '#CBD5DD' : C.slate, cursor: page === 0 ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <ChevronLeft size={15} strokeWidth={2.25} />
+                  </button>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: C.slate }}>{page + 1} / {totalPages}</span>
+                  <button onClick={() => setPage(page + 1)} disabled={page >= totalPages - 1}
+                    style={{ width: 28, height: 28, borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: page >= totalPages - 1 ? '#CBD5DD' : C.slate, cursor: page >= totalPages - 1 ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <ChevronRight size={15} strokeWidth={2.25} />
+                  </button>
                 </div>
               )}
             </div>
@@ -502,7 +540,6 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
     salesperson_id: quote?.salesperson_id ?? salespersonId,
     salesperson_name: quote?.salesperson_name ?? salespersonName,
     status: quote?.status ?? ('Draft' as QuoteStatus),
-    total: quote?.total ?? 0,
     notes: quote?.notes ?? '',
     quote_date: quote?.quote_date ?? todayStr(),
     outcome_date: quote?.outcome_date ?? '',
@@ -521,30 +558,35 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  // Amount as free text so the user can type or PASTE "$50,000.00" / "50,000";
-  // we strip everything but digits and a decimal point to derive the number.
-  const [amountText, setAmountText] = useState(quote?.total ? String(quote.total) : '');
-  const setAmount = (raw: string) => {
-    const cleaned = raw.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1');
-    setAmountText(cleaned);
-    setForm((f) => ({ ...f, total: Number(cleaned) || 0 }));
-  };
-  // Files: already-uploaded ones kept on the quote, plus freshly-picked ones
-  // pending upload. Back-compat: fall back to the legacy single pdf_path.
-  const initialFiles: QuoteFile[] = quote?.files?.length
-    ? quote.files
-    : (quote?.pdf_path ? [{ path: quote.pdf_path, name: quote.pdf_filename ?? 'quotation.pdf' }] : []);
-  const [existingFiles, setExistingFiles] = useState<QuoteFile[]>(initialFiles);
-  const [newFiles, setNewFiles] = useState<File[]>([]);
 
-  const pickFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const picked = Array.from(e.target.files ?? []);
+  // Quotation versions: each is a PDF + an amount. The pipeline counts the largest.
+  interface VersionDraft { amountText: string; pdfPath: string | null; pdfName: string | null; newFile: File | null; }
+  const seedVersions: VersionDraft[] = quote?.versions?.length
+    ? quote.versions.map((v) => ({ amountText: v.amount ? String(v.amount) : '', pdfPath: v.pdf_path, pdfName: v.pdf_filename, newFile: null }))
+    : [{
+        amountText: quote?.total ? String(quote.total) : '',
+        pdfPath: quote?.files?.[0]?.path ?? quote?.pdf_path ?? null,
+        pdfName: quote?.files?.[0]?.name ?? quote?.pdf_filename ?? null,
+        newFile: null,
+      }];
+  const [versions, setVersions] = useState<VersionDraft[]>(seedVersions);
+
+  const patchVersion = (i: number, patch: Partial<VersionDraft>) =>
+    setVersions((vs) => vs.map((v, idx) => (idx === i ? { ...v, ...patch } : v)));
+  const setVAmount = (i: number, raw: string) =>
+    patchVersion(i, { amountText: raw.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1') });
+  const pickVFile = (i: number, e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
     e.target.value = '';
-    const pdfs = picked.filter((f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name));
-    if (pdfs.length !== picked.length) setError('Only PDF files can be attached.');
-    else setError(null);
-    if (pdfs.length) setNewFiles((prev) => [...prev, ...pdfs]);
+    if (!f) return;
+    if (f.type !== 'application/pdf' && !/\.pdf$/i.test(f.name)) { setError('Only PDF files can be attached.'); return; }
+    setError(null);
+    patchVersion(i, { newFile: f, pdfName: f.name });
   };
+  const clearVFile = (i: number) => patchVersion(i, { newFile: null, pdfPath: null, pdfName: null });
+  const addVersion = () => setVersions((vs) => [...vs, { amountText: '', pdfPath: null, pdfName: null, newFile: null }]);
+  const removeVersion = (i: number) => setVersions((vs) => vs.filter((_, idx) => idx !== i));
+  const maxAmount = Math.max(0, ...versions.map((v) => Number(v.amountText) || 0));
 
   const viewFile = async (path: string) => {
     const { data } = await supabase.storage.from('sales-quotations').createSignedUrl(path, 60);
@@ -569,27 +611,37 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
     }));
   };
 
-  const total = Math.max(0, Number(form.total) || 0);
-  // Files are optional — a quote can be saved once a customer, salesperson and amount are set.
-  // A Lost quote additionally requires a lost reason.
+  // A quote can be saved once a customer, salesperson and at least one quotation
+  // amount are set; PDFs stay optional. A Lost quote additionally needs a reason.
   const lostReasonOk = form.status !== 'Lost' || form.lost_reason.trim().length > 0;
-  const canSave = !!form.customer_id && !!form.salesperson_id && total > 0 && lostReasonOk && !saving;
+  const canSave = !!form.customer_id && !!form.salesperson_id && maxAmount > 0 && lostReasonOk && !saving;
 
   const handleSave = async () => {
     if (!canSave) return;
     setSaving(true);
     setError(null);
 
-    // Upload any newly-picked files; keep the already-attached ones.
-    const uploaded: QuoteFile[] = [];
-    for (const file of newFiles) {
-      const safe = file.name.replace(/[^a-zA-Z0-9.]/g, '_');
-      const path = `quote_${Date.now()}_${Math.round(performance.now() % 1000)}_${safe}`;
-      const { error: upErr } = await supabase.storage.from('sales-quotations').upload(path, file, { upsert: true, contentType: 'application/pdf' });
-      if (upErr) { setError(`Upload failed (${file.name}): ${upErr.message}`); setSaving(false); return; }
-      uploaded.push({ path, name: file.name });
+    // Upload any newly-picked version PDFs, then build the versions array.
+    const outVersions: QuoteVersion[] = [];
+    for (const v of versions) {
+      const amount = Math.max(0, Number(v.amountText) || 0);
+      let pdf_path = v.pdfPath;
+      let pdf_filename = v.pdfName;
+      if (v.newFile) {
+        const safe = v.newFile.name.replace(/[^a-zA-Z0-9.]/g, '_');
+        const path = `quote_${Date.now()}_${Math.round(performance.now() % 1000)}_${safe}`;
+        const { error: upErr } = await supabase.storage.from('sales-quotations').upload(path, v.newFile, { upsert: true, contentType: 'application/pdf' });
+        if (upErr) { setError(`Upload failed (${v.newFile.name}): ${upErr.message}`); setSaving(false); return; }
+        pdf_path = path;
+        pdf_filename = v.newFile.name;
+      }
+      if (amount <= 0 && !pdf_path) continue; // drop empty rows
+      outVersions.push({ amount, pdf_path, pdf_filename });
     }
-    const files = [...existingFiles, ...uploaded];
+    const total = Math.max(0, ...outVersions.map((v) => v.amount), 0);
+    const files: QuoteFile[] = outVersions
+      .filter((v) => v.pdf_path)
+      .map((v) => ({ path: v.pdf_path as string, name: v.pdf_filename ?? 'quotation.pdf' }));
 
     const payload = {
       customer_id: form.customer_id || null,
@@ -600,6 +652,7 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
       salesperson_name: form.salesperson_name,
       status: form.status,
       total,
+      versions: outVersions,
       notes: form.notes || null,
       files,
       quote_date: form.quote_date || todayStr(),
@@ -716,15 +769,6 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
           )}
         </div>
 
-        {/* Final amount */}
-        <div>
-          <label style={label}>Final Amount ($)</label>
-          <input type="text" inputMode="decimal" value={amountText} disabled={readOnly}
-            onChange={(e) => setAmount(e.target.value)}
-            onPaste={(e) => { e.preventDefault(); setAmount(amountText + e.clipboardData.getData('text')); }}
-            placeholder="0.00" style={{ ...input(readOnly), fontSize: 15, fontWeight: 700, color: C.green }} />
-        </div>
-
         {/* Created date */}
         <div>
           <label style={label}>Created Date</label>
@@ -732,45 +776,65 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
             onChange={(e) => setForm((f) => ({ ...f, quote_date: e.target.value }))} style={input(readOnly)} />
         </div>
 
-        {/* Quotation files */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <label style={{ ...label, marginBottom: 0 }}>Quotation Files (PDF)</label>
-          {(existingFiles.length > 0 || newFiles.length > 0) ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {existingFiles.map((f, i) => (
-                <div key={`e-${f.path}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 10, border: '1px solid #EBEBEB', background: C.white }}>
-                  <FileText size={14} color={C.slate} style={{ flexShrink: 0 }} />
-                  <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
-                  <button type="button" onClick={() => void viewFile(f.path)} style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', flexShrink: 0 }}>View</button>
-                  {!readOnly && (
-                    <button type="button" onClick={() => setExistingFiles((prev) => prev.filter((_, idx) => idx !== i))} style={{ width: 26, height: 26, borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        {/* Quotations — one or more versions, each a PDF + amount */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            <label style={{ ...label, marginBottom: 0 }}>Quotations</label>
+            <span style={{ fontSize: 11, color: C.slate }}>each version is a PDF + amount · pipeline uses the largest</span>
+          </div>
+          {versions.map((v, i) => {
+            const amt = Number(v.amountText) || 0;
+            const isMax = amt > 0 && amt === maxAmount;
+            return (
+              <div key={i} style={{ border: `1px solid ${isMax ? C.green : '#EBEBEB'}`, borderRadius: 12, padding: 12, display: 'flex', flexDirection: 'column', gap: 8, background: C.white }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: C.slate }}>Quote {i + 1}</span>
+                  {isMax && <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 6, background: C.honeydew, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Pipeline</span>}
+                  {!readOnly && versions.length > 1 && (
+                    <button type="button" onClick={() => removeVersion(i)} style={{ marginLeft: 'auto', width: 26, height: 26, borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
                       <X size={12} strokeWidth={2.5} />
                     </button>
                   )}
                 </div>
-              ))}
-              {newFiles.map((f, i) => (
-                <div key={`n-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 10, border: '1px dashed #CBD5DD', background: C.seasalt }}>
-                  <FileUp size={14} color={C.slate} style={{ flexShrink: 0 }} />
-                  <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
-                  <span style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0 }}>New</span>
-                  {!readOnly && (
-                    <button type="button" onClick={() => setNewFiles((prev) => prev.filter((_, idx) => idx !== i))} style={{ width: 26, height: 26, borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                      <X size={12} strokeWidth={2.5} />
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <span style={{ fontSize: 12, color: C.slate }}>No files attached yet.</span>
-          )}
+                <input type="text" inputMode="decimal" value={v.amountText} disabled={readOnly}
+                  onChange={(e) => setVAmount(i, e.target.value)}
+                  onPaste={(e) => { e.preventDefault(); setVAmount(i, v.amountText + e.clipboardData.getData('text')); }}
+                  placeholder="Amount ($)" style={{ ...input(readOnly), fontSize: 15, fontWeight: 700, color: C.green }} />
+                {v.pdfName ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 10, border: v.newFile ? '1px dashed #CBD5DD' : '1px solid #EBEBEB', background: v.newFile ? C.seasalt : C.white }}>
+                    {v.newFile ? <FileUp size={14} color={C.slate} style={{ flexShrink: 0 }} /> : <FileText size={14} color={C.slate} style={{ flexShrink: 0 }} />}
+                    <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.pdfName}</span>
+                    {v.pdfPath && !v.newFile && (
+                      <button type="button" onClick={() => void viewFile(v.pdfPath as string)} style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', flexShrink: 0 }}>View</button>
+                    )}
+                    {v.newFile && <span style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0 }}>New</span>}
+                    {!readOnly && (
+                      <button type="button" onClick={() => clearVFile(i)} style={{ width: 26, height: 26, borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        <X size={12} strokeWidth={2.5} />
+                      </button>
+                    )}
+                  </div>
+                ) : !readOnly ? (
+                  <label style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                    <FileUp size={13} strokeWidth={2.25} /> Attach PDF
+                    <input type="file" accept="application/pdf" style={{ display: 'none' }} onChange={(e) => pickVFile(i, e)} />
+                  </label>
+                ) : (
+                  <span style={{ fontSize: 12, color: C.slate }}>No PDF attached.</span>
+                )}
+              </div>
+            );
+          })}
           {!readOnly && (
-            <label style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-              <FileUp size={14} strokeWidth={2.25} /> Add PDF{(existingFiles.length + newFiles.length) > 0 ? 's' : ''}
-              <input type="file" accept="application/pdf" multiple style={{ display: 'none' }} onChange={pickFiles} />
-            </label>
+            <button type="button" onClick={addVersion}
+              style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 5, padding: '8px 14px', borderRadius: 10, border: `1px dashed ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+              <Plus size={13} strokeWidth={2.5} /> Add another quotation
+            </button>
           )}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: C.seasalt, borderRadius: 10, padding: '10px 14px' }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: C.slate }}>Pipeline value (largest)</span>
+            <span style={{ fontSize: 15, fontWeight: 700, color: C.green }}>{fmtMoney(maxAmount)}</span>
+          </div>
         </div>
 
         <div>

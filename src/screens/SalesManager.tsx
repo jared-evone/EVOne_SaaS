@@ -82,6 +82,14 @@ export function ScreenSalesManager() {
   const teamTarget = users.reduce((s, u) => s + Number(u.target_amount), 0);
   const attainment = teamTarget > 0 ? Math.round((wonValue / teamTarget) * 100) : null;
 
+  // This calendar month (independent of the period filter above).
+  const thisMonth = new Date().toISOString().slice(0, 7);
+  const openAll = quotes.filter((q) => q.status === 'Draft' || q.status === 'Sent');
+  const openThisMonth = openAll.filter((q) => q.quote_date?.startsWith(thisMonth));
+  const wonThisMonth = quotes.filter((q) => q.status === 'Won' && (q.outcome_date ?? q.quote_date)?.startsWith(thisMonth));
+  const pipelineThisMonth = openThisMonth.reduce((s, q) => s + Number(q.total), 0);
+  const wonValueThisMonth = wonThisMonth.reduce((s, q) => s + Number(q.total), 0);
+
   // Per-salesperson stats
   const byUser = new Map<string, SalesUser>(users.map((u) => [u.id, u]));
   const reps = new Map<string, RepStats>();
@@ -138,10 +146,13 @@ export function ScreenSalesManager() {
 
       {/* Team KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
-        <KPICard accent label="Team Pipeline Value" value={fmtMoney(pipelineValue)} sub={`${open.length} open quote${open.length === 1 ? '' : 's'}`} />
-        <KPICard label="Won Value" value={fmtMoney(wonValue)} sub={attainment === null ? `${won.length} deals won` : `${attainment}% of ${fmtMoney(teamTarget)} target`} />
+        <KPICard accent label="Team Pipeline Value" value={fmtMoney(pipelineValue)}
+          sub={<><div style={{ fontSize: 14, fontWeight: 700 }}>This month: {fmtMoney(pipelineThisMonth)}</div><div style={{ marginTop: 4, opacity: 0.9 }}>{open.length} open quote{open.length === 1 ? '' : 's'}</div></>} />
+        <KPICard label="Won Value" value={fmtMoney(wonValue)}
+          sub={<><div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>This month: {fmtMoney(wonValueThisMonth)}</div><div style={{ marginTop: 4 }}>{attainment === null ? `${won.length} deals won` : `${attainment}% of ${fmtMoney(teamTarget)} target`}</div></>} />
         <KPICard label="Team Win Rate" value={winRate === null ? '—' : `${winRate}%`} sub={`${won.length} won · ${lost.length} lost`} />
-        <KPICard label="Open Quotes" value={String(open.length)} sub={`${filtered.length} total in period`} />
+        <KPICard label="Open Quotes" value={String(open.length)}
+          sub={<><div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>This month: {openThisMonth.length}</div><div style={{ marginTop: 4 }}>{filtered.length} total in period</div></>} />
       </div>
 
       {quotes.length === 0 ? (
