@@ -32,13 +32,13 @@ export interface Order {
   date: string;
 }
 export const orders: Order[] = [
-  { id: 'ORD-2024-0081', customer: 'Ahmad Razif',         address: 'Bangsar, KL',       product: '7kW Home Charger',  amount: 'RM 3,399', status: 'Completed',   date: '02 May 2026' },
-  { id: 'ORD-2024-0080', customer: 'Nurul Ain Bt Hassan', address: 'Petaling Jaya, SL', product: '22kW Commercial',   amount: 'RM 8,800', status: 'In Progress', date: '01 May 2026' },
-  { id: 'ORD-2024-0079', customer: 'Lee Cheng Wei',       address: 'Mont Kiara, KL',    product: '7kW Home Charger',  amount: 'RM 3,399', status: 'Pending',     date: '30 Apr 2026' },
-  { id: 'ORD-2024-0078', customer: 'Priya Rajendran',     address: 'Cyberjaya, SL',     product: '22kW Commercial',   amount: 'RM 8,800', status: 'Completed',   date: '29 Apr 2026' },
-  { id: 'ORD-2024-0077', customer: 'Hafiz Mohd Noor',     address: 'Shah Alam, SL',     product: '7kW Home Charger',  amount: 'RM 3,399', status: 'Cancelled',   date: '28 Apr 2026' },
-  { id: 'ORD-2024-0076', customer: 'Tan Siew Ling',       address: 'Cheras, KL',        product: '7kW Home Charger',  amount: 'RM 3,399', status: 'Completed',   date: '27 Apr 2026' },
-  { id: 'ORD-2024-0075', customer: 'Mohd Farid Roslan',   address: 'Subang, SL',        product: '22kW Commercial',   amount: 'RM 8,800', status: 'In Progress', date: '26 Apr 2026' },
+  { id: 'ORD-2024-0081', customer: 'Ahmad Razif',         address: 'Bangsar, KL',       product: '7kW Home Charger',  amount: '$3,399', status: 'Completed',   date: '02 May 2026' },
+  { id: 'ORD-2024-0080', customer: 'Nurul Ain Bt Hassan', address: 'Petaling Jaya, SL', product: '22kW Commercial',   amount: '$8,800', status: 'In Progress', date: '01 May 2026' },
+  { id: 'ORD-2024-0079', customer: 'Lee Cheng Wei',       address: 'Mont Kiara, KL',    product: '7kW Home Charger',  amount: '$3,399', status: 'Pending',     date: '30 Apr 2026' },
+  { id: 'ORD-2024-0078', customer: 'Priya Rajendran',     address: 'Cyberjaya, SL',     product: '22kW Commercial',   amount: '$8,800', status: 'Completed',   date: '29 Apr 2026' },
+  { id: 'ORD-2024-0077', customer: 'Hafiz Mohd Noor',     address: 'Shah Alam, SL',     product: '7kW Home Charger',  amount: '$3,399', status: 'Cancelled',   date: '28 Apr 2026' },
+  { id: 'ORD-2024-0076', customer: 'Tan Siew Ling',       address: 'Cheras, KL',        product: '7kW Home Charger',  amount: '$3,399', status: 'Completed',   date: '27 Apr 2026' },
+  { id: 'ORD-2024-0075', customer: 'Mohd Farid Roslan',   address: 'Subang, SL',        product: '22kW Commercial',   amount: '$8,800', status: 'In Progress', date: '26 Apr 2026' },
 ];
 
 export interface Installation {
@@ -69,11 +69,11 @@ export interface Customer {
   joined: string;
 }
 export const customers: Customer[] = [
-  { name: 'Ahmad Razif Bin Hamid', email: 'ahmad.razif@email.com',     type: 'Residential', installs: 1,  spend: 'RM 3,399',    status: 'Active',   joined: 'Mar 2026' },
-  { name: 'Nurul Ain Bt Hassan',   email: 'nurul.ain@company.com',     type: 'Commercial',  installs: 3,  spend: 'RM 26,400',   status: 'Active',   joined: 'Jan 2026' },
-  { name: 'Lee Cheng Wei',         email: 'lee.cw@email.com',          type: 'Residential', installs: 1,  spend: 'RM 3,399',    status: 'Active',   joined: 'Apr 2026' },
-  { name: 'Priya Rajendran',       email: 'priya.r@techco.com',        type: 'Commercial',  installs: 5,  spend: 'RM 44,000',   status: 'Active',   joined: 'Nov 2025' },
-  { name: 'Hafiz Mohd Noor',       email: 'hafiz.mn@email.com',        type: 'Residential', installs: 1,  spend: 'RM 3,399',    status: 'Inactive', joined: 'Apr 2026' },
-  { name: 'Tan Siew Ling',         email: 'siewling@email.com',        type: 'Residential', installs: 2,  spend: 'RM 6,798',    status: 'Active',   joined: 'Feb 2026' },
-  { name: 'YTL PowerSeraya',       email: 'procurement@ytl.com.my',    type: 'Enterprise',  installs: 18, spend: 'RM 158,400',  status: 'Active',   joined: 'Jun 2025' },
+  { name: 'Ahmad Razif Bin Hamid', email: 'ahmad.razif@email.com',     type: 'Residential', installs: 1,  spend: '$3,399',    status: 'Active',   joined: 'Mar 2026' },
+  { name: 'Nurul Ain Bt Hassan',   email: 'nurul.ain@company.com',     type: 'Commercial',  installs: 3,  spend: '$26,400',   status: 'Active',   joined: 'Jan 2026' },
+  { name: 'Lee Cheng Wei',         email: 'lee.cw@email.com',          type: 'Residential', installs: 1,  spend: '$3,399',    status: 'Active',   joined: 'Apr 2026' },
+  { name: 'Priya Rajendran',       email: 'priya.r@techco.com',        type: 'Commercial',  installs: 5,  spend: '$44,000',   status: 'Active',   joined: 'Nov 2025' },
+  { name: 'Hafiz Mohd Noor',       email: 'hafiz.mn@email.com',        type: 'Residential', installs: 1,  spend: '$3,399',    status: 'Inactive', joined: 'Apr 2026' },
+  { name: 'Tan Siew Ling',         email: 'siewling@email.com',        type: 'Residential', installs: 2,  spend: '$6,798',    status: 'Active',   joined: 'Feb 2026' },
+  { name: 'YTL PowerSeraya',       email: 'procurement@ytl.com.my',    type: 'Enterprise',  installs: 18, spend: '$158,400',  status: 'Active',   joined: 'Jun 2025' },
 ];

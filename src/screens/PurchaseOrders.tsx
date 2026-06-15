@@ -277,8 +277,8 @@ function POModal({ po, direction, onClose, onSave, onDelete }: POModalProps) {
                   onChange={(e) => updateItem(i, 'qty', parseInt(e.target.value) || 1)}
                   style={{ padding: '7px 8px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', textAlign: 'center', background: C.white }}
                 />
-                <div style={{ fontSize: 12, color: C.slate }}>RM {prod ? prod.price.toLocaleString() : 0}</div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>RM {lineTotal.toLocaleString()}</div>
+                <div style={{ fontSize: 12, color: C.slate }}>${prod ? prod.price.toLocaleString() : 0}</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>${lineTotal.toLocaleString()}</div>
                 <button
                   onClick={() => removeItem(i)}
                   disabled={form.items.length === 1}
@@ -294,7 +294,7 @@ function POModal({ po, direction, onClose, onSave, onDelete }: POModalProps) {
           <div style={{ borderTop: '1px solid #F3F3F3', marginTop: 8, paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ fontSize: 12, color: C.slate }}>Subtotal</span>
-              <span style={{ fontSize: 13, fontWeight: 600 }}>RM {subtotal.toLocaleString()}</span>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>${subtotal.toLocaleString()}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: 12, color: C.slate }}>Discount</span>
@@ -308,12 +308,12 @@ function POModal({ po, direction, onClose, onSave, onDelete }: POModalProps) {
                   style={{ width: 50, padding: '4px 8px', borderRadius: 6, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', textAlign: 'center' }}
                 />
                 <span style={{ fontSize: 12, color: C.slate }}>%</span>
-                <span style={{ fontSize: 12, color: '#C0321A' }}>− RM {((subtotal * form.discount) / 100).toLocaleString()}</span>
+                <span style={{ fontSize: 12, color: '#C0321A' }}>− ${((subtotal * form.discount) / 100).toLocaleString()}</span>
               </div>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 8, borderTop: '1px solid #F3F3F3' }}>
               <span style={{ fontSize: 14, fontWeight: 700, color: C.green }}>Total</span>
-              <span style={{ fontSize: 16, fontWeight: 700, color: C.green }}>RM {total.toLocaleString()}</span>
+              <span style={{ fontSize: 16, fontWeight: 700, color: C.green }}>${total.toLocaleString()}</span>
             </div>
           </div>
         </div>
@@ -429,7 +429,7 @@ function POTable({
                 <td style={{ padding: '12px 14px', fontWeight: 700, color: C.green }}>{po.id}</td>
                 <td style={{ padding: '12px 14px', fontWeight: 600, color: '#1a1a1a' }}>{party}</td>
                 <td style={{ padding: '12px 14px', color: C.slate, fontSize: 12 }}>{itemSummary}</td>
-                <td style={{ padding: '12px 14px', fontWeight: 700, color: C.green }}>RM {total.toLocaleString()}</td>
+                <td style={{ padding: '12px 14px', fontWeight: 700, color: C.green }}>${total.toLocaleString()}</td>
                 <td style={{ padding: '12px 14px', color: C.slate }}>{po.created}</td>
                 <td style={{ padding: '12px 14px', color: C.slate }}>{po.delivery}</td>
                 <td style={{ padding: '12px 14px', color: C.slate, fontSize: 12 }}>{po.ref || '—'}</td>
@@ -497,8 +497,8 @@ export function ScreenPurchaseOrders() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {/* KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
-        <KPICard label="Outgoing PO Value" value={`RM ${(totalOutValue / 1000).toFixed(0)}k`} sub="Active supplier orders" accent />
-        <KPICard label="Incoming PO Value" value={`RM ${(totalInValue / 1000).toFixed(0)}k`}  sub="Customer orders received" trend="18%" trendUp />
+        <KPICard label="Outgoing PO Value" value={`$${(totalOutValue / 1000).toFixed(0)}k`} sub="Active supplier orders" accent />
+        <KPICard label="Incoming PO Value" value={`$${(totalInValue / 1000).toFixed(0)}k`}  sub="Customer orders received" trend="18%" trendUp />
         <KPICard label="Pending Delivery"  value={pendingDelivery}                            sub="Awaiting supplier delivery" />
         <KPICard label="Awaiting Approval" value={pendingApproval}                            sub="Incoming POs to confirm" />
       </div>

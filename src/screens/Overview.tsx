@@ -20,7 +20,7 @@ export function ScreenOverview() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       {/* KPI row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 16 }}>
-        <KPICard label="Monthly Revenue"     value="RM 204k" sub="vs RM 188k last month" trend="8.5%" trendUp chart={<Sparkline data={revenueData.slice(-8)} color={C.white} />} accent />
+        <KPICard label="Monthly Revenue"     value="$204k" sub="vs $188k last month" trend="8.5%" trendUp chart={<Sparkline data={revenueData.slice(-8)} color={C.white} />} accent />
         <KPICard label="Orders This Month"   value="52"      sub="7kW: 38 · 22kW: 14"     trend="13%"  trendUp chart={<MiniBar  data={[28, 30, 27, 35, 38, 42, 46, 52]} color={C.green} />} />
         <KPICard label="Installations Done"  value="46"      sub="6 pending · 2 overdue"  trend="9.5%" trendUp chart={<MiniBar  data={[22, 25, 23, 28, 31, 36, 40, 46]} color={C.opal} />} />
         <KPICard label="Active Customers"    value="318"     sub="+12 this month"         trend="3.9%" trendUp chart={<Sparkline data={[220, 238, 251, 264, 270, 284, 302, 318]} color={C.green} />} />
@@ -35,7 +35,7 @@ export function ScreenOverview() {
               <div style={{ fontSize: 12, color: C.slate }}>Jan – Dec 2025/2026</div>
             </div>
             <span style={{ fontSize: 11, fontWeight: 600, color: C.green, background: C.honeydew, padding: '4px 12px', borderRadius: 99 }}>
-              RM 1.65M YTD
+              $1.65M YTD
             </span>
           </div>
           <LineChart data={revenueData} labels={months} color={C.green} height={160} />

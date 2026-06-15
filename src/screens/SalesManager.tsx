@@ -3,8 +3,9 @@ import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { BarChart, Donut } from '../components/charts';
 import { supabase } from '../lib/supabase';
-import { TrendingUp } from 'lucide-react';
-import { QUOTE_STATUSES, QUOTE_STATUS_COLORS, fmtRM, type Quote } from './Sales';
+import { usePermissions } from '../permissions';
+import { TrendingUp, Plus, Users } from 'lucide-react';
+import { QUOTE_STATUSES, QUOTE_STATUS_COLORS, fmtMoney, type Quote } from './Sales';
 
 type Period = 'all' | 'month' | 'quarter' | 'year';
 
@@ -41,28 +42,58 @@ interface RepStats {
 }
 
 export function ScreenSalesManager() {
+  const { can } = usePermissions();
+  const canManage = can('sales_manager', 'can_delete');
+
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [users, setUsers] = useState<SalesUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [period, setPeriod] = useState<Period>('all');
 
-  useEffect(() => {
-    let live = true;
-    void (async () => {
-      const [q, u] = await Promise.all([
-        supabase.from('sales_quotations').select('*'),
-        supabase.from('app_users').select('id, full_name, is_active').eq('department', 'sales'),
-      ]);
-      if (!live) return;
-      const err = q.error ?? u.error;
-      if (err) { setError(err.message); setLoading(false); return; }
-      setQuotes((q.data ?? []) as Quote[]);
-      setUsers((u.data ?? []) as SalesUser[]);
-      setLoading(false);
-    })();
-    return () => { live = false; };
-  }, []);
+  const fetchAll = async () => {
+    const [q, u] = await Promise.all([
+      supabase.from('sales_quotations').select('*'),
+      supabase.from('sales_people').select('id, name, is_active').order('name'),
+    ]);
+    const err = q.error ?? u.error;
+    if (err) { setError(err.message); setLoading(false); return; }
+    setQuotes((q.data ?? []) as Quote[]);
+    setUsers(((u.data ?? []) as Array<{ id: string; name: string; is_active: boolean }>).map((r) => ({ id: r.id, full_name: r.name, is_active: r.is_active })));
+    setLoading(false);
+  };
+
+  useEffect(() => { void fetchAll(); }, []);
+
+  // Sales team roster management (admins with delete access).
+  const [newPerson, setNewPerson] = useState({ name: '', email: '' });
+  const [rosterBusy, setRosterBusy] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+
+  const addPerson = async () => {
+    if (!newPerson.name.trim() || rosterBusy) return;
+    setRosterBusy(true);
+    setError(null);
+    const { error: err } = await supabase.from('sales_people').insert({
+      name: newPerson.name.trim(),
+      email: newPerson.email.trim() || null,
+    });
+    if (err) setError(err.message);
+    else { setNewPerson({ name: '', email: '' }); await fetchAll(); }
+    setRosterBusy(false);
+  };
+  const togglePerson = async (id: string, active: boolean) => {
+    setRosterBusy(true);
+    const { error: err } = await supabase.from('sales_people').update({ is_active: active }).eq('id', id);
+    if (err) setError(err.message); else await fetchAll();
+    setRosterBusy(false);
+  };
+  const removePerson = async (id: string) => {
+    setRosterBusy(true);
+    const { error: err } = await supabase.from('sales_people').delete().eq('id', id);
+    if (err) setError(err.message); else { setConfirmRemove(null); await fetchAll(); }
+    setRosterBusy(false);
+  };
 
   // Period filter — won metrics use won_at when present, everything else quote_date.
   const start = periodStart(period);
@@ -137,11 +168,70 @@ export function ScreenSalesManager() {
 
       {/* Team KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
-        <KPICard accent label="Team Pipeline Value" value={fmtRM(pipelineValue)} sub={`${open.length} open quote${open.length === 1 ? '' : 's'}`} />
-        <KPICard label="Won Value" value={fmtRM(wonValue)} sub={`${won.length} deals won`} />
+        <KPICard accent label="Team Pipeline Value" value={fmtMoney(pipelineValue)} sub={`${open.length} open quote${open.length === 1 ? '' : 's'}`} />
+        <KPICard label="Won Value" value={fmtMoney(wonValue)} sub={`${won.length} deals won`} />
         <KPICard label="Team Win Rate" value={winRate === null ? '—' : `${winRate}%`} sub={`${won.length} won · ${lost.length} lost`} />
         <KPICard label="Open Quotes" value={String(open.length)} sub={`${filtered.length} total in period`} />
       </div>
+
+      {/* Sales team roster — admins with delete access */}
+      {canManage && (
+        <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Users size={16} strokeWidth={2.25} color={C.green} />
+            <span style={{ fontSize: 14, fontWeight: 700, color: C.green }}>Sales Team</span>
+            <span style={{ fontSize: 12, color: C.slate }}>· selectable as the salesperson on pipeline quotes</span>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <input value={newPerson.name} onChange={(e) => setNewPerson((p) => ({ ...p, name: e.target.value }))}
+              placeholder="Salesperson name"
+              style={{ flex: 1, minWidth: 160, padding: '9px 12px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none' }} />
+            <input value={newPerson.email} onChange={(e) => setNewPerson((p) => ({ ...p, email: e.target.value }))}
+              placeholder="Email (optional)"
+              style={{ flex: 1, minWidth: 160, padding: '9px 12px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none' }} />
+            <button onClick={() => void addPerson()} disabled={!newPerson.name.trim() || rosterBusy}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 18px', borderRadius: 10, border: 'none', background: newPerson.name.trim() && !rosterBusy ? C.green : '#A5D6A7', color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: newPerson.name.trim() && !rosterBusy ? 'pointer' : 'default' }}>
+              <Plus size={14} strokeWidth={2.5} /> Add salesperson
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {users.length === 0 && (
+              <div style={{ fontSize: 12, color: C.slate }}>No salespeople yet — add your first above.</div>
+            )}
+            {users.map((u) => (
+              <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10, border: '1px solid #EBEBEB', background: u.is_active ? C.white : '#F9F9F9' }}>
+                <div style={{ width: 30, height: 30, borderRadius: '50%', background: C.honeydew, color: C.green, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 13, flexShrink: 0 }}>
+                  {(u.full_name.trim().charAt(0) || '?').toUpperCase()}
+                </div>
+                <span style={{ fontSize: 13, fontWeight: 700, color: u.is_active ? '#1a1a1a' : C.slate }}>{u.full_name}</span>
+                {!u.is_active && <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: '#F3F3F3', color: '#767B77' }}>Inactive</span>}
+                <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+                  {confirmRemove === u.id ? (
+                    <>
+                      <span style={{ fontSize: 12, color: '#C0321A', fontWeight: 600 }}>Remove?</span>
+                      <button onClick={() => setConfirmRemove(null)} disabled={rosterBusy}
+                        style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+                      <button onClick={() => void removePerson(u.id)} disabled={rosterBusy}
+                        style={{ padding: '5px 12px', borderRadius: 8, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Yes</button>
+                    </>
+                  ) : (
+                    <>
+                      <button onClick={() => void togglePerson(u.id, !u.is_active)} disabled={rosterBusy}
+                        style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                        {u.is_active ? 'Deactivate' : 'Reactivate'}
+                      </button>
+                      <button onClick={() => setConfirmRemove(u.id)} disabled={rosterBusy}
+                        style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Remove</button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {quotes.length === 0 ? (
         <div style={{ background: C.white, borderRadius: 16, border: '1px dashed #EBEBEB', padding: '60px 24px', textAlign: 'center' }}>
@@ -177,10 +267,10 @@ export function ScreenSalesManager() {
                         </div>
                       </td>
                       <td style={{ padding: '13px 16px', color: C.slate }}>{r.quotes}</td>
-                      <td style={{ padding: '13px 16px', color: C.slate }}>{fmtRM(r.openValue)}</td>
-                      <td style={{ padding: '13px 16px', fontWeight: 700, color: C.green }}>{fmtRM(r.wonValue)}</td>
+                      <td style={{ padding: '13px 16px', color: C.slate }}>{fmtMoney(r.openValue)}</td>
+                      <td style={{ padding: '13px 16px', fontWeight: 700, color: C.green }}>{fmtMoney(r.wonValue)}</td>
                       <td style={{ padding: '13px 16px', color: C.slate }}>{rate === null ? '—' : `${rate}%`}</td>
-                      <td style={{ padding: '13px 16px', color: C.slate }}>{avg === null ? '—' : fmtRM(avg)}</td>
+                      <td style={{ padding: '13px 16px', color: C.slate }}>{avg === null ? '—' : fmtMoney(avg)}</td>
                     </tr>
                   );
                 })}
@@ -196,8 +286,8 @@ export function ScreenSalesManager() {
             <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '20px 24px' }}>
               <div style={{ fontSize: 14, fontWeight: 700, color: C.green, marginBottom: 4 }}>Value by Salesperson</div>
               <div style={{ fontSize: 11, color: C.slate, marginBottom: 14, display: 'flex', gap: 14 }}>
-                <span><span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: 3, background: C.opal, marginRight: 5 }} />Open (RM '000)</span>
-                <span><span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: 3, background: C.green, marginRight: 5 }} />Won (RM '000)</span>
+                <span><span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: 3, background: C.opal, marginRight: 5 }} />Open ($'000)</span>
+                <span><span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: 3, background: C.green, marginRight: 5 }} />Won ($'000)</span>
               </div>
               {hasBarData ? (
                 <BarChart data={barData} labels={barLabels} colors={[C.opal, C.green]} height={180} />

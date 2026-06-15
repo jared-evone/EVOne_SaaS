@@ -259,8 +259,8 @@ function InvoiceModal({ invoice, onClose, onSave, onDelete }: InvoiceModalProps)
                   onChange={(e) => updateItem(i, 'qty', parseInt(e.target.value) || 1)}
                   style={{ padding: '7px 8px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', textAlign: 'center', background: C.white }}
                 />
-                <div style={{ fontSize: 12, color: C.slate }}>RM {prod ? prod.price.toLocaleString() : 0}</div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>RM {lineTotal.toLocaleString()}</div>
+                <div style={{ fontSize: 12, color: C.slate }}>${prod ? prod.price.toLocaleString() : 0}</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>${lineTotal.toLocaleString()}</div>
                 <button
                   onClick={() => removeItem(i)}
                   disabled={form.items.length === 1}
@@ -278,7 +278,7 @@ function InvoiceModal({ invoice, onClose, onSave, onDelete }: InvoiceModalProps)
           <div style={{ borderTop: '1px solid #F3F3F3', marginTop: 8, paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 7 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ fontSize: 12, color: C.slate }}>Subtotal</span>
-              <span style={{ fontSize: 13, fontWeight: 600 }}>RM {subtotal.toLocaleString()}</span>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>${subtotal.toLocaleString()}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: 12, color: C.slate }}>Discount</span>
@@ -292,7 +292,7 @@ function InvoiceModal({ invoice, onClose, onSave, onDelete }: InvoiceModalProps)
                   style={{ width: 50, padding: '4px 8px', borderRadius: 6, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', textAlign: 'center' }}
                 />
                 <span style={{ fontSize: 12, color: C.slate }}>%</span>
-                <span style={{ fontSize: 12, color: '#C0321A' }}>− RM {discountAmt.toLocaleString()}</span>
+                <span style={{ fontSize: 12, color: '#C0321A' }}>− ${discountAmt.toLocaleString()}</span>
               </div>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -307,13 +307,13 @@ function InvoiceModal({ invoice, onClose, onSave, onDelete }: InvoiceModalProps)
                   style={{ width: 50, padding: '4px 8px', borderRadius: 6, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', textAlign: 'center' }}
                 />
                 <span style={{ fontSize: 12, color: C.slate }}>%</span>
-                <span style={{ fontSize: 12, color: C.slate }}>+ RM {taxAmt.toLocaleString()}</span>
+                <span style={{ fontSize: 12, color: C.slate }}>+ ${taxAmt.toLocaleString()}</span>
               </div>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 8, borderTop: '1px solid #F3F3F3' }}>
               <span style={{ fontSize: 14, fontWeight: 700, color: C.green }}>Total</span>
               <span style={{ fontSize: 18, fontWeight: 700, color: C.green }}>
-                RM {total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                ${total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </span>
             </div>
           </div>
@@ -350,7 +350,7 @@ function InvoiceModal({ invoice, onClose, onSave, onDelete }: InvoiceModalProps)
           <button
             onClick={() => {
               const id = form.id || `INV-2026-${String(Date.now()).slice(-4)}`;
-              const amount = `RM ${total.toLocaleString(undefined, {
+              const amount = `$${total.toLocaleString(undefined, {
                 minimumFractionDigits: 2,
                 maximumFractionDigits: 2,
               })}`;
@@ -410,8 +410,8 @@ export function ScreenInvoices() {
       {/* KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Total Invoices (YTD)"  value="412"                                     sub="vs 358 last year" trend="15.1%" trendUp accent />
-        <KPICard label="Collected This Month"  value={`RM ${(totalPaid / 1000).toFixed(1)}k`}  sub="Paid invoices"    trend="13%"   trendUp />
-        <KPICard label="Avg. Invoice Value"    value="RM 4,246"                                sub="7kW + 22kW blended" trend="4.2%" trendUp />
+        <KPICard label="Collected This Month"  value={`$${(totalPaid / 1000).toFixed(1)}k`}  sub="Paid invoices"    trend="13%"   trendUp />
+        <KPICard label="Avg. Invoice Value"    value="$4,246"                                sub="7kW + 22kW blended" trend="4.2%" trendUp />
         <KPICard label="Overdue"               value={totalOverdue}                            sub="Requires follow-up" trend="1"    trendUp={false} />
       </div>
 
@@ -474,7 +474,7 @@ export function ScreenInvoices() {
             {filtered.map((o, i) => {
               const total = calcInvoiceTotal(o.items, o.discount, o.tax);
               const amount =
-                o.amount ?? `RM ${total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                o.amount ?? `$${total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
               const productSummary =
                 o.product ??
                 o.items

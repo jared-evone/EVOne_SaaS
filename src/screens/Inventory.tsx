@@ -190,7 +190,7 @@ function ProductModal({ item, onClose, onSave, onDelete }: ProductModalProps) {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', paddingBottom: 2 }}>
               <div style={{ fontSize: 11, color: C.slate }}>Stock Value</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>RM {stockVal.toLocaleString()}</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>${stockVal.toLocaleString()}</div>
             </div>
           </div>
         </div>
@@ -300,7 +300,7 @@ export function ScreenInventory() {
       {/* KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Total SKUs"        value={totalSKUs}                                   sub="Active products" accent />
-        <KPICard label="Stock Value"       value={`RM ${(totalStockVal / 1000).toFixed(0)}k`}  sub="At cost price" trend="12%" trendUp />
+        <KPICard label="Stock Value"       value={`$${(totalStockVal / 1000).toFixed(0)}k`}  sub="At cost price" trend="12%" trendUp />
         <KPICard label="Low / Out Stock"   value={`${lowStockCount} / ${outOfStock}`}          sub="Items needing reorder" />
         <KPICard label="Avg Gross Margin"  value={`${avgMargin}%`}                             sub="Across all products" trend="2pp" trendUp />
       </div>
@@ -425,8 +425,8 @@ export function ScreenInventory() {
                       <StockBar qty={it.qty} reorder={it.reorder} max={it.reorder * 5} />
                     </td>
                     <td style={{ padding: '11px 14px', color: C.slate, textAlign: 'center' }}>{it.reorder}</td>
-                    <td style={{ padding: '11px 14px', color: C.slate }}>RM {it.cost.toLocaleString()}</td>
-                    <td style={{ padding: '11px 14px', fontWeight: 600, color: '#1a1a1a' }}>RM {it.price.toLocaleString()}</td>
+                    <td style={{ padding: '11px 14px', color: C.slate }}>${it.cost.toLocaleString()}</td>
+                    <td style={{ padding: '11px 14px', fontWeight: 600, color: '#1a1a1a' }}>${it.price.toLocaleString()}</td>
                     <td style={{ padding: '11px 14px', fontWeight: 700, color: margin >= 30 ? C.green : margin >= 15 ? '#B07D00' : '#C0321A' }}>{margin}%</td>
                     <td style={{ padding: '11px 14px', color: C.slate, fontSize: 12 }}>
                       {supplier?.name.replace(' Malaysia', '').replace(' Sdn Bhd', '').replace(' Technology', '') ?? it.supplier}
@@ -478,11 +478,11 @@ export function ScreenInventory() {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, borderTop: '1px solid #F3F3F3', paddingTop: 12 }}>
                   <div>
                     <div style={{ fontSize: 10, color: C.slate }}>Cost</div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>RM {it.cost.toLocaleString()}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>${it.cost.toLocaleString()}</div>
                   </div>
                   <div>
                     <div style={{ fontSize: 10, color: C.slate }}>Price</div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>RM {it.price.toLocaleString()}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>${it.price.toLocaleString()}</div>
                   </div>
                   <div>
                     <div style={{ fontSize: 10, color: C.slate }}>Margin</div>

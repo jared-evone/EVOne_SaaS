@@ -4,7 +4,7 @@ import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
 import { useIsMobile } from '../lib/useIsMobile';
-import { Search, ChevronDown, Handshake, Plus, X } from 'lucide-react';
+import { Search, ChevronDown, Handshake, FileUp, FileText } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -18,12 +18,6 @@ export const QUOTE_STATUS_COLORS: Record<QuoteStatus, { bg: string; color: strin
   Lost:  { bg: '#FDEAEA', color: '#C0321A' },
 };
 
-export interface QuoteItem {
-  description: string;
-  qty: number;
-  unit_price: number;
-}
-
 export interface Quote {
   id: string;
   ref: string;
@@ -33,15 +27,13 @@ export interface Quote {
   contact_email: string | null;
   salesperson_id: string | null;
   salesperson_name: string;
-  type: 'Quotation' | 'Proposal';
   status: QuoteStatus;
-  items: QuoteItem[];
-  discount: number;
   total: number;
   notes: string | null;
   quote_date: string;
-  expiry_date: string | null;
   won_at: string | null;
+  pdf_path: string | null;
+  pdf_filename: string | null;
 }
 
 interface CustomerOpt {
@@ -58,22 +50,7 @@ interface SalesUser {
   is_active: boolean;
 }
 
-// Quick-pick catalog for line items (prices in RM, install included).
-const CATALOG: { label: string; price: number }[] = [
-  { label: '7kW AC Home Charger (incl. installation)', price: 4800 },
-  { label: '22kW AC Commercial Charger (incl. installation)', price: 9200 },
-  { label: '50kW DC Fast Charger (incl. installation)', price: 68000 },
-];
-
-export const fmtRM = (n: number) => `RM ${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
-
-export const calcTotal = (items: QuoteItem[], discount: number) => {
-  const sub = items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unit_price) || 0), 0);
-  return Math.max(0, sub * (1 - (Number(discount) || 0) / 100));
-};
-
-const todayIso = () => new Date().toISOString().slice(0, 10);
-export const isExpired = (q: Quote) => q.status === 'Sent' && !!q.expiry_date && q.expiry_date < todayIso();
+export const fmtMoney = (n: number) => `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 
 // ── Brand searchable dropdown (local copy of the TSD pattern) ─────
 
@@ -154,7 +131,6 @@ export function ScreenSales() {
   const [view, setView] = useState<'pipeline' | 'list'>('pipeline');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | QuoteStatus>('all');
-  const [typeFilter, setTypeFilter] = useState<'all' | 'Quotation' | 'Proposal'>('all');
   const [ownerFilter, setOwnerFilter] = useState<'all' | 'mine'>('all');
   const [modal, setModal] = useState<{ mode: 'new' } | { mode: 'edit'; quote: Quote } | null>(null);
 
@@ -164,7 +140,7 @@ export function ScreenSales() {
       supabase.from('sales_quotations').select('*').order('quote_date', { ascending: false }).order('created_at', { ascending: false }),
       supabase.from('customers').select('id, name, email').order('name'),
       supabase.from('customer_contacts').select('customer_id, name, email, position, created_at').order('position').order('created_at'),
-      supabase.from('app_users').select('id, full_name, is_active').eq('department', 'sales').order('full_name'),
+      supabase.from('sales_people').select('id, name, is_active').order('name'),
     ]);
     const err = q.error ?? c.error ?? cc.error ?? u.error;
     if (err) { setError(err.message); setLoading(false); return; }
@@ -178,7 +154,7 @@ export function ScreenSales() {
       contact_name: firstContact.get(row.id)?.name ?? null,
       contact_email: firstContact.get(row.id)?.email ?? row.email,
     })));
-    setSalesUsers((u.data ?? []) as SalesUser[]);
+    setSalesUsers(((u.data ?? []) as Array<{ id: string; name: string; is_active: boolean }>).map((r) => ({ id: r.id, full_name: r.name, is_active: r.is_active })));
     setLoading(false);
   };
 
@@ -198,7 +174,6 @@ export function ScreenSales() {
   // Filters
   const visible = quotes.filter((q) => {
     if (statusFilter !== 'all' && q.status !== statusFilter) return false;
-    if (typeFilter !== 'all' && q.type !== typeFilter) return false;
     if (ownerFilter === 'mine' && q.salesperson_id !== user.id) return false;
     const s = search.trim().toLowerCase();
     if (s && !`${q.ref} ${q.customer_name} ${q.salesperson_name}`.toLowerCase().includes(s)) return false;
@@ -223,8 +198,8 @@ export function ScreenSales() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       {/* KPI row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
-        <KPICard accent label="Pipeline Value" value={fmtRM(pipelineValue)} sub={`${open.length} open quote${open.length === 1 ? '' : 's'}`} />
-        <KPICard label="Won Value" value={fmtRM(wonValue)} sub={`${won.length} won`} />
+        <KPICard accent label="Pipeline Value" value={fmtMoney(pipelineValue)} sub={`${open.length} open quote${open.length === 1 ? '' : 's'}`} />
+        <KPICard label="Won Value" value={fmtMoney(wonValue)} sub={`${won.length} won`} />
         <KPICard label="Awaiting Response" value={String(quotes.filter((q) => q.status === 'Sent').length)} sub="quotes sent" />
         <KPICard label="Win Rate" value={winRate === null ? '—' : `${winRate}%`} sub={`${won.length} won · ${lost.length} lost`} />
       </div>
@@ -244,10 +219,6 @@ export function ScreenSales() {
         </div>
         {(['all', ...QUOTE_STATUSES] as const).map((s) => (
           <button key={s} onClick={() => setStatusFilter(s)} style={pill(statusFilter === s)}>{s === 'all' ? 'All' : s}</button>
-        ))}
-        <span style={{ width: 1, height: 22, background: '#EBEBEB' }} />
-        {(['all', 'Quotation', 'Proposal'] as const).map((t) => (
-          <button key={t} onClick={() => setTypeFilter(t)} style={pill(typeFilter === t)}>{t === 'all' ? 'All types' : t}</button>
         ))}
         <span style={{ width: 1, height: 22, background: '#EBEBEB' }} />
         <button onClick={() => setOwnerFilter(ownerFilter === 'mine' ? 'all' : 'mine')} style={pill(ownerFilter === 'mine')}>Mine</button>
@@ -346,7 +317,7 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 4px' }}>
                 <span style={{ fontSize: 12, fontWeight: 700, color: sc.color, background: sc.bg, padding: '3px 10px', borderRadius: 99 }}>{status}</span>
                 <span style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>{col.length}</span>
-                <span style={{ marginLeft: 'auto', fontSize: 11, color: C.slate, fontWeight: 600 }}>{fmtRM(colValue)}</span>
+                <span style={{ marginLeft: 'auto', fontSize: 11, color: C.slate, fontWeight: 600 }}>{fmtMoney(colValue)}</span>
               </div>
               {col.map((q) => (
                 <button key={q.id}
@@ -359,16 +330,13 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                   }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: C.slate }}>{q.ref}</span>
-                    <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 6, background: q.type === 'Proposal' ? '#FFF0E0' : C.honeydew, color: q.type === 'Proposal' ? '#B45309' : C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{q.type}</span>
+                    {q.pdf_path && (
+                      <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 6, background: C.honeydew, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>PDF</span>
+                    )}
                   </div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.customer_name}</div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>{fmtRM(Number(q.total))}</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>{fmtMoney(Number(q.total))}</div>
                   <div style={{ fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.salesperson_name}</div>
-                  {isExpired(q) && (
-                    <span style={{ alignSelf: 'flex-start', fontSize: 10, fontWeight: 700, color: '#C0321A', background: '#FDEAEA', padding: '2px 8px', borderRadius: 99 }}>
-                      Expired {q.expiry_date}
-                    </span>
-                  )}
                 </button>
               ))}
               {col.length === 0 && (
@@ -396,7 +364,7 @@ function QuoteTable({ quotes, onOpen }: { quotes: Quote[]; onOpen: (q: Quote) =>
       <table style={{ width: '100%', minWidth: 820, borderCollapse: 'collapse', fontSize: 13 }}>
         <thead>
           <tr style={{ background: C.seasalt }}>
-            {['Ref', 'Type', 'Customer', 'Salesperson', 'Value', 'Status', 'Quote Date', 'Expiry'].map((h) => <th key={h} style={th}>{h}</th>)}
+            {['Ref', 'Customer', 'Salesperson', 'Value', 'Status', 'Date', 'PDF'].map((h) => <th key={h} style={th}>{h}</th>)}
           </tr>
         </thead>
         <tbody>
@@ -405,15 +373,12 @@ function QuoteTable({ quotes, onOpen }: { quotes: Quote[]; onOpen: (q: Quote) =>
               onMouseEnter={(e) => { e.currentTarget.style.background = '#FAFAFA'; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
               <td style={{ padding: '13px 16px', fontWeight: 700, color: C.green }}>{q.ref}</td>
-              <td style={{ padding: '13px 16px', color: C.slate }}>{q.type}</td>
               <td style={{ padding: '13px 16px', fontWeight: 600 }}>{q.customer_name}</td>
               <td style={{ padding: '13px 16px', color: C.slate }}>{q.salesperson_name}</td>
-              <td style={{ padding: '13px 16px', fontWeight: 700, color: C.green }}>{fmtRM(Number(q.total))}</td>
+              <td style={{ padding: '13px 16px', fontWeight: 700, color: C.green }}>{fmtMoney(Number(q.total))}</td>
               <td style={{ padding: '13px 16px' }}><QuoteBadge status={q.status} /></td>
               <td style={{ padding: '13px 16px', color: C.slate }}>{q.quote_date}</td>
-              <td style={{ padding: '13px 16px', color: isExpired(q) ? '#C0321A' : C.slate, fontWeight: isExpired(q) ? 700 : 400 }}>
-                {q.expiry_date ?? '—'}{isExpired(q) ? ' · expired' : ''}
-              </td>
+              <td style={{ padding: '13px 16px', color: C.slate }}>{q.pdf_path ? '✓' : '—'}</td>
             </tr>
           ))}
           {quotes.length === 0 && (
@@ -447,17 +412,33 @@ function QuoteModal({ quote, customers, salesUsers, canEdit, canDelete, onClose,
     contact_email: quote?.contact_email ?? '',
     salesperson_id: quote?.salesperson_id ?? user.id,
     salesperson_name: quote?.salesperson_name ?? user.full_name,
-    type: quote?.type ?? ('Quotation' as 'Quotation' | 'Proposal'),
     status: quote?.status ?? ('Draft' as QuoteStatus),
-    items: quote?.items?.length ? quote.items.map((it) => ({ ...it })) : [{ description: '', qty: 1, unit_price: 0 }],
-    discount: quote?.discount ?? 0,
+    total: quote?.total ?? 0,
     notes: quote?.notes ?? '',
-    quote_date: quote?.quote_date ?? todayIso(),
-    expiry_date: quote?.expiry_date ?? '',
   }));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // PDF: a freshly-picked file, or the already-attached one when editing.
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [pdfName, setPdfName] = useState<string>(quote?.pdf_filename ?? '');
+  const existingPdfPath = quote?.pdf_path ?? null;
+
+  const pickPdf = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    if (f.type !== 'application/pdf' && !/\.pdf$/i.test(f.name)) { setError('Please upload a PDF file.'); return; }
+    setError(null);
+    setPdfFile(f);
+    setPdfName(f.name);
+  };
+
+  const viewPdf = async () => {
+    if (!existingPdfPath) return;
+    const { data } = await supabase.storage.from('sales-quotations').createSignedUrl(existingPdfPath, 60);
+    if (data?.signedUrl) window.open(data.signedUrl, '_blank');
+  };
 
   const customerOptions: SelectOption[] = [
     ...customers.map((c) => ({ value: c.id, label: c.name })),
@@ -484,23 +465,27 @@ function QuoteModal({ quote, customers, salesUsers, canEdit, canDelete, onClose,
     }));
   };
 
-  const updateItem = (i: number, patch: Partial<QuoteItem>) =>
-    setForm((f) => ({ ...f, items: f.items.map((it, idx) => (idx === i ? { ...it, ...patch } : it)) }));
-  const addItem = (prefill?: { label: string; price: number }) =>
-    setForm((f) => ({ ...f, items: [...f.items, { description: prefill?.label ?? '', qty: 1, unit_price: prefill?.price ?? 0 }] }));
-  const removeItem = (i: number) =>
-    setForm((f) => ({ ...f, items: f.items.filter((_, idx) => idx !== i) }));
-
-  const subtotal = form.items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unit_price) || 0), 0);
-  const total = calcTotal(form.items, Number(form.discount));
-
-  const validItems = form.items.filter((it) => it.description.trim() !== '');
-  const canSave = !!form.customer_id && !!form.salesperson_id && validItems.length > 0 && !saving;
+  const total = Math.max(0, Number(form.total) || 0);
+  const hasPdf = !!pdfFile || !!existingPdfPath;
+  const canSave = !!form.customer_id && !!form.salesperson_id && total > 0 && hasPdf && !saving;
 
   const handleSave = async () => {
     if (!canSave) return;
     setSaving(true);
     setError(null);
+
+    // Upload a newly-picked PDF; keep the existing one otherwise.
+    let pdf_path = existingPdfPath;
+    let pdf_filename = quote?.pdf_filename ?? null;
+    if (pdfFile) {
+      const safe = pdfFile.name.replace(/[^a-zA-Z0-9.]/g, '_');
+      const path = `quote_${Date.now()}_${safe}`;
+      const { error: upErr } = await supabase.storage.from('sales-quotations').upload(path, pdfFile, { upsert: true, contentType: 'application/pdf' });
+      if (upErr) { setError(`PDF upload failed: ${upErr.message}`); setSaving(false); return; }
+      pdf_path = path;
+      pdf_filename = pdfFile.name;
+    }
+
     const payload = {
       customer_id: form.customer_id || null,
       customer_name: form.customer_name,
@@ -508,14 +493,11 @@ function QuoteModal({ quote, customers, salesUsers, canEdit, canDelete, onClose,
       contact_email: form.contact_email || null,
       salesperson_id: form.salesperson_id || null,
       salesperson_name: form.salesperson_name,
-      type: form.type,
       status: form.status,
-      items: validItems.map((it) => ({ description: it.description.trim(), qty: Math.max(1, Number(it.qty) || 1), unit_price: Math.max(0, Number(it.unit_price) || 0) })),
-      discount: Math.min(100, Math.max(0, Number(form.discount) || 0)),
       total,
       notes: form.notes || null,
-      quote_date: form.quote_date,
-      expiry_date: form.expiry_date || null,
+      pdf_path,
+      pdf_filename,
       won_at: form.status === 'Won' ? (quote?.won_at ?? new Date().toISOString()) : null,
       updated_at: new Date().toISOString(),
     };
@@ -557,20 +539,11 @@ function QuoteModal({ quote, customers, salesUsers, canEdit, canDelete, onClose,
           <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{error}</div>
         )}
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-          <div>
-            <label style={label}>Type</label>
-            <select value={form.type} disabled={readOnly} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value as 'Quotation' | 'Proposal' }))} style={input(readOnly)}>
-              <option value="Quotation">Quotation</option>
-              <option value="Proposal">Proposal</option>
-            </select>
-          </div>
-          <div>
-            <label style={label}>Status</label>
-            <select value={form.status} disabled={readOnly} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value as QuoteStatus }))} style={input(readOnly)}>
-              {QUOTE_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
+        <div>
+          <label style={label}>Status</label>
+          <select value={form.status} disabled={readOnly} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value as QuoteStatus }))} style={input(readOnly)}>
+            {QUOTE_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
         </div>
 
         {/* Customer */}
@@ -601,73 +574,34 @@ function QuoteModal({ quote, customers, salesUsers, canEdit, canDelete, onClose,
             disabled={readOnly} placeholder="— Select salesperson —" />
         </div>
 
-        {/* Line items */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <label style={{ ...label, marginBottom: 0 }}>Line Items</label>
-          <div style={{ overflowX: 'auto' }}>
-            <div style={{ minWidth: 480, display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 70px 110px 110px 32px', gap: 8, fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em', padding: '0 2px' }}>
-                <span>Description</span><span>Qty</span><span>Unit Price</span><span style={{ textAlign: 'right' }}>Subtotal</span><span />
-              </div>
-              {form.items.map((it, i) => (
-                <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 70px 110px 110px 32px', gap: 8, alignItems: 'center' }}>
-                  <input value={it.description} disabled={readOnly} placeholder="Item description"
-                    onChange={(e) => updateItem(i, { description: e.target.value })} style={input(readOnly)} />
-                  <input type="number" min={1} value={it.qty} disabled={readOnly}
-                    onChange={(e) => updateItem(i, { qty: Number(e.target.value) })} style={input(readOnly)} />
-                  <input type="number" min={0} value={it.unit_price} disabled={readOnly}
-                    onChange={(e) => updateItem(i, { unit_price: Number(e.target.value) })} style={input(readOnly)} />
-                  <span style={{ fontSize: 13, fontWeight: 700, color: C.green, textAlign: 'right' }}>{fmtRM((Number(it.qty) || 0) * (Number(it.unit_price) || 0))}</span>
-                  {!readOnly ? (
-                    <button onClick={() => removeItem(i)} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <X size={12} strokeWidth={2.5} />
-                    </button>
-                  ) : <span />}
-                </div>
-              ))}
-            </div>
-          </div>
-          {!readOnly && (
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <button onClick={() => addItem()}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '7px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-                <Plus size={12} strokeWidth={2.5} /> Add item
-              </button>
-              <span style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>From catalog:</span>
-              {CATALOG.map((p) => (
-                <button key={p.label} onClick={() => addItem(p)} title={p.label}
-                  style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-                  {p.label.split(' (')[0]}
-                </button>
-              ))}
-            </div>
-          )}
+        {/* Final amount */}
+        <div>
+          <label style={label}>Final Amount (RM)</label>
+          <input type="number" min={0} step="0.01" value={form.total} disabled={readOnly}
+            onChange={(e) => setForm((f) => ({ ...f, total: Number(e.target.value) }))}
+            placeholder="0.00" style={{ ...input(readOnly), fontSize: 15, fontWeight: 700, color: C.green }} />
         </div>
 
-        {/* Totals */}
-        <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-            <span style={{ color: C.slate }}>Subtotal</span><span style={{ fontWeight: 600 }}>{fmtRM(subtotal)}</span>
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}>
-            <span style={{ color: C.slate }}>Discount (%)</span>
-            <input type="number" min={0} max={100} value={form.discount} disabled={readOnly}
-              onChange={(e) => setForm((f) => ({ ...f, discount: Number(e.target.value) }))}
-              style={{ ...input(readOnly), width: 90, textAlign: 'right' }} />
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, fontWeight: 700, color: C.green, borderTop: '1px solid #EBEBEB', paddingTop: 8 }}>
-            <span>Total</span><span>{fmtRM(total)}</span>
-          </div>
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-          <div>
-            <label style={label}>Quote Date</label>
-            <input type="date" value={form.quote_date} disabled={readOnly} onChange={(e) => setForm((f) => ({ ...f, quote_date: e.target.value }))} style={input(readOnly)} />
-          </div>
-          <div>
-            <label style={label}>Expiry Date</label>
-            <input type="date" value={form.expiry_date} disabled={readOnly} onChange={(e) => setForm((f) => ({ ...f, expiry_date: e.target.value }))} style={input(readOnly)} />
+        {/* Quotation PDF */}
+        <div>
+          <label style={label}>Quotation PDF</label>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {!readOnly && (
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                <FileUp size={14} strokeWidth={2.25} /> {pdfName ? 'Replace PDF' : 'Upload PDF'}
+                <input type="file" accept="application/pdf" style={{ display: 'none' }} onChange={pickPdf} />
+              </label>
+            )}
+            {pdfName ? (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#1a1a1a' }}>
+                <FileText size={14} color={C.slate} /> {pdfName}
+                {existingPdfPath && !pdfFile && (
+                  <button type="button" onClick={() => void viewPdf()} style={{ marginLeft: 4, padding: '4px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>View</button>
+                )}
+              </span>
+            ) : (
+              <span style={{ fontSize: 12, color: C.slate }}>No PDF attached yet.</span>
+            )}
           </div>
         </div>
 

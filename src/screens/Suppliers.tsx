@@ -389,7 +389,7 @@ export function ScreenSuppliers() {
       {/* KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard label="Active Suppliers"    value={activeCount}                              sub={`${suppliersData.length} total`} accent />
-        <KPICard label="Total Spend (YTD)"   value={`RM ${(totalSpend / 1000).toFixed(0)}k`}  sub="All suppliers combined" trend="14%" trendUp />
+        <KPICard label="Total Spend (YTD)"   value={`$${(totalSpend / 1000).toFixed(0)}k`}  sub="All suppliers combined" trend="14%" trendUp />
         <KPICard label="Avg Supplier Rating" value={`${avgRating} ★`}                         sub="Out of 5.0" />
         <KPICard label="Prospects"           value={prospectCount}                            sub="Under evaluation" />
       </div>
@@ -491,7 +491,7 @@ export function ScreenSuppliers() {
                   <div style={{ display: 'flex', gap: 24, flexShrink: 0 }}>
                     <div style={{ textAlign: 'right' }}>
                       <div style={{ fontSize: 10, color: C.slate }}>Total Spend</div>
-                      <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>RM {s.totalValue.toLocaleString()}</div>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>${s.totalValue.toLocaleString()}</div>
                     </div>
                     <div style={{ textAlign: 'right' }}>
                       <div style={{ fontSize: 10, color: C.slate }}>POs</div>
