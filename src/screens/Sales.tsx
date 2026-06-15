@@ -31,6 +31,8 @@ export interface Quote {
   total: number;
   notes: string | null;
   quote_date: string;
+  outcome_date: string | null;
+  lost_reason: string | null;
   won_at: string | null;
   pdf_path: string | null;
   pdf_filename: string | null;
@@ -58,6 +60,8 @@ interface SalesUser {
 }
 
 export const fmtMoney = (n: number) => `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+const todayStr = () => new Date().toISOString().slice(0, 10);
+const isDecided = (s: QuoteStatus) => s === 'Won' || s === 'Lost';
 
 // ── Brand searchable dropdown (local copy of the TSD pattern) ─────
 
@@ -138,6 +142,9 @@ export function ScreenSales() {
   const [view, setView] = useState<'pipeline' | 'list'>('pipeline');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | QuoteStatus>('all');
+  const [adminView, setAdminView] = useState<string>('all'); // 'all' | salesperson id (admins only)
+  const [month, setMonth] = useState<string>(''); // 'YYYY-MM' or '' (all)
+  const [monthBasis, setMonthBasis] = useState<'created' | 'status'>('created');
   const [modal, setModal] = useState<{ mode: 'new' } | { mode: 'edit'; quote: Quote } | null>(null);
 
   const fetchAll = async () => {
@@ -168,11 +175,18 @@ export function ScreenSales() {
 
   const setStatus = async (quote: Quote, status: QuoteStatus) => {
     if (!canEdit || quote.status === status) return;
+    // Lost needs a mandatory reason — open the modal pre-set to Lost rather than moving silently.
+    if (status === 'Lost') {
+      setModal({ mode: 'edit', quote: { ...quote, status: 'Lost', outcome_date: quote.outcome_date ?? todayStr() } });
+      return;
+    }
+    // Dragging into Won stamps today as the outcome date (editable later in the modal).
+    const outcome_date = isDecided(status) ? (quote.outcome_date ?? todayStr()) : null;
     const won_at = status === 'Won' ? new Date().toISOString() : null;
-    setQuotes((qs) => qs.map((q) => (q.id === quote.id ? { ...q, status, won_at } : q)));
+    setQuotes((qs) => qs.map((q) => (q.id === quote.id ? { ...q, status, outcome_date, won_at } : q)));
     const { error: err } = await supabase
       .from('sales_quotations')
-      .update({ status, won_at, updated_at: new Date().toISOString() })
+      .update({ status, outcome_date, won_at, updated_at: new Date().toISOString() })
       .eq('id', quote.id);
     if (err) { setError(err.message); void fetchAll(); }
   };
@@ -180,20 +194,36 @@ export function ScreenSales() {
   // The pipeline is each user's OWN leads. Map the signed-in login to their
   // salesperson record (linked in the Sales Manager tab); seeded rows share the id.
   const myPerson = salesUsers.find((u) => u.user_id === user.id || u.id === user.id) ?? null;
-  const myQuotes = myPerson ? quotes.filter((q) => q.salesperson_id === myPerson.id) : [];
+  // Department admins (delete access) can view any salesperson's pipeline (or all).
+  const isAdmin = canDelete;
+  const activeSales = salesUsers.filter((u) => u.is_active);
 
-  // Filters (within my own pipeline)
-  const visible = myQuotes.filter((q) => {
+  const scoped = isAdmin
+    ? (adminView === 'all' ? quotes : quotes.filter((q) => q.salesperson_id === adminView))
+    : (myPerson ? quotes.filter((q) => q.salesperson_id === myPerson.id) : []);
+
+  // When creating a new quote: the viewed salesperson (admin) or the signed-in user.
+  const defaultPerson = isAdmin
+    ? ((adminView !== 'all' ? salesUsers.find((u) => u.id === adminView) : myPerson) ?? myPerson ?? activeSales[0] ?? null)
+    : myPerson;
+  const canCreate = isAdmin ? activeSales.length > 0 : !!myPerson;
+
+  // Filters (within the scoped pipeline)
+  const visible = scoped.filter((q) => {
     if (statusFilter !== 'all' && q.status !== statusFilter) return false;
+    if (month) {
+      const d = monthBasis === 'status' ? q.outcome_date : q.quote_date;
+      if (!d || !d.startsWith(month)) return false;
+    }
     const s = search.trim().toLowerCase();
-    if (s && !`${q.ref} ${q.customer_name}`.toLowerCase().includes(s)) return false;
+    if (s && !`${q.ref} ${q.customer_name} ${q.salesperson_name}`.toLowerCase().includes(s)) return false;
     return true;
   });
 
-  // KPIs (own pipeline)
-  const open = myQuotes.filter((q) => q.status === 'Draft' || q.status === 'Sent');
-  const won = myQuotes.filter((q) => q.status === 'Won');
-  const lost = myQuotes.filter((q) => q.status === 'Lost');
+  // KPIs (scoped pipeline)
+  const open = scoped.filter((q) => q.status === 'Draft' || q.status === 'Sent');
+  const won = scoped.filter((q) => q.status === 'Won');
+  const lost = scoped.filter((q) => q.status === 'Lost');
   const pipelineValue = open.reduce((s, q) => s + Number(q.total), 0);
   const wonValue = won.reduce((s, q) => s + Number(q.total), 0);
   const winRate = won.length + lost.length > 0 ? Math.round((won.length / (won.length + lost.length)) * 100) : null;
@@ -210,7 +240,7 @@ export function ScreenSales() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard accent label="Pipeline Value" value={fmtMoney(pipelineValue)} sub={`${open.length} open quote${open.length === 1 ? '' : 's'}`} />
         <KPICard label="Won Value" value={fmtMoney(wonValue)} sub={`${won.length} won`} />
-        <KPICard label="Awaiting Response" value={String(myQuotes.filter((q) => q.status === 'Sent').length)} sub="quotes sent" />
+        <KPICard label="Engaging Leads" value={String(open.length)} sub={`${scoped.filter((q) => q.status === 'Sent').length} awaiting response`} />
         <KPICard label="Win Rate" value={winRate === null ? '—' : `${winRate}%`} sub={`${won.length} won · ${lost.length} lost`} />
       </div>
 
@@ -230,6 +260,36 @@ export function ScreenSales() {
         {(['all', ...QUOTE_STATUSES] as const).map((s) => (
           <button key={s} onClick={() => setStatusFilter(s)} style={pill(statusFilter === s)}>{s === 'all' ? 'All' : s}</button>
         ))}
+        <span style={{ width: 1, height: 22, background: '#EBEBEB' }} />
+        <input type="month" value={month} onChange={(e) => setMonth(e.target.value)}
+          title="Filter by month"
+          style={{ padding: '6px 12px', borderRadius: 99, border: `1px solid ${month ? C.green : '#EBEBEB'}`, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, color: month ? C.green : C.slate, background: C.white, outline: 'none', cursor: 'pointer' }} />
+        {month && (
+          <>
+            <div style={{ display: 'flex', gap: 4, background: C.white, borderRadius: 10, padding: 3, border: '1px solid #EBEBEB' }}>
+              {([['created', 'Created'], ['status', 'Status date']] as const).map(([b, l]) => (
+                <button key={b} onClick={() => setMonthBasis(b)}
+                  style={{ padding: '5px 12px', borderRadius: 8, border: 'none', fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', background: monthBasis === b ? C.green : 'transparent', color: monthBasis === b ? C.white : C.slate }}>
+                  {l}
+                </button>
+              ))}
+            </div>
+            <button onClick={() => setMonth('')} style={pill(false)}>Clear month</button>
+          </>
+        )}
+        {isAdmin && (
+          <div style={{ width: isMobile ? '100%' : 240 }}>
+            <SearchSelect
+              value={adminView}
+              options={[
+                { value: 'all', label: 'All salespeople' },
+                ...salesUsers.map((u) => ({ value: u.id, label: u.is_active ? u.full_name : `${u.full_name} (inactive)` })),
+              ]}
+              onChange={setAdminView}
+              placeholder="Viewing: All salespeople"
+            />
+          </div>
+        )}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
           <div style={{ display: 'flex', gap: 4, background: C.white, borderRadius: 10, padding: 3, border: '1px solid #EBEBEB' }}>
             {([['pipeline', 'Pipeline'], ['list', 'List']] as const).map(([k, l]) => (
@@ -239,7 +299,7 @@ export function ScreenSales() {
               </button>
             ))}
           </div>
-          {canEdit && myPerson && (
+          {canEdit && canCreate && (
             <button onClick={() => setModal({ mode: 'new' })}
               style={{ padding: '9px 18px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
               + New Quote
@@ -250,17 +310,19 @@ export function ScreenSales() {
 
       {loading ? (
         <div style={{ padding: '60px 20px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading quotations…</div>
-      ) : !myPerson ? (
+      ) : !isAdmin && !myPerson ? (
         <div style={{ background: C.white, borderRadius: 16, border: '1px dashed #EBEBEB', padding: '60px 24px', textAlign: 'center' }}>
           <div style={{ marginBottom: 12, display: 'inline-flex' }}><Handshake size={32} strokeWidth={1.5} color={C.slate} /></div>
           <div style={{ fontSize: 14, fontWeight: 700, color: C.green, marginBottom: 4 }}>Your login isn't linked to a salesperson</div>
           <div style={{ fontSize: 12, color: C.slate }}>Ask an admin to link your account in the Sales Manager tab to start managing your pipeline.</div>
         </div>
-      ) : myQuotes.length === 0 ? (
+      ) : scoped.length === 0 ? (
         <div style={{ background: C.white, borderRadius: 16, border: '1px dashed #EBEBEB', padding: '60px 24px', textAlign: 'center' }}>
           <div style={{ marginBottom: 12, display: 'inline-flex' }}><Handshake size={32} strokeWidth={1.5} color={C.slate} /></div>
-          <div style={{ fontSize: 14, fontWeight: 700, color: C.green, marginBottom: 4 }}>No quotes in your pipeline yet</div>
-          <div style={{ fontSize: 12, color: C.slate }}>Create your first quote for a customer from the Customers tab.</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.green, marginBottom: 4 }}>
+            {isAdmin && adminView === 'all' ? 'No quotes yet' : 'No quotes in this pipeline yet'}
+          </div>
+          <div style={{ fontSize: 12, color: C.slate }}>Create a quote for a customer from the Customers tab.</div>
         </div>
       ) : view === 'pipeline' ? (
         <PipelineBoard quotes={visible} canEdit={canEdit} onOpen={(q) => setModal({ mode: 'edit', quote: q })} onDropStatus={setStatus} />
@@ -268,12 +330,14 @@ export function ScreenSales() {
         <QuoteTable quotes={visible} onOpen={(q) => setModal({ mode: 'edit', quote: q })} />
       )}
 
-      {modal && myPerson && (
+      {modal && (
         <QuoteModal
           quote={modal.mode === 'edit' ? modal.quote : null}
           customers={customers}
-          salespersonId={myPerson.id}
-          salespersonName={myPerson.full_name}
+          salespersonId={defaultPerson?.id ?? ''}
+          salespersonName={defaultPerson?.full_name ?? ''}
+          salespeople={activeSales}
+          lockSalesperson={!isAdmin}
           canEdit={canEdit}
           canDelete={canDelete}
           onClose={() => setModal(null)}
@@ -351,7 +415,15 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                   </div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.customer_name}</div>
                   <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>{fmtMoney(Number(q.total))}</div>
-                  <div style={{ fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.salesperson_name}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: C.slate, overflow: 'hidden' }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.salesperson_name}</span>
+                    <span style={{ marginLeft: 'auto', whiteSpace: 'nowrap', flexShrink: 0 }}>{q.quote_date}</span>
+                  </div>
+                  {q.notes && q.notes.trim() && (
+                    <div style={{ fontSize: 11, color: C.slate, background: C.seasalt, borderRadius: 8, padding: '6px 8px', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', lineHeight: 1.4 }}>
+                      {q.notes}
+                    </div>
+                  )}
                 </button>
               ))}
               {col.length === 0 && (
@@ -407,11 +479,13 @@ function QuoteTable({ quotes, onOpen }: { quotes: Quote[]; onOpen: (q: Quote) =>
 
 // ── Create / edit modal ──────────────────────────────────────────
 
-function QuoteModal({ quote, customers, salespersonId, salespersonName, canEdit, canDelete, onClose, onSaved }: {
+function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeople, lockSalesperson, canEdit, canDelete, onClose, onSaved }: {
   quote: Quote | null;
   customers: CustomerOpt[];
   salespersonId: string;
   salespersonName: string;
+  salespeople: SalesUser[];
+  lockSalesperson: boolean;
   canEdit: boolean;
   canDelete: boolean;
   onClose: () => void;
@@ -430,10 +504,31 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, canEdit,
     status: quote?.status ?? ('Draft' as QuoteStatus),
     total: quote?.total ?? 0,
     notes: quote?.notes ?? '',
+    quote_date: quote?.quote_date ?? todayStr(),
+    outcome_date: quote?.outcome_date ?? '',
+    lost_reason: quote?.lost_reason ?? '',
   }));
+
+  // Picking Won/Lost reveals an editable status-change date (defaults to today);
+  // Lost also requires a reason.
+  const changeStatus = (status: QuoteStatus) =>
+    setForm((f) => ({
+      ...f,
+      status,
+      outcome_date: isDecided(status) ? (f.outcome_date || todayStr()) : '',
+      lost_reason: status === 'Lost' ? f.lost_reason : '',
+    }));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // Amount as free text so the user can type or PASTE "$50,000.00" / "50,000";
+  // we strip everything but digits and a decimal point to derive the number.
+  const [amountText, setAmountText] = useState(quote?.total ? String(quote.total) : '');
+  const setAmount = (raw: string) => {
+    const cleaned = raw.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1');
+    setAmountText(cleaned);
+    setForm((f) => ({ ...f, total: Number(cleaned) || 0 }));
+  };
   // Files: already-uploaded ones kept on the quote, plus freshly-picked ones
   // pending upload. Back-compat: fall back to the legacy single pdf_path.
   const initialFiles: QuoteFile[] = quote?.files?.length
@@ -475,8 +570,10 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, canEdit,
   };
 
   const total = Math.max(0, Number(form.total) || 0);
-  const fileCount = existingFiles.length + newFiles.length;
-  const canSave = !!form.customer_id && !!form.salesperson_id && total > 0 && fileCount > 0 && !saving;
+  // Files are optional — a quote can be saved once a customer, salesperson and amount are set.
+  // A Lost quote additionally requires a lost reason.
+  const lostReasonOk = form.status !== 'Lost' || form.lost_reason.trim().length > 0;
+  const canSave = !!form.customer_id && !!form.salesperson_id && total > 0 && lostReasonOk && !saving;
 
   const handleSave = async () => {
     if (!canSave) return;
@@ -505,6 +602,9 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, canEdit,
       total,
       notes: form.notes || null,
       files,
+      quote_date: form.quote_date || todayStr(),
+      outcome_date: isDecided(form.status) ? (form.outcome_date || todayStr()) : null,
+      lost_reason: form.status === 'Lost' ? form.lost_reason.trim() : null,
       // keep the legacy single-pdf columns in sync (first file) for list/Kanban badges
       pdf_path: files[0]?.path ?? null,
       pdf_filename: files[0]?.name ?? null,
@@ -551,10 +651,30 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, canEdit,
 
         <div>
           <label style={label}>Status</label>
-          <select value={form.status} disabled={readOnly} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value as QuoteStatus }))} style={input(readOnly)}>
+          <select value={form.status} disabled={readOnly} onChange={(e) => changeStatus(e.target.value as QuoteStatus)} style={input(readOnly)}>
             {QUOTE_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
+        {isDecided(form.status) && (
+          <div>
+            <label style={label}>{form.status} Date</label>
+            <input type="date" value={form.outcome_date} disabled={readOnly}
+              onChange={(e) => setForm((f) => ({ ...f, outcome_date: e.target.value }))} style={input(readOnly)} />
+            <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>When this quote was marked {form.status.toLowerCase()}.</div>
+          </div>
+        )}
+        {form.status === 'Lost' && (
+          <div>
+            <label style={label}>Lost Reason <span style={{ color: '#C0321A' }}>*</span></label>
+            <textarea value={form.lost_reason} disabled={readOnly} rows={2}
+              onChange={(e) => setForm((f) => ({ ...f, lost_reason: e.target.value }))}
+              placeholder="Why was this quote lost? (e.g. price, competitor, project cancelled)"
+              style={{ ...input(readOnly), resize: 'vertical', lineHeight: 1.5, borderColor: form.lost_reason.trim() ? '#EBEBEB' : '#FDEAEA' }} />
+            {!form.lost_reason.trim() && (
+              <div style={{ fontSize: 11, color: '#C0321A', marginTop: 4 }}>A lost reason is required to save.</div>
+            )}
+          </div>
+        )}
 
         {/* Customer */}
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -576,15 +696,40 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, canEdit,
 
         <div>
           <label style={label}>Salesperson</label>
-          <input value={form.salesperson_name} disabled style={input(true)} />
+          {lockSalesperson || readOnly ? (
+            <input value={form.salesperson_name} disabled style={input(true)} />
+          ) : (
+            <SearchSelect
+              value={form.salesperson_id}
+              options={[
+                ...salespeople.map((u) => ({ value: u.id, label: u.full_name })),
+                ...(form.salesperson_id && !salespeople.some((u) => u.id === form.salesperson_id)
+                  ? [{ value: form.salesperson_id, label: `${form.salesperson_name} (inactive)` }]
+                  : []),
+              ]}
+              onChange={(id) => {
+                const u = salespeople.find((x) => x.id === id);
+                setForm((f) => ({ ...f, salesperson_id: id, salesperson_name: u?.full_name ?? f.salesperson_name }));
+              }}
+              placeholder="— Select salesperson —"
+            />
+          )}
         </div>
 
         {/* Final amount */}
         <div>
           <label style={label}>Final Amount ($)</label>
-          <input type="number" min={0} step="0.01" value={form.total} disabled={readOnly}
-            onChange={(e) => setForm((f) => ({ ...f, total: Number(e.target.value) }))}
+          <input type="text" inputMode="decimal" value={amountText} disabled={readOnly}
+            onChange={(e) => setAmount(e.target.value)}
+            onPaste={(e) => { e.preventDefault(); setAmount(amountText + e.clipboardData.getData('text')); }}
             placeholder="0.00" style={{ ...input(readOnly), fontSize: 15, fontWeight: 700, color: C.green }} />
+        </div>
+
+        {/* Created date */}
+        <div>
+          <label style={label}>Created Date</label>
+          <input type="date" value={form.quote_date} disabled={readOnly}
+            onChange={(e) => setForm((f) => ({ ...f, quote_date: e.target.value }))} style={input(readOnly)} />
         </div>
 
         {/* Quotation files */}

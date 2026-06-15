@@ -67,7 +67,7 @@ export function ScreenSalesManager() {
   const start = periodStart(period);
   const inPeriod = (q: Quote) => {
     if (!start) return true;
-    const d = q.status === 'Won' && q.won_at ? new Date(q.won_at) : new Date(q.quote_date);
+    const d = (q.status === 'Won' || q.status === 'Lost') && q.outcome_date ? new Date(q.outcome_date) : new Date(q.quote_date);
     return d >= start;
   };
   const filtered = quotes.filter(inPeriod);

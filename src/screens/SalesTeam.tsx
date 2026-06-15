@@ -13,6 +13,22 @@ interface SalesPerson {
   is_active: boolean;
   user_id: string | null;
   target_amount: number;
+  photo_path: string | null;
+}
+
+function photoUrl(path: string): string {
+  return supabase.storage.from('sales-photos').getPublicUrl(path).data.publicUrl;
+}
+
+function Avatar({ path, name, size = 30 }: { path: string | null; name: string; size?: number }) {
+  if (path) {
+    return <img src={photoUrl(path)} alt={name} style={{ width: size, height: size, borderRadius: '50%', objectFit: 'cover', border: '1px solid #EBEBEB', flexShrink: 0 }} />;
+  }
+  return (
+    <div style={{ width: size, height: size, borderRadius: '50%', background: C.honeydew, color: C.green, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: size * 0.42, flexShrink: 0 }}>
+      {(name.trim().charAt(0) || '?').toUpperCase()}
+    </div>
+  );
 }
 
 interface LoginUser {
@@ -35,7 +51,7 @@ export function ScreenSalesTeam() {
 
   const fetchAll = async () => {
     const [p, u] = await Promise.all([
-      supabase.from('sales_people').select('id, name, email, is_active, user_id, target_amount').order('name'),
+      supabase.from('sales_people').select('id, name, email, is_active, user_id, target_amount, photo_path').order('name'),
       supabase.from('app_users').select('id, full_name, email, is_active').eq('department', 'sales').order('full_name'),
     ]);
     const err = p.error ?? u.error;
@@ -103,9 +119,7 @@ export function ScreenSalesTeam() {
                   onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
                   <td style={{ padding: '13px 16px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <div style={{ width: 30, height: 30, borderRadius: '50%', background: C.honeydew, color: C.green, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 13, flexShrink: 0 }}>
-                        {(p.name.trim().charAt(0) || '?').toUpperCase()}
-                      </div>
+                      <Avatar path={p.photo_path} name={p.name} />
                       <span style={{ fontWeight: 700 }}>{p.name}</span>
                     </div>
                   </td>
@@ -163,6 +177,19 @@ function SalesPersonModal({ person, logins, takenLoginIds, canEdit, canDelete, o
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [photoPath, setPhotoPath] = useState<string | null>(person?.photo_path ?? null);
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<string | null>(person?.photo_path ? photoUrl(person.photo_path) : null);
+
+  const onPickPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    if (!f.type.startsWith('image/')) { setError('Please choose an image file.'); return; }
+    setError(null);
+    setPhotoFile(f);
+    setPreview(URL.createObjectURL(f));
+  };
 
   // Logins available to link: not already taken by another salesperson.
   const availableLogins = logins.filter((u) => u.id === person?.user_id || !takenLoginIds.has(u.id));
@@ -173,12 +200,21 @@ function SalesPersonModal({ person, logins, takenLoginIds, canEdit, canDelete, o
     if (!canSave) return;
     setSaving(true);
     setError(null);
+    let path = photoPath;
+    if (photoFile) {
+      const safe = photoFile.name.replace(/[^a-zA-Z0-9.]/g, '_');
+      const p = `sp_${Date.now()}_${safe}`;
+      const { error: upErr } = await supabase.storage.from('sales-photos').upload(p, photoFile, { upsert: true, contentType: photoFile.type });
+      if (upErr) { setError(`Photo upload failed: ${upErr.message}`); setSaving(false); return; }
+      path = p;
+    }
     const payload = {
       name: form.name.trim(),
       email: form.email.trim() || null,
       target_amount: Math.max(0, Number(form.target_amount) || 0),
       user_id: form.user_id || null,
       is_active: form.is_active,
+      photo_path: path,
     };
     const { error: err } = isNew
       ? await supabase.from('sales_people').insert(payload)
@@ -211,6 +247,27 @@ function SalesPersonModal({ person, logins, takenLoginIds, canEdit, canDelete, o
         {error && (
           <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{error}</div>
         )}
+
+        {/* Profile picture */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          {preview
+            ? <img src={preview} alt="" style={{ width: 64, height: 64, borderRadius: '50%', objectFit: 'cover', border: '1px solid #EBEBEB' }} />
+            : <Avatar path={null} name={form.name || '?'} size={64} />}
+          {!readOnly && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <label style={{ display: 'inline-block', padding: '8px 16px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                {preview ? 'Change photo' : 'Upload photo'}
+                <input type="file" accept="image/*" style={{ display: 'none' }} onChange={onPickPhoto} />
+              </label>
+              {preview && (
+                <button onClick={() => { setPreview(null); setPhotoFile(null); setPhotoPath(null); }}
+                  style={{ padding: 0, border: 'none', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer', textAlign: 'left', textDecoration: 'underline' }}>
+                  Remove photo
+                </button>
+              )}
+            </div>
+          )}
+        </div>
 
         <div>
           <label style={label}>Name</label>

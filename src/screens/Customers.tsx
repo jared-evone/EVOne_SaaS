@@ -200,7 +200,7 @@ export function ScreenCustomers() {
 
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', minWidth: 660, borderCollapse: 'collapse' }}>
+          <table style={{ width: '100%', minWidth: 660, borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
                 {['Customer', 'Type', 'Attention', 'Email', 'Phone', 'Billing Address'].map((h) => (
@@ -348,8 +348,7 @@ function CustomerModal({ initial, title, canDelete, onSave, onDelete, onClose }:
   const canSave = !saving
     && form.name.trim().length > 0
     && (form.contact_name  ?? '').trim().length > 0
-    && (form.contact_email ?? '').trim().length > 0
-    && (form.contact_phone ?? '').trim().length > 0;
+    && ((form.contact_email ?? '').trim().length > 0 || (form.contact_phone ?? '').trim().length > 0);
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
