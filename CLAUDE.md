@@ -39,7 +39,37 @@ Adding a new top-level screen = touch four places:
 3. `NAV_ALL` + `SCREEN_TITLES` + `screens` map in [src/App.tsx](src/App.tsx).
 4. An `app_role_permissions` row for any role that should access it (the Settings UI does this for you per-role).
 
-**Storage buckets** for binary files: `cpo-maintenance-pdfs` (charger meter / maintenance reports), `crm-contracts` (corporate company contracts), `crm-instructions` (account-opening instruction PDFs + master service agreement). All use the same anon read / insert / delete RLS pattern — auth is enforced application-side by `usePermissions()`.
+**Storage buckets** for binary files: `cpo-maintenance-pdfs` (charger meter / maintenance reports), `crm-contracts` (corporate company contracts), `crm-instructions` (account-opening instruction PDFs + master service agreement), `sales-quotations` (quote PDFs, private), `sales-photos` / `technician-photos` (avatars, public). Read/insert/delete policies are open to `anon, authenticated`; `usePermissions()` still gates *which UI* can upload.
+
+`usePermissions().can()` gates the UI. It is **not** the only line of defence anymore — the database enforces a login too (see next section). Always keep gating the UI with `can()`, but never assume it's the security boundary.
+
+## Auth, security & data access (server-side) — read before touching auth, RLS, or `app_users`
+
+This app uses **custom auth** (the `app_users` table), wrapped so the database can verify identity. Do not reintroduce client-side password handling or blanket `anon` access.
+
+**Login & passwords**
+- Sign-in goes through the `app_login(department, email, password)` **RPC** (SECURITY DEFINER). It bcrypt-verifies server-side and returns the safe user fields **plus a signed JWT** (`role: authenticated`, 30-day exp, `app_department`/`app_role` claims). See [src/screens/Login.tsx](src/screens/Login.tsx).
+- Passwords are **bcrypt-hashed** (pgcrypto, in the `extensions` schema). The client must **never** SELECT or compare the `password` column — `anon`/`authenticated` have no column privilege on it. Set/reset passwords only via the `app_set_password(user_id, password)` RPC (authenticated only). See [Settings.tsx](src/screens/Settings.tsx) / [TechniciansAdmin.tsx](src/screens/tsd/TechniciansAdmin.tsx) for the create/edit pattern (insert non-password columns → `app_set_password`).
+- The JWT is signed in-DB with the project JWT secret, stored in `private.app_config` (key `jwt_secret`, a private schema not exposed via the API). pgjwt lives in `extensions`.
+
+**Client token wiring** ([src/lib/supabase.ts](src/lib/supabase.ts))
+- The client uses the supabase-js `accessToken` callback: it sends the logged-in JWT when present+unexpired, else falls back to the anon key. `setAppToken` / `hasValidAppToken` manage it; the token + user persist in `localStorage` so sessions survive refresh; sign-out clears both. Do **not** call `supabase.auth.*` — that namespace is disabled by the `accessToken` option.
+
+**RLS posture (this is the security boundary)**
+- Every `public` data table has RLS enabled. Internal tables have one policy: `FOR ALL TO authenticated USING (true) WITH CHECK (true)` — i.e. you must be logged in; `anon` (the bare public key) is denied.
+- A small set is **also** reachable by anonymous flows and therefore keeps an `anon` policy too: the **customer portal** + **public `?apply=`** (`customer_portal_accounts`, `customer_portal_documents`, `crm_companies`, `crm_vehicles`, `crm_sp_drivers`, `crm_account_applications`, `crm_account_form_templates`, `cpo_locations`, `cpo_managed_carparks`) and the **QR form-test `?formPreview=`** (`tsd_form_templates` anon SELECT).
+- **Gotcha that bit us:** an `anon`-only policy hides the table from logged-in staff. Any table an anon flow needs must have **both** an `anon` policy AND an `authenticated` policy, or internal screens read empty.
+
+**When you add a new table**
+- Enable RLS and add `FOR ALL TO authenticated USING (true) WITH CHECK (true)`.
+- If a customer-portal / public / QR (anonymous) screen must reach it, add an `anon` policy too — and keep the `authenticated` one.
+- Privileged operations (anything reading a secret or another user's row) go in a `SECURITY DEFINER` function granted to the right role, not direct table access.
+
+**Supabase query gotcha (data-loss class bug):** a supabase-js query is a lazy thenable — it only runs when you `await` it or call `.then()`. **Never** write `void supabase.from(...).upsert(...)` (it silently never executes). Always `await` it, or attach `.then(({ error }) => …)` and surface the error.
+
+**Concurrency:** writes are last-write-wins (no optimistic locking yet), except TSD work orders which sync via Supabase Realtime (`tsd-sync` channel in [src/workOrderStore.tsx](src/workOrderStore.tsx)). For new shared-edit screens, prefer refetch-after-save and consider an `updated_at` guard.
+
+**Migrations:** apply schema/policy changes via the Supabase MCP `apply_migration` (DDL); use `execute_sql` only for reads/data. Domain data must be Supabase-backed — no in-memory-only stores for anything that must persist or be shared.
 
 ## Brand tokens — use these, don't hardcode
 
