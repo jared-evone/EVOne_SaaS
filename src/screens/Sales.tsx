@@ -4,7 +4,7 @@ import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
 import { useIsMobile } from '../lib/useIsMobile';
-import { Search, ChevronDown, Handshake, FileUp, FileText } from 'lucide-react';
+import { Search, ChevronDown, Handshake, FileUp, FileText, X } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -34,6 +34,12 @@ export interface Quote {
   won_at: string | null;
   pdf_path: string | null;
   pdf_filename: string | null;
+  files: QuoteFile[];
+}
+
+export interface QuoteFile {
+  path: string;
+  name: string;
 }
 
 interface CustomerOpt {
@@ -48,6 +54,7 @@ interface SalesUser {
   id: string;
   full_name: string;
   is_active: boolean;
+  user_id: string | null;
 }
 
 export const fmtMoney = (n: number) => `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
@@ -131,7 +138,6 @@ export function ScreenSales() {
   const [view, setView] = useState<'pipeline' | 'list'>('pipeline');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | QuoteStatus>('all');
-  const [ownerFilter, setOwnerFilter] = useState<'all' | 'mine'>('all');
   const [modal, setModal] = useState<{ mode: 'new' } | { mode: 'edit'; quote: Quote } | null>(null);
 
   const fetchAll = async () => {
@@ -140,7 +146,7 @@ export function ScreenSales() {
       supabase.from('sales_quotations').select('*').order('quote_date', { ascending: false }).order('created_at', { ascending: false }),
       supabase.from('customers').select('id, name, email').order('name'),
       supabase.from('customer_contacts').select('customer_id, name, email, position, created_at').order('position').order('created_at'),
-      supabase.from('sales_people').select('id, name, is_active').order('name'),
+      supabase.from('sales_people').select('id, name, is_active, user_id').order('name'),
     ]);
     const err = q.error ?? c.error ?? cc.error ?? u.error;
     if (err) { setError(err.message); setLoading(false); return; }
@@ -154,7 +160,7 @@ export function ScreenSales() {
       contact_name: firstContact.get(row.id)?.name ?? null,
       contact_email: firstContact.get(row.id)?.email ?? row.email,
     })));
-    setSalesUsers(((u.data ?? []) as Array<{ id: string; name: string; is_active: boolean }>).map((r) => ({ id: r.id, full_name: r.name, is_active: r.is_active })));
+    setSalesUsers(((u.data ?? []) as Array<{ id: string; name: string; is_active: boolean; user_id: string | null }>).map((r) => ({ id: r.id, full_name: r.name, is_active: r.is_active, user_id: r.user_id })));
     setLoading(false);
   };
 
@@ -171,19 +177,23 @@ export function ScreenSales() {
     if (err) { setError(err.message); void fetchAll(); }
   };
 
-  // Filters
-  const visible = quotes.filter((q) => {
+  // The pipeline is each user's OWN leads. Map the signed-in login to their
+  // salesperson record (linked in the Sales Manager tab); seeded rows share the id.
+  const myPerson = salesUsers.find((u) => u.user_id === user.id || u.id === user.id) ?? null;
+  const myQuotes = myPerson ? quotes.filter((q) => q.salesperson_id === myPerson.id) : [];
+
+  // Filters (within my own pipeline)
+  const visible = myQuotes.filter((q) => {
     if (statusFilter !== 'all' && q.status !== statusFilter) return false;
-    if (ownerFilter === 'mine' && q.salesperson_id !== user.id) return false;
     const s = search.trim().toLowerCase();
-    if (s && !`${q.ref} ${q.customer_name} ${q.salesperson_name}`.toLowerCase().includes(s)) return false;
+    if (s && !`${q.ref} ${q.customer_name}`.toLowerCase().includes(s)) return false;
     return true;
   });
 
-  // KPIs
-  const open = quotes.filter((q) => q.status === 'Draft' || q.status === 'Sent');
-  const won = quotes.filter((q) => q.status === 'Won');
-  const lost = quotes.filter((q) => q.status === 'Lost');
+  // KPIs (own pipeline)
+  const open = myQuotes.filter((q) => q.status === 'Draft' || q.status === 'Sent');
+  const won = myQuotes.filter((q) => q.status === 'Won');
+  const lost = myQuotes.filter((q) => q.status === 'Lost');
   const pipelineValue = open.reduce((s, q) => s + Number(q.total), 0);
   const wonValue = won.reduce((s, q) => s + Number(q.total), 0);
   const winRate = won.length + lost.length > 0 ? Math.round((won.length / (won.length + lost.length)) * 100) : null;
@@ -200,7 +210,7 @@ export function ScreenSales() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
         <KPICard accent label="Pipeline Value" value={fmtMoney(pipelineValue)} sub={`${open.length} open quote${open.length === 1 ? '' : 's'}`} />
         <KPICard label="Won Value" value={fmtMoney(wonValue)} sub={`${won.length} won`} />
-        <KPICard label="Awaiting Response" value={String(quotes.filter((q) => q.status === 'Sent').length)} sub="quotes sent" />
+        <KPICard label="Awaiting Response" value={String(myQuotes.filter((q) => q.status === 'Sent').length)} sub="quotes sent" />
         <KPICard label="Win Rate" value={winRate === null ? '—' : `${winRate}%`} sub={`${won.length} won · ${lost.length} lost`} />
       </div>
 
@@ -220,8 +230,6 @@ export function ScreenSales() {
         {(['all', ...QUOTE_STATUSES] as const).map((s) => (
           <button key={s} onClick={() => setStatusFilter(s)} style={pill(statusFilter === s)}>{s === 'all' ? 'All' : s}</button>
         ))}
-        <span style={{ width: 1, height: 22, background: '#EBEBEB' }} />
-        <button onClick={() => setOwnerFilter(ownerFilter === 'mine' ? 'all' : 'mine')} style={pill(ownerFilter === 'mine')}>Mine</button>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
           <div style={{ display: 'flex', gap: 4, background: C.white, borderRadius: 10, padding: 3, border: '1px solid #EBEBEB' }}>
             {([['pipeline', 'Pipeline'], ['list', 'List']] as const).map(([k, l]) => (
@@ -231,7 +239,7 @@ export function ScreenSales() {
               </button>
             ))}
           </div>
-          {canEdit && (
+          {canEdit && myPerson && (
             <button onClick={() => setModal({ mode: 'new' })}
               style={{ padding: '9px 18px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
               + New Quote
@@ -242,10 +250,16 @@ export function ScreenSales() {
 
       {loading ? (
         <div style={{ padding: '60px 20px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading quotations…</div>
-      ) : quotes.length === 0 ? (
+      ) : !myPerson ? (
         <div style={{ background: C.white, borderRadius: 16, border: '1px dashed #EBEBEB', padding: '60px 24px', textAlign: 'center' }}>
           <div style={{ marginBottom: 12, display: 'inline-flex' }}><Handshake size={32} strokeWidth={1.5} color={C.slate} /></div>
-          <div style={{ fontSize: 14, fontWeight: 700, color: C.green, marginBottom: 4 }}>No quotations yet</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.green, marginBottom: 4 }}>Your login isn't linked to a salesperson</div>
+          <div style={{ fontSize: 12, color: C.slate }}>Ask an admin to link your account in the Sales Manager tab to start managing your pipeline.</div>
+        </div>
+      ) : myQuotes.length === 0 ? (
+        <div style={{ background: C.white, borderRadius: 16, border: '1px dashed #EBEBEB', padding: '60px 24px', textAlign: 'center' }}>
+          <div style={{ marginBottom: 12, display: 'inline-flex' }}><Handshake size={32} strokeWidth={1.5} color={C.slate} /></div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.green, marginBottom: 4 }}>No quotes in your pipeline yet</div>
           <div style={{ fontSize: 12, color: C.slate }}>Create your first quote for a customer from the Customers tab.</div>
         </div>
       ) : view === 'pipeline' ? (
@@ -254,11 +268,12 @@ export function ScreenSales() {
         <QuoteTable quotes={visible} onOpen={(q) => setModal({ mode: 'edit', quote: q })} />
       )}
 
-      {modal && (
+      {modal && myPerson && (
         <QuoteModal
           quote={modal.mode === 'edit' ? modal.quote : null}
           customers={customers}
-          salesUsers={salesUsers}
+          salespersonId={myPerson.id}
+          salespersonName={myPerson.full_name}
           canEdit={canEdit}
           canDelete={canDelete}
           onClose={() => setModal(null)}
@@ -392,16 +407,16 @@ function QuoteTable({ quotes, onOpen }: { quotes: Quote[]; onOpen: (q: Quote) =>
 
 // ── Create / edit modal ──────────────────────────────────────────
 
-function QuoteModal({ quote, customers, salesUsers, canEdit, canDelete, onClose, onSaved }: {
+function QuoteModal({ quote, customers, salespersonId, salespersonName, canEdit, canDelete, onClose, onSaved }: {
   quote: Quote | null;
   customers: CustomerOpt[];
-  salesUsers: SalesUser[];
+  salespersonId: string;
+  salespersonName: string;
   canEdit: boolean;
   canDelete: boolean;
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const { user } = usePermissions();
   const isNew = quote === null;
   const readOnly = !canEdit;
 
@@ -410,8 +425,8 @@ function QuoteModal({ quote, customers, salesUsers, canEdit, canDelete, onClose,
     customer_name: quote?.customer_name ?? '',
     contact_name: quote?.contact_name ?? '',
     contact_email: quote?.contact_email ?? '',
-    salesperson_id: quote?.salesperson_id ?? user.id,
-    salesperson_name: quote?.salesperson_name ?? user.full_name,
+    salesperson_id: quote?.salesperson_id ?? salespersonId,
+    salesperson_name: quote?.salesperson_name ?? salespersonName,
     status: quote?.status ?? ('Draft' as QuoteStatus),
     total: quote?.total ?? 0,
     notes: quote?.notes ?? '',
@@ -419,24 +434,25 @@ function QuoteModal({ quote, customers, salesUsers, canEdit, canDelete, onClose,
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  // PDF: a freshly-picked file, or the already-attached one when editing.
-  const [pdfFile, setPdfFile] = useState<File | null>(null);
-  const [pdfName, setPdfName] = useState<string>(quote?.pdf_filename ?? '');
-  const existingPdfPath = quote?.pdf_path ?? null;
+  // Files: already-uploaded ones kept on the quote, plus freshly-picked ones
+  // pending upload. Back-compat: fall back to the legacy single pdf_path.
+  const initialFiles: QuoteFile[] = quote?.files?.length
+    ? quote.files
+    : (quote?.pdf_path ? [{ path: quote.pdf_path, name: quote.pdf_filename ?? 'quotation.pdf' }] : []);
+  const [existingFiles, setExistingFiles] = useState<QuoteFile[]>(initialFiles);
+  const [newFiles, setNewFiles] = useState<File[]>([]);
 
-  const pickPdf = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
+  const pickFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(e.target.files ?? []);
     e.target.value = '';
-    if (!f) return;
-    if (f.type !== 'application/pdf' && !/\.pdf$/i.test(f.name)) { setError('Please upload a PDF file.'); return; }
-    setError(null);
-    setPdfFile(f);
-    setPdfName(f.name);
+    const pdfs = picked.filter((f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name));
+    if (pdfs.length !== picked.length) setError('Only PDF files can be attached.');
+    else setError(null);
+    if (pdfs.length) setNewFiles((prev) => [...prev, ...pdfs]);
   };
 
-  const viewPdf = async () => {
-    if (!existingPdfPath) return;
-    const { data } = await supabase.storage.from('sales-quotations').createSignedUrl(existingPdfPath, 60);
+  const viewFile = async (path: string) => {
+    const { data } = await supabase.storage.from('sales-quotations').createSignedUrl(path, 60);
     if (data?.signedUrl) window.open(data.signedUrl, '_blank');
   };
 
@@ -446,13 +462,6 @@ function QuoteModal({ quote, customers, salesUsers, canEdit, canDelete, onClose,
       ? [{ value: form.customer_id, label: `${form.customer_name} (removed)` }]
       : []),
   ];
-  const userOptions: SelectOption[] = [
-    ...salesUsers.filter((u) => u.is_active).map((u) => ({ value: u.id, label: u.full_name })),
-    ...(form.salesperson_id && !salesUsers.some((u) => u.is_active && u.id === form.salesperson_id)
-      ? [{ value: form.salesperson_id, label: `${form.salesperson_name} (inactive)` }]
-      : []),
-  ];
-
   const pickCustomer = (id: string) => {
     const c = customers.find((x) => x.id === id);
     if (!c) { setForm((f) => ({ ...f, customer_id: id })); return; }
@@ -466,25 +475,24 @@ function QuoteModal({ quote, customers, salesUsers, canEdit, canDelete, onClose,
   };
 
   const total = Math.max(0, Number(form.total) || 0);
-  const hasPdf = !!pdfFile || !!existingPdfPath;
-  const canSave = !!form.customer_id && !!form.salesperson_id && total > 0 && hasPdf && !saving;
+  const fileCount = existingFiles.length + newFiles.length;
+  const canSave = !!form.customer_id && !!form.salesperson_id && total > 0 && fileCount > 0 && !saving;
 
   const handleSave = async () => {
     if (!canSave) return;
     setSaving(true);
     setError(null);
 
-    // Upload a newly-picked PDF; keep the existing one otherwise.
-    let pdf_path = existingPdfPath;
-    let pdf_filename = quote?.pdf_filename ?? null;
-    if (pdfFile) {
-      const safe = pdfFile.name.replace(/[^a-zA-Z0-9.]/g, '_');
-      const path = `quote_${Date.now()}_${safe}`;
-      const { error: upErr } = await supabase.storage.from('sales-quotations').upload(path, pdfFile, { upsert: true, contentType: 'application/pdf' });
-      if (upErr) { setError(`PDF upload failed: ${upErr.message}`); setSaving(false); return; }
-      pdf_path = path;
-      pdf_filename = pdfFile.name;
+    // Upload any newly-picked files; keep the already-attached ones.
+    const uploaded: QuoteFile[] = [];
+    for (const file of newFiles) {
+      const safe = file.name.replace(/[^a-zA-Z0-9.]/g, '_');
+      const path = `quote_${Date.now()}_${Math.round(performance.now() % 1000)}_${safe}`;
+      const { error: upErr } = await supabase.storage.from('sales-quotations').upload(path, file, { upsert: true, contentType: 'application/pdf' });
+      if (upErr) { setError(`Upload failed (${file.name}): ${upErr.message}`); setSaving(false); return; }
+      uploaded.push({ path, name: file.name });
     }
+    const files = [...existingFiles, ...uploaded];
 
     const payload = {
       customer_id: form.customer_id || null,
@@ -496,8 +504,10 @@ function QuoteModal({ quote, customers, salesUsers, canEdit, canDelete, onClose,
       status: form.status,
       total,
       notes: form.notes || null,
-      pdf_path,
-      pdf_filename,
+      files,
+      // keep the legacy single-pdf columns in sync (first file) for list/Kanban badges
+      pdf_path: files[0]?.path ?? null,
+      pdf_filename: files[0]?.name ?? null,
       won_at: form.status === 'Won' ? (quote?.won_at ?? new Date().toISOString()) : null,
       updated_at: new Date().toISOString(),
     };
@@ -566,43 +576,56 @@ function QuoteModal({ quote, customers, salesUsers, canEdit, canDelete, onClose,
 
         <div>
           <label style={label}>Salesperson</label>
-          <SearchSelect value={form.salesperson_id} options={userOptions}
-            onChange={(id) => {
-              const u = salesUsers.find((x) => x.id === id);
-              setForm((f) => ({ ...f, salesperson_id: id, salesperson_name: u?.full_name ?? f.salesperson_name }));
-            }}
-            disabled={readOnly} placeholder="— Select salesperson —" />
+          <input value={form.salesperson_name} disabled style={input(true)} />
         </div>
 
         {/* Final amount */}
         <div>
-          <label style={label}>Final Amount (RM)</label>
+          <label style={label}>Final Amount ($)</label>
           <input type="number" min={0} step="0.01" value={form.total} disabled={readOnly}
             onChange={(e) => setForm((f) => ({ ...f, total: Number(e.target.value) }))}
             placeholder="0.00" style={{ ...input(readOnly), fontSize: 15, fontWeight: 700, color: C.green }} />
         </div>
 
-        {/* Quotation PDF */}
-        <div>
-          <label style={label}>Quotation PDF</label>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            {!readOnly && (
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-                <FileUp size={14} strokeWidth={2.25} /> {pdfName ? 'Replace PDF' : 'Upload PDF'}
-                <input type="file" accept="application/pdf" style={{ display: 'none' }} onChange={pickPdf} />
-              </label>
-            )}
-            {pdfName ? (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#1a1a1a' }}>
-                <FileText size={14} color={C.slate} /> {pdfName}
-                {existingPdfPath && !pdfFile && (
-                  <button type="button" onClick={() => void viewPdf()} style={{ marginLeft: 4, padding: '4px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>View</button>
-                )}
-              </span>
-            ) : (
-              <span style={{ fontSize: 12, color: C.slate }}>No PDF attached yet.</span>
-            )}
-          </div>
+        {/* Quotation files */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <label style={{ ...label, marginBottom: 0 }}>Quotation Files (PDF)</label>
+          {(existingFiles.length > 0 || newFiles.length > 0) ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {existingFiles.map((f, i) => (
+                <div key={`e-${f.path}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 10, border: '1px solid #EBEBEB', background: C.white }}>
+                  <FileText size={14} color={C.slate} style={{ flexShrink: 0 }} />
+                  <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+                  <button type="button" onClick={() => void viewFile(f.path)} style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', flexShrink: 0 }}>View</button>
+                  {!readOnly && (
+                    <button type="button" onClick={() => setExistingFiles((prev) => prev.filter((_, idx) => idx !== i))} style={{ width: 26, height: 26, borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <X size={12} strokeWidth={2.5} />
+                    </button>
+                  )}
+                </div>
+              ))}
+              {newFiles.map((f, i) => (
+                <div key={`n-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 10, border: '1px dashed #CBD5DD', background: C.seasalt }}>
+                  <FileUp size={14} color={C.slate} style={{ flexShrink: 0 }} />
+                  <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0 }}>New</span>
+                  {!readOnly && (
+                    <button type="button" onClick={() => setNewFiles((prev) => prev.filter((_, idx) => idx !== i))} style={{ width: 26, height: 26, borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <X size={12} strokeWidth={2.5} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <span style={{ fontSize: 12, color: C.slate }}>No files attached yet.</span>
+          )}
+          {!readOnly && (
+            <label style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              <FileUp size={14} strokeWidth={2.25} /> Add PDF{(existingFiles.length + newFiles.length) > 0 ? 's' : ''}
+              <input type="file" accept="application/pdf" multiple style={{ display: 'none' }} onChange={pickFiles} />
+            </label>
+          )}
         </div>
 
         <div>
