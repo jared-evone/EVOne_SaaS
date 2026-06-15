@@ -251,10 +251,11 @@ function TechnicianModal({ initial, existingNames, onClose, onSaved }: Technicia
 
   useEffect(() => {
     if (!initial?.app_user_id) return;
-    supabase.from('app_users').select('email, password, role_id').eq('id', initial.app_user_id).maybeSingle()
+    // Passwords are hashed server-side and not readable — prefill email/role only.
+    supabase.from('app_users').select('email, role_id').eq('id', initial.app_user_id).maybeSingle()
       .then(({ data }) => {
-        const u = data as { email: string; password: string; role_id: string } | null;
-        if (u) { setLoginEmail(u.email); setPassword(u.password); setRoleId(u.role_id); }
+        const u = data as { email: string; role_id: string } | null;
+        if (u) { setLoginEmail(u.email); setRoleId(u.role_id); }
       });
   }, [initial?.app_user_id]);
 
@@ -271,19 +272,22 @@ function TechnicianModal({ initial, existingNames, onClose, onSaved }: Technicia
     if (!n) { setErr('Name is required.'); return; }
     if (existingNames.includes(n.toLowerCase())) { setErr('A technician with that name already exists.'); return; }
     const wantsLogin = !!loginEmail.trim();
-    if (wantsLogin && (!password.trim() || !roleId)) { setErr('A login needs an email, password and role.'); return; }
+    const editingLogin = !!initial?.app_user_id;
+    // Password required only when creating a new login; on an existing one, blank keeps the current password.
+    if (wantsLogin && (!roleId || (!editingLogin && !password.trim()))) { setErr('A new login needs an email, password and role.'); return; }
     setSaving(true);
     setErr(null);
     try {
       let path = photoPath;
       if (photoFile) path = await uploadPhoto(photoFile);
 
-      // Provision / update / remove the linked login account.
+      // Provision / update / remove the linked login account. Passwords are set via the
+      // server-side app_set_password RPC (never written to the password column from the client).
       let appUserId = initial?.app_user_id ?? null;
       if (wantsLogin) {
         const userPayload = {
           department: 'tech', email: loginEmail.trim().toLowerCase(), full_name: n,
-          role_id: roleId, is_active: true, password: password.trim(),
+          role_id: roleId, is_active: true,
         };
         if (appUserId) {
           const { error } = await supabase.from('app_users').update({ ...userPayload, updated_at: new Date().toISOString() }).eq('id', appUserId);
@@ -292,6 +296,10 @@ function TechnicianModal({ initial, existingNames, onClose, onSaved }: Technicia
           const { data: created, error } = await supabase.from('app_users').insert(userPayload).select('id').single();
           if (error) throw error;
           appUserId = (created as { id: string }).id;
+        }
+        if (password.trim()) {
+          const { error: pwErr } = await supabase.rpc('app_set_password', { p_user_id: appUserId, p_password: password.trim() });
+          if (pwErr) throw pwErr;
         }
       } else if (appUserId) {
         await supabase.from('app_users').delete().eq('id', appUserId);
@@ -376,8 +384,8 @@ function TechnicianModal({ initial, existingNames, onClose, onSaved }: Technicia
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
             <div>
-              <label style={label}>Password</label>
-              <input type="text" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="set a password" style={{ ...field, background: C.white }} />
+              <label style={label}>{initial?.app_user_id ? 'Reset Password' : 'Password'}</label>
+              <input type="text" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={initial?.app_user_id ? 'Leave blank to keep current' : 'set a password'} style={{ ...field, background: C.white }} />
             </div>
             <div>
               <label style={label}>Role / Permission</label>

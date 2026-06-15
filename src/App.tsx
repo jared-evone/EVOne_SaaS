@@ -10,6 +10,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useIsMobile } from './lib/useIsMobile';
+import { setAppToken, hasValidAppToken } from './lib/supabase';
 import { ScreenOverview } from './screens/Overview';
 import { ScreenInvoices } from './screens/Invoices';
 import { ScreenInstallations } from './screens/Installations';
@@ -398,8 +399,27 @@ function Dashboard({ onSignOut }: DashboardProps) {
   );
 }
 
+const USER_KEY = 'evone_app_user';
+
 export default function App() {
-  const [user, setUser] = useState<SignedInUser | null>(null);
+  // Restore the session on reload — only if the stored auth token is still valid.
+  const [user, setUser] = useState<SignedInUser | null>(() => {
+    try {
+      const raw = localStorage.getItem(USER_KEY);
+      if (raw && hasValidAppToken()) return JSON.parse(raw) as SignedInUser;
+    } catch { /* ignore */ }
+    return null;
+  });
+
+  const handleLogin = (u: SignedInUser) => {
+    try { localStorage.setItem(USER_KEY, JSON.stringify(u)); } catch { /* ignore */ }
+    setUser(u);
+  };
+  const handleSignOut = () => {
+    setAppToken(null);
+    try { localStorage.removeItem(USER_KEY); } catch { /* ignore */ }
+    setUser(null);
+  };
 
   // Public account-opening invite: bypass login entirely.
   const applyToken = new URLSearchParams(window.location.search).get('apply');
@@ -414,12 +434,12 @@ export default function App() {
   }
 
   if (!user) {
-    return <Login onLogin={setUser} />;
+    return <Login onLogin={handleLogin} />;
   }
 
   return (
     <PermissionsProvider user={user}>
-      <Dashboard onSignOut={() => setUser(null)} />
+      <Dashboard onSignOut={handleSignOut} />
     </PermissionsProvider>
   );
 }

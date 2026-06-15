@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { C } from '../theme';
 import { Logo } from '../components/Logo';
-import { supabase } from '../lib/supabase';
+import { supabase, setAppToken } from '../lib/supabase';
 import { type Department, DEPARTMENT_LABELS, type SignedInUser } from '../permissions';
 import { Wrench, Handshake, Zap, FolderKanban, type LucideIcon } from 'lucide-react';
 
@@ -34,31 +34,32 @@ export function Login({ onLogin }: LoginProps) {
     setBusy(true);
     setError(null);
 
-    const { data, error: err } = await supabase
-      .from('app_users')
-      .select('id, email, full_name, department, role_id, password, is_active, app_roles(name, label)')
-      .eq('department', department)
-      .eq('email', email.trim().toLowerCase())
-      .maybeSingle();
+    // Verification happens server-side (passwords are bcrypt-hashed and never sent
+    // to the browser). The RPC returns the safe user fields only on a correct match.
+    const { data, error: err } = await supabase.rpc('app_login', {
+      p_department: department,
+      p_email: email.trim().toLowerCase(),
+      p_password: password,
+    });
 
     setBusy(false);
 
     if (err) { setError(err.message); return; }
-    if (!data) { setError(`No account for "${email}" in ${DEPARTMENT_LABELS[department]}.`); return; }
-    if (!data.is_active) { setError('This account has been disabled. Contact your department admin.'); return; }
-    if (data.password !== password) { setError('Incorrect password.'); return; }
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row) { setError('Incorrect email or password.'); return; }
 
-    const role = Array.isArray(data.app_roles) ? data.app_roles[0] : data.app_roles;
-    if (!role) { setError('User has no role assigned. Contact your department admin.'); return; }
+    // Attach the signed token (if the server has a JWT secret configured) so all
+    // subsequent requests are authenticated rather than anonymous.
+    setAppToken(row.token ?? null);
 
     onLogin({
-      id:        data.id,
-      email:     data.email,
-      full_name: data.full_name,
-      department: data.department as Department,
-      role_id:   data.role_id,
-      role_name: role.name,
-      role_label: role.label,
+      id:        row.id,
+      email:     row.email,
+      full_name: row.full_name,
+      department: row.department as Department,
+      role_id:   row.role_id,
+      role_name: row.role_name,
+      role_label: row.role_label,
     });
   };
 

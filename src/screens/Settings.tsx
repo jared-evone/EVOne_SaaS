@@ -27,7 +27,6 @@ interface AppUser {
   full_name: string;
   role_id: string;
   is_active: boolean;
-  password: string;
   app_roles?: { label: string; name: string } | null;
 }
 
@@ -50,10 +49,10 @@ export function ScreenSettings() {
   const fetchAll = async () => {
     const [{ data: r }, { data: u }] = await Promise.all([
       supabase.from('app_roles').select('*').eq('department', department).order('is_system', { ascending: false }).order('label'),
-      supabase.from('app_users').select('*, app_roles(label, name)').eq('department', department).order('full_name'),
+      supabase.from('app_users').select('id, department, email, full_name, role_id, is_active, app_roles(label, name)').eq('department', department).order('full_name'),
     ]);
     setRoles((r as AppRole[]) ?? []);
-    setUsers((u as AppUser[]) ?? []);
+    setUsers((u as unknown as AppUser[]) ?? []);
     setLoading(false);
   };
 
@@ -187,19 +186,24 @@ function UsersTab({ users, roles, department, onRefresh }: UsersTabProps) {
       </div>
 
       {adding && (
-        <UserModal title="New User" roles={roles}
+        <UserModal title="New User" roles={roles} isEdit={false}
           initial={{ email: '', full_name: '', role_id: roles[0]?.id ?? '', is_active: true, password: '1234' }}
           onSave={async (data) => {
-            await supabase.from('app_users').insert({ ...data, department });
+            const { data: created } = await supabase
+              .from('app_users')
+              .insert({ email: data.email, full_name: data.full_name, role_id: data.role_id, is_active: data.is_active, department })
+              .select('id').single();
+            if (created) await supabase.rpc('app_set_password', { p_user_id: created.id, p_password: data.password.trim() || '1234' });
             await onRefresh();
           }}
           onClose={() => setAdding(false)} />
       )}
       {editing && (
-        <UserModal key={editing.id} title={`Edit ${editing.full_name}`} roles={roles}
-          initial={{ email: editing.email, full_name: editing.full_name, role_id: editing.role_id, is_active: editing.is_active, password: editing.password }}
+        <UserModal key={editing.id} title={`Edit ${editing.full_name}`} roles={roles} isEdit
+          initial={{ email: editing.email, full_name: editing.full_name, role_id: editing.role_id, is_active: editing.is_active, password: '' }}
           onSave={async (data) => {
-            await supabase.from('app_users').update({ ...data, updated_at: new Date().toISOString() }).eq('id', editing.id);
+            await supabase.from('app_users').update({ email: data.email, full_name: data.full_name, role_id: data.role_id, is_active: data.is_active, updated_at: new Date().toISOString() }).eq('id', editing.id);
+            if (data.password.trim()) await supabase.rpc('app_set_password', { p_user_id: editing.id, p_password: data.password.trim() });
             await onRefresh();
           }}
           onDelete={async () => { await supabase.from('app_users').delete().eq('id', editing.id); await onRefresh(); }}
@@ -223,16 +227,18 @@ interface UserModalProps {
   initial: UserFormShape;
   title: string;
   roles: AppRole[];
+  isEdit: boolean;
   onSave: (data: UserFormShape) => Promise<void>;
   onDelete?: () => Promise<void>;
   onClose: () => void;
 }
 
-function UserModal({ initial, title, roles, onSave, onDelete, onClose }: UserModalProps) {
+function UserModal({ initial, title, roles, isEdit, onSave, onDelete, onClose }: UserModalProps) {
   const [form, setForm] = useState<UserFormShape>(initial);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const canSave = !!form.email.trim() && !!form.full_name.trim() && !!form.role_id && !!form.password && !saving;
+  // On create a password is required (defaults to 1234); on edit it's optional (blank = keep current).
+  const canSave = !!form.email.trim() && !!form.full_name.trim() && !!form.role_id && (isEdit || !!form.password.trim()) && !saving;
 
   return (
     <div
@@ -249,8 +255,9 @@ function UserModal({ initial, title, roles, onSave, onDelete, onClose }: UserMod
         <Field label="Email">
           <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value.toLowerCase() })} style={inputStyle} />
         </Field>
-        <Field label="Password">
-          <input type="text" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="1234"
+        <Field label={isEdit ? 'Reset Password' : 'Password'}>
+          <input type="text" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })}
+            placeholder={isEdit ? 'Leave blank to keep current' : '1234'}
             style={{ ...inputStyle, fontFamily: 'monospace' }} />
         </Field>
         <Field label="Role">
