@@ -237,15 +237,30 @@ export function BarChart({
   colors?: string[];
   height?: number;
 }) {
+  // Measure the container so the SVG renders 1:1 (viewBox width == pixel width).
+  // A fixed viewBox stretched via preserveAspectRatio="none" balloons the bars
+  // horizontally on wide cards; matching the width keeps bar widths constant.
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [measured, setMeasured] = useState(520);
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const update = () => setMeasured(el.clientWidth || 520);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const allVals = data.flat();
-  const max = Math.max(...allVals) * 1.1;
-  const W = 520;
+  const max = Math.max(...allVals) * 1.1 || 1;
+  const W = Math.max(320, measured);
   const H = height;
   const barW = 16;
   const gap = 4;
   const groupW = data[0].length * (barW + gap);
   const groupGap = (W - 60 - groupW * labels.length) / (labels.length + 1);
   return (
+    <div ref={wrapRef} style={{ width: '100%' }}>
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none">
       {[0.25, 0.5, 0.75, 1].map((f, i) => {
         const gy = H - 24 - f * (H - 48);
@@ -298,5 +313,6 @@ export function BarChart({
         </text>
       ))}
     </svg>
+    </div>
   );
 }

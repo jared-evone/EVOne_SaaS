@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
+import { AvatarCropper } from '../components/AvatarCropper';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
 import { UserCog, Plus } from 'lucide-react';
@@ -180,6 +181,7 @@ function SalesPersonModal({ person, logins, takenLoginIds, canEdit, canDelete, o
   const [photoPath, setPhotoPath] = useState<string | null>(person?.photo_path ?? null);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(person?.photo_path ? photoUrl(person.photo_path) : null);
+  const [cropFile, setCropFile] = useState<File | null>(null);
 
   const onPickPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -187,8 +189,7 @@ function SalesPersonModal({ person, logins, takenLoginIds, canEdit, canDelete, o
     if (!f) return;
     if (!f.type.startsWith('image/')) { setError('Please choose an image file.'); return; }
     setError(null);
-    setPhotoFile(f);
-    setPreview(URL.createObjectURL(f));
+    setCropFile(f);
   };
 
   // Logins available to link: not already taken by another salesperson.
@@ -249,25 +250,33 @@ function SalesPersonModal({ person, logins, takenLoginIds, canEdit, canDelete, o
         )}
 
         {/* Profile picture */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          {preview
-            ? <img src={preview} alt="" style={{ width: 64, height: 64, borderRadius: '50%', objectFit: 'cover', border: '1px solid #EBEBEB' }} />
-            : <Avatar path={null} name={form.name || '?'} size={64} />}
-          {!readOnly && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <label style={{ display: 'inline-block', padding: '8px 16px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-                {preview ? 'Change photo' : 'Upload photo'}
-                <input type="file" accept="image/*" style={{ display: 'none' }} onChange={onPickPhoto} />
-              </label>
-              {preview && (
-                <button onClick={() => { setPreview(null); setPhotoFile(null); setPhotoPath(null); }}
-                  style={{ padding: 0, border: 'none', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer', textAlign: 'left', textDecoration: 'underline' }}>
-                  Remove photo
-                </button>
-              )}
-            </div>
-          )}
-        </div>
+        {cropFile ? (
+          <AvatarCropper
+            file={cropFile}
+            onCancel={() => setCropFile(null)}
+            onApply={(f, p) => { setPhotoFile(f); setPreview(p); setCropFile(null); }}
+          />
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            {preview
+              ? <img src={preview} alt="" style={{ width: 64, height: 64, borderRadius: '50%', objectFit: 'cover', border: '1px solid #EBEBEB' }} />
+              : <Avatar path={null} name={form.name || '?'} size={64} />}
+            {!readOnly && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={{ display: 'inline-block', padding: '8px 16px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                  {preview ? 'Change photo' : 'Upload photo'}
+                  <input type="file" accept="image/*" style={{ display: 'none' }} onChange={onPickPhoto} />
+                </label>
+                {preview && (
+                  <button onClick={() => { setPreview(null); setPhotoFile(null); setPhotoPath(null); }}
+                    style={{ padding: 0, border: 'none', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer', textAlign: 'left', textDecoration: 'underline' }}>
+                    Remove photo
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         <div>
           <label style={label}>Name</label>

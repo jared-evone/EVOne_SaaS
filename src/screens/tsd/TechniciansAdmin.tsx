@@ -3,6 +3,7 @@ import { C } from '../../theme';
 import { supabase } from '../../lib/supabase';
 import { usePermissions } from '../../permissions';
 import { useWorkOrderStore } from '../../workOrderStore';
+import { AvatarCropper } from '../../components/AvatarCropper';
 import { Search, UserPlus } from 'lucide-react';
 
 interface Technician {
@@ -235,6 +236,7 @@ function TechnicianModal({ initial, existingNames, onClose, onSaved }: Technicia
   const [photoPath, setPhotoPath] = useState<string | null>(initial?.photo_path ?? null);
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(initial?.photo_path ? photoUrl(initial.photo_path) : null);
+  const [cropFile, setCropFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -263,8 +265,7 @@ function TechnicianModal({ initial, existingNames, onClose, onSaved }: Technicia
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    setPhotoFile(file);
-    setPreview(URL.createObjectURL(file));
+    setCropFile(file);
   };
 
   const handleSave = async () => {
@@ -337,23 +338,31 @@ function TechnicianModal({ initial, existingNames, onClose, onSaved }: Technicia
         </div>
 
         {/* Photo */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          {preview
-            ? <img src={preview} alt="" style={{ width: 64, height: 64, borderRadius: '50%', objectFit: 'cover', border: '1px solid #EBEBEB' }} />
-            : <Avatar path={null} name={name || '?'} size={64} />}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <label style={{ display: 'inline-block', padding: '8px 16px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-              {preview ? 'Change photo' : 'Upload photo'}
-              <input type="file" accept="image/*" style={{ display: 'none' }} onChange={onPickPhoto} />
-            </label>
-            {preview && (
-              <button onClick={() => { setPreview(null); setPhotoFile(null); setPhotoPath(null); }}
-                style={{ padding: 0, border: 'none', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer', textAlign: 'left', textDecoration: 'underline' }}>
-                Remove photo
-              </button>
-            )}
+        {cropFile ? (
+          <AvatarCropper
+            file={cropFile}
+            onCancel={() => setCropFile(null)}
+            onApply={(f, p) => { setPhotoFile(f); setPreview(p); setCropFile(null); }}
+          />
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            {preview
+              ? <img src={preview} alt="" style={{ width: 64, height: 64, borderRadius: '50%', objectFit: 'cover', border: '1px solid #EBEBEB' }} />
+              : <Avatar path={null} name={name || '?'} size={64} />}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <label style={{ display: 'inline-block', padding: '8px 16px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                {preview ? 'Change photo' : 'Upload photo'}
+                <input type="file" accept="image/*" style={{ display: 'none' }} onChange={onPickPhoto} />
+              </label>
+              {preview && (
+                <button onClick={() => { setPreview(null); setPhotoFile(null); setPhotoPath(null); }}
+                  style={{ padding: 0, border: 'none', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer', textAlign: 'left', textDecoration: 'underline' }}>
+                  Remove photo
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+        )}
 
         <div>
           <label style={label}>Name</label>

@@ -39,7 +39,7 @@ Adding a new top-level screen = touch four places:
 3. `NAV_ALL` + `SCREEN_TITLES` + `screens` map in [src/App.tsx](src/App.tsx).
 4. An `app_role_permissions` row for any role that should access it (the Settings UI does this for you per-role).
 
-**Storage buckets** for binary files: `cpo-maintenance-pdfs` (charger meter / maintenance reports), `crm-contracts` (corporate company contracts), `crm-instructions` (account-opening instruction PDFs + master service agreement), `sales-quotations` (quote PDFs, private), `sales-photos` / `technician-photos` (avatars, public). Read/insert/delete policies are open to `anon, authenticated`; `usePermissions()` still gates *which UI* can upload.
+**Storage buckets** for binary files: `cpo-maintenance-pdfs` (charger meter / maintenance reports), `crm-contracts` (corporate company contracts), `crm-instructions` (account-opening instruction PDFs + master service agreement), `sales-quotations` (quote PDFs, private), `sales-photos` / `technician-photos` (avatars, public). Read/insert/delete policies must list **both** `anon` AND `authenticated` roles; `usePermissions()` still gates *which UI* can upload. **Same gotcha as tables, on `storage.objects`:** an upload policy scoped to `anon` only blocks now-logged-in (authenticated) staff with a "violates row-level security policy" error on upload — this bit us on `cpo-maintenance-pdfs`. When you add a bucket or write a storage policy, scope it `TO anon, authenticated` (or `public`), never `anon` alone.
 
 `usePermissions().can()` gates the UI. It is **not** the only line of defence anymore — the database enforces a login too (see next section). Always keep gating the UI with `can()`, but never assume it's the security boundary.
 
@@ -58,12 +58,14 @@ This app uses **custom auth** (the `app_users` table), wrapped so the database c
 **RLS posture (this is the security boundary)**
 - Every `public` data table has RLS enabled. Internal tables have one policy: `FOR ALL TO authenticated USING (true) WITH CHECK (true)` — i.e. you must be logged in; `anon` (the bare public key) is denied.
 - A small set is **also** reachable by anonymous flows and therefore keeps an `anon` policy too: the **customer portal** + **public `?apply=`** (`customer_portal_accounts`, `customer_portal_documents`, `crm_companies`, `crm_vehicles`, `crm_sp_drivers`, `crm_account_applications`, `crm_account_form_templates`, `cpo_locations`, `cpo_managed_carparks`) and the **QR form-test `?formPreview=`** (`tsd_form_templates` anon SELECT).
-- **Gotcha that bit us:** an `anon`-only policy hides the table from logged-in staff. Any table an anon flow needs must have **both** an `anon` policy AND an `authenticated` policy, or internal screens read empty.
+- **Gotcha that bit us (twice):** an `anon`-only policy hides the object from logged-in staff. Any **table** an anon flow needs must have **both** an `anon` policy AND an `authenticated` policy, or internal screens read empty. The **same applies to `storage.objects`** — a bucket policy scoped to `anon` alone blocks authenticated uploads/reads/deletes (this is why CPO meter-reading PDF uploads failed for logged-in users; fixed in `fix_cpo_pdf_storage_authenticated` by widening the `cpo-pm pdfs` policies to `anon, authenticated`).
 
 **When you add a new table**
 - Enable RLS and add `FOR ALL TO authenticated USING (true) WITH CHECK (true)`.
 - If a customer-portal / public / QR (anonymous) screen must reach it, add an `anon` policy too — and keep the `authenticated` one.
 - Privileged operations (anything reading a secret or another user's row) go in a `SECURITY DEFINER` function granted to the right role, not direct table access.
+
+**When you add a new storage bucket** — scope every read/insert/delete policy `TO anon, authenticated` (or `public`), never `anon` alone, or logged-in staff get "violates row-level security policy" on upload. See the `cpo-pm pdfs` gotcha above.
 
 **Supabase query gotcha (data-loss class bug):** a supabase-js query is a lazy thenable — it only runs when you `await` it or call `.then()`. **Never** write `void supabase.from(...).upsert(...)` (it silently never executes). Always `await` it, or attach `.then(({ error }) => …)` and surface the error.
 
