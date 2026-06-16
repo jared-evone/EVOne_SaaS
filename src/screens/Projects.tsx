@@ -3,7 +3,7 @@ import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
-import { Search, Mail, Phone, Pencil, FileText, Upload, Download as DownloadIcon } from 'lucide-react';
+import { Search, Mail, Phone, Pencil, FileText, Upload, Download as DownloadIcon, ChevronDown } from 'lucide-react';
 import { OneMapAutocomplete } from '../components/OneMapAutocomplete';
 import { useIsMobile } from '../lib/useIsMobile';
 import {
@@ -58,6 +58,68 @@ function FieldLabel({ children }: { children: string }) {
 
 function inputStyle(): React.CSSProperties {
   return { width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
+}
+
+// ── Brand searchable dropdown (local copy of the TSD pattern) ─────
+
+interface SearchSelectOption { value: string; label: string; }
+
+function SearchSelect({ value, options, onChange, disabled, placeholder }: {
+  value: string;
+  options: SearchSelectOption[];
+  onChange: (v: string) => void;
+  disabled?: boolean;
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [open]);
+
+  const selected = options.find((o) => o.value === value);
+  const ql = q.trim().toLowerCase();
+  const filtered = ql ? options.filter((o) => o.label.toLowerCase().includes(ql)) : options;
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button type="button" disabled={disabled} onClick={() => { setOpen((o) => !o); setQ(''); }}
+        style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: `1px solid ${open ? C.green : '#EBEBEB'}`, background: disabled ? '#F9F9F9' : C.white, fontFamily: 'Figtree', fontSize: 13, cursor: disabled ? 'default' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, textAlign: 'left' }}>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: selected ? '#1a1a1a' : C.slate }}>
+          {selected?.label ?? placeholder ?? 'Select…'}
+        </span>
+        <ChevronDown size={16} strokeWidth={2.25} style={{ color: C.slate, flexShrink: 0, transition: 'transform .15s', transform: open ? 'rotate(180deg)' : 'none' }} />
+      </button>
+      {open && !disabled && (
+        <div style={{ position: 'absolute', left: 0, right: 0, zIndex: 60, top: 'calc(100% + 6px)', background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, boxShadow: '0 12px 32px rgba(0,0,0,.14)', padding: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ position: 'relative' }}>
+            <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search…"
+              style={{ width: '100%', padding: '7px 12px 7px 30px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', background: C.seasalt, boxSizing: 'border-box' }} />
+            <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: C.slate, display: 'inline-flex' }}><Search size={13} /></span>
+          </div>
+          <div style={{ maxHeight: 240, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 1 }}>
+            {filtered.length === 0 ? (
+              <div style={{ padding: '12px', textAlign: 'center', color: C.slate, fontSize: 12 }}>No matches</div>
+            ) : filtered.map((o) => {
+              const active = o.value === value;
+              return (
+                <button key={o.value} type="button" onClick={() => { onChange(o.value); setOpen(false); }}
+                  onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = C.seasalt; }}
+                  onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+                  style={{ flexShrink: 0, width: '100%', textAlign: 'left', padding: '9px 12px', borderRadius: 8, border: 'none', background: active ? C.honeydew : 'transparent', color: active ? C.green : '#1a1a1a', fontFamily: 'Figtree', fontSize: 13, fontWeight: active ? 700 : 500, cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {o.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── Top-level screen ──────────────────────────────────────────────
@@ -166,7 +228,7 @@ export function ScreenProjects() {
         {canEdit && (
           <button onClick={() => setAdding(true)}
             style={{ marginLeft: 'auto', padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-            + New Charger
+            + New Registration
           </button>
         )}
       </div>
@@ -186,7 +248,7 @@ export function ScreenProjects() {
                 <tr><td colSpan={5} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</td></tr>
               ) : visible.length === 0 ? (
                 <tr><td colSpan={5} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
-                  {projects.length === 0 ? 'No customers yet. Click "+ New Charger" to add one.' : 'No customers match your filters.'}
+                  {projects.length === 0 ? 'No customers yet. Click "+ New Registration" to add one.' : 'No customers match your filters.'}
                 </td></tr>
               ) : visible.map((p) => {
                 const palette = PROJECT_STATUS_PALETTE[p.status];
@@ -228,7 +290,7 @@ export function ScreenProjects() {
       </div>
 
       {adding && (
-        <ProjectModal title="New Charger" initial={blankProject()} customers={customers}
+        <ProjectModal title="New Registration" initial={blankProject()} customers={customers}
           onSave={addProject} onClose={() => setAdding(false)} />
       )}
     </div>
@@ -307,15 +369,11 @@ function ProjectModal({ initial, title, customers, onSave, onClose }: ProjectMod
 
         <div>
           <FieldLabel>Linked Customer</FieldLabel>
-          <select value={form.customer_id ?? ''} onChange={(e) => onCustomerChange(e.target.value)}
-            style={{ ...inputStyle(), background: C.white, cursor: 'pointer' }} autoFocus>
-            <option value="" disabled>— Select a customer —</option>
-            {customers.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
+          <SearchSelect value={form.customer_id ?? ''} onChange={onCustomerChange}
+            options={customers.map((c) => ({ value: c.id, label: c.name }))}
+            placeholder="— Select a customer —" />
           <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
-            Customers are shared across Project Management, Sales, and Technical Service. Deleting a customer keeps this charger — the link just goes blank.
+            Customers are shared across Charger Registry, Sales, and Technical Service. Deleting a customer keeps this charger — the link just goes blank.
           </div>
         </div>
 
@@ -735,13 +793,9 @@ function ProjectDetailsCard({ project, customers, canEdit, onSaved }: {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div>
             <FieldLabel>Linked Customer</FieldLabel>
-            <select value={customerId ?? ''} onChange={(e) => onCustomerChange(e.target.value)}
-              style={{ ...inputStyle(), background: C.white, cursor: 'pointer' }}>
-              <option value="" disabled>— Select a customer —</option>
-              {customers.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
+            <SearchSelect value={customerId ?? ''} onChange={onCustomerChange}
+              options={customers.map((c) => ({ value: c.id, label: c.name }))}
+              placeholder="— Select a customer —" />
           </div>
           <div>
             <FieldLabel>Charger Name</FieldLabel>
@@ -879,11 +933,9 @@ function OverviewTab({ project, contacts, sites, onPickSite, canEdit, onAddSite 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
-        <SummaryStat label="Sites"          value={String(sites.length)} />
-        <SummaryStat label="Chargers"       value={String(chargerCount)} />
-        <SummaryStat label="Contacts"       value={String(contacts.length)} />
-        <SummaryStat label="Emails on file" value={String(emailCount)} />
-        <SummaryStat label="Phones on file" value={String(phoneCount)} />
+        <SummaryStat label="Sites"    value={String(sites.length)} />
+        <SummaryStat label="Chargers" value={String(chargerCount)} />
+        <SummaryStat label="Contacts" value={String(contacts.length)} sub={`${emailCount} email${emailCount === 1 ? '' : 's'} · ${phoneCount} phone${phoneCount === 1 ? '' : 's'} on file`} />
       </div>
 
       <div style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -956,11 +1008,12 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
   );
 }
 
-function SummaryStat({ label, value }: { label: string; value: string }) {
+function SummaryStat({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 4 }}>
       <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
       <div style={{ fontSize: 22, fontWeight: 700, color: C.green, letterSpacing: '-0.02em' }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>{sub}</div>}
     </div>
   );
 }
@@ -1496,7 +1549,7 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
 
       {adding && (
         <ChargerModal
-          title="New Charger"
+          title="New Registration"
           initial={blankCharger()}
           siteName={siteName}
           brandModels={brandModels}

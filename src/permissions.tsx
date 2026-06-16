@@ -7,7 +7,7 @@ export const DEPARTMENT_LABELS: Record<Department, string> = {
   cpo:   'CPO',
   sales: 'Sales',
   tech:  'Technical Service',
-  pm:    'Project Management',
+  pm:    'Charger Registry',
 };
 
 export type ScreenKey =
