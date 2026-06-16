@@ -83,6 +83,10 @@ interface PermissionsContextValue {
   user: SignedInUser;
   perms: PermissionMap;
   can: (screen: ScreenKey, cap: keyof ScreenCap) => boolean;
+  /** True only for a full department admin: view+edit+delete on EVERY screen the
+   *  department exposes. Use this — not a single screen's can_delete — to gate
+   *  cross-user/admin-wide views (e.g. seeing every salesperson's pipeline). */
+  isAdmin: boolean;
   refresh: () => Promise<void>;
 }
 
@@ -122,10 +126,15 @@ export function PermissionsProvider({ user, children }: PermissionsProviderProps
 
   const can = (screen: ScreenKey, cap: keyof ScreenCap) => (perms[screen] ?? DENY)[cap];
 
+  const isAdmin = DEPARTMENT_SCREENS[user.department].every((k) => {
+    const c = perms[k] ?? DENY;
+    return c.can_view && c.can_edit && c.can_delete;
+  });
+
   if (loading) return null;
 
   return (
-    <PermissionsContext.Provider value={{ user, perms, can, refresh }}>
+    <PermissionsContext.Provider value={{ user, perms, can, isAdmin, refresh }}>
       {children}
     </PermissionsContext.Provider>
   );

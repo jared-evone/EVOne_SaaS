@@ -34,10 +34,31 @@ export interface Quote {
   outcome_date: string | null;
   lost_reason: string | null;
   won_at: string | null;
+  ehvcg: boolean;
+  high_potential: boolean;
+  referral: boolean;
+  referral_name: string | null;
+  referral_contact: string | null;
+  referral_email: string | null;
+  referral_notes: string | null;
+  cost_items: CostItem[];
+  gross_profit: number | null;
   pdf_path: string | null;
   pdf_filename: string | null;
   files: QuoteFile[];
   versions: QuoteVersion[];
+}
+
+export interface CostItem {
+  label: string;
+  amount: number;
+}
+
+export interface CostOption {
+  id: string;
+  label: string;
+  sort_order: number;
+  default_cost: number | null;
 }
 
 export interface QuoteFile {
@@ -137,7 +158,7 @@ function SearchSelect({ value, options, onChange, disabled, placeholder }: {
 // ── Screen ────────────────────────────────────────────────────────
 
 export function ScreenSales() {
-  const { can, user } = usePermissions();
+  const { can, user, isAdmin } = usePermissions();
   const canEdit = can('sales', 'can_edit');
   const canDelete = can('sales', 'can_delete');
   const isMobile = useIsMobile();
@@ -145,8 +166,14 @@ export function ScreenSales() {
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [customers, setCustomers] = useState<CustomerOpt[]>([]);
   const [salesUsers, setSalesUsers] = useState<SalesUser[]>([]);
+  const [costOptions, setCostOptions] = useState<CostOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const fetchCostOptions = async () => {
+    const { data } = await supabase.from('sales_cost_item_options').select('id, label, sort_order, default_cost').order('sort_order').order('label');
+    setCostOptions((data ?? []) as CostOption[]);
+  };
 
   const [view, setView] = useState<'pipeline' | 'list'>('pipeline');
   const [search, setSearch] = useState('');
@@ -180,7 +207,7 @@ export function ScreenSales() {
     setLoading(false);
   };
 
-  useEffect(() => { void fetchAll(); }, []);
+  useEffect(() => { void fetchAll(); void fetchCostOptions(); }, []);
 
   const setStatus = async (quote: Quote, status: QuoteStatus) => {
     if (!canEdit || quote.status === status) return;
@@ -203,8 +230,8 @@ export function ScreenSales() {
   // The pipeline is each user's OWN leads. Map the signed-in login to their
   // salesperson record (linked in the Sales Manager tab); seeded rows share the id.
   const myPerson = salesUsers.find((u) => u.user_id === user.id || u.id === user.id) ?? null;
-  // Department admins (delete access) can view any salesperson's pipeline (or all).
-  const isAdmin = canDelete;
+  // Only a full department admin (all permissions on every screen) can view any
+  // salesperson's pipeline. A salesperson with delete access still sees only their own.
   const activeSales = salesUsers.filter((u) => u.is_active);
 
   const scoped = isAdmin
@@ -359,6 +386,9 @@ export function ScreenSales() {
           lockSalesperson={!isAdmin}
           canEdit={canEdit}
           canDelete={canDelete}
+          isAdmin={isAdmin}
+          costOptions={costOptions}
+          onCostOptionsChanged={fetchCostOptions}
           onClose={() => setModal(null)}
           onSaved={() => { setModal(null); void fetchAll(); }}
         />
@@ -434,8 +464,15 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                   }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: C.slate }}>{q.ref}</span>
-                    {q.pdf_path && (
-                      <span style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 6, background: C.honeydew, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>PDF</span>
+                    {(q.ehvcg || q.high_potential) && (
+                      <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        {q.ehvcg && (
+                          <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 6, background: '#FDEAEA', color: '#C0321A', textTransform: 'uppercase', letterSpacing: '0.04em' }}>EHVCG</span>
+                        )}
+                        {q.high_potential && (
+                          <span title="High potential" style={{ width: 12, height: 12, borderRadius: '50%', background: '#E11D2E', flexShrink: 0 }} />
+                        )}
+                      </span>
                     )}
                   </div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.customer_name}</div>
@@ -517,7 +554,7 @@ function QuoteTable({ quotes, onOpen }: { quotes: Quote[]; onOpen: (q: Quote) =>
 
 // ── Create / edit modal ──────────────────────────────────────────
 
-function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeople, lockSalesperson, canEdit, canDelete, onClose, onSaved }: {
+function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeople, lockSalesperson, canEdit, canDelete, isAdmin, costOptions, onCostOptionsChanged, onClose, onSaved }: {
   quote: Quote | null;
   customers: CustomerOpt[];
   salespersonId: string;
@@ -526,6 +563,9 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
   lockSalesperson: boolean;
   canEdit: boolean;
   canDelete: boolean;
+  isAdmin: boolean;
+  costOptions: CostOption[];
+  onCostOptionsChanged: () => Promise<void>;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -544,7 +584,17 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
     quote_date: quote?.quote_date ?? todayStr(),
     outcome_date: quote?.outcome_date ?? '',
     lost_reason: quote?.lost_reason ?? '',
+    ehvcg: quote?.ehvcg ?? false,
+    high_potential: quote?.high_potential ?? false,
+    referral: quote?.referral ?? false,
+    referral_name: quote?.referral_name ?? '',
+    referral_contact: quote?.referral_contact ?? '',
+    referral_email: quote?.referral_email ?? '',
+    referral_notes: quote?.referral_notes ?? '',
   }));
+
+  // Edit-only second tab ("Others"): referral details + margin calculator.
+  const [tab, setTab] = useState<'overview' | 'others'>('overview');
 
   // Picking Won/Lost reveals an editable status-change date (defaults to today);
   // Lost also requires a reason.
@@ -587,6 +637,54 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
   const addVersion = () => setVersions((vs) => [...vs, { amountText: '', pdfPath: null, pdfName: null, newFile: null }]);
   const removeVersion = (i: number) => setVersions((vs) => vs.filter((_, idx) => idx !== i));
   const maxAmount = Math.max(0, ...versions.map((v) => Number(v.amountText) || 0));
+
+  // Margin calculator (Others tab). Cost rows entered by the user; gross profit is
+  // the pipeline value (largest quotation) minus total cost.
+  type CostDraft = { label: string; amountText: string; custom: boolean };
+  const [costItems, setCostItems] = useState<CostDraft[]>(
+    () => (quote?.cost_items ?? []).map((c) => ({
+      label: c.label,
+      amountText: c.amount ? String(c.amount) : '',
+      custom: !!c.label && !costOptions.some((o) => o.label === c.label),
+    })),
+  );
+  const patchCost = (i: number, patch: Partial<CostDraft>) =>
+    setCostItems((cs) => cs.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
+  const setCostAmount = (i: number, raw: string) =>
+    patchCost(i, { amountText: raw.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1') });
+  const addCost = () => setCostItems((cs) => [...cs, { label: '', amountText: '', custom: false }]);
+  const removeCost = (i: number) => setCostItems((cs) => cs.filter((_, idx) => idx !== i));
+
+  // Admin-only management of the shared cost-item dropdown options.
+  const [managingOptions, setManagingOptions] = useState(false);
+  const [newOption, setNewOption] = useState('');
+  const [newOptionCost, setNewOptionCost] = useState('');
+  const parseCost = (t: string) => (t.trim() === '' ? null : Math.max(0, Number(t.replace(/[^0-9.]/g, '')) || 0));
+  const addOption = async () => {
+    const lbl = newOption.trim();
+    if (!lbl || costOptions.some((o) => o.label.toLowerCase() === lbl.toLowerCase())) { setNewOption(''); setNewOptionCost(''); return; }
+    await supabase.from('sales_cost_item_options').insert({ label: lbl, sort_order: costOptions.length, default_cost: parseCost(newOptionCost) });
+    setNewOption('');
+    setNewOptionCost('');
+    await onCostOptionsChanged();
+  };
+  const deleteOption = async (id: string) => {
+    await supabase.from('sales_cost_item_options').delete().eq('id', id);
+    await onCostOptionsChanged();
+  };
+  // Default-cost edits are held locally per option and persisted on blur.
+  const [optCostDraft, setOptCostDraft] = useState<Record<string, string>>({});
+  const optCostValue = (o: CostOption) => optCostDraft[o.id] ?? (o.default_cost != null ? String(o.default_cost) : '');
+  const saveOptionCost = async (o: CostOption) => {
+    const next = parseCost(optCostValue(o));
+    if (next === (o.default_cost ?? null)) return;
+    await supabase.from('sales_cost_item_options').update({ default_cost: next }).eq('id', o.id);
+    await onCostOptionsChanged();
+  };
+  const revenue = maxAmount;
+  const totalCost = costItems.reduce((s, c) => s + (Number(c.amountText) || 0), 0);
+  const grossProfit = revenue - totalCost;
+  const marginPct = revenue > 0 ? (grossProfit / revenue) * 100 : 0;
 
   const viewFile = async (path: string) => {
     const { data } = await supabase.storage.from('sales-quotations').createSignedUrl(path, 60);
@@ -658,6 +756,17 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
       quote_date: form.quote_date || todayStr(),
       outcome_date: isDecided(form.status) ? (form.outcome_date || todayStr()) : null,
       lost_reason: form.status === 'Lost' ? form.lost_reason.trim() : null,
+      ehvcg: form.ehvcg,
+      high_potential: form.high_potential,
+      referral: form.referral,
+      referral_name: form.referral ? (form.referral_name.trim() || null) : null,
+      referral_contact: form.referral ? (form.referral_contact.trim() || null) : null,
+      referral_email: form.referral ? (form.referral_email.trim() || null) : null,
+      referral_notes: form.referral ? (form.referral_notes.trim() || null) : null,
+      cost_items: costItems
+        .filter((c) => c.label.trim() || Number(c.amountText) > 0)
+        .map((c) => ({ label: c.label.trim(), amount: Math.max(0, Number(c.amountText) || 0) })),
+      gross_profit: grossProfit,
       // keep the legacy single-pdf columns in sync (first file) for list/Kanban badges
       pdf_path: files[0]?.path ?? null,
       pdf_filename: files[0]?.name ?? null,
@@ -702,6 +811,24 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
           <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{error}</div>
         )}
 
+        {/* Overview / Others tabs — only when editing an existing quote */}
+        {!isNew && (
+          <div style={{ display: 'flex', gap: 6, background: C.seasalt, borderRadius: 12, padding: 4 }}>
+            {(['overview', 'others'] as const).map((t) => (
+              <button key={t} type="button" onClick={() => setTab(t)}
+                style={{
+                  flex: 1, padding: '8px 14px', borderRadius: 9, border: 'none',
+                  background: tab === t ? C.white : 'transparent', color: tab === t ? C.green : C.slate,
+                  fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                  boxShadow: tab === t ? '0 1px 3px rgba(0,0,0,.08)' : 'none',
+                }}>
+                {t === 'overview' ? 'Overview' : 'Others'}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {(isNew || tab === 'overview') && (<>
         <div>
           <label style={label}>Status</label>
           <select value={form.status} disabled={readOnly} onChange={(e) => changeStatus(e.target.value as QuoteStatus)} style={input(readOnly)}>
@@ -776,6 +903,25 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
             onChange={(e) => setForm((f) => ({ ...f, quote_date: e.target.value }))} style={input(readOnly)} />
         </div>
 
+        {/* EHVCG grant + High potential flags */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: readOnly ? 'default' : 'pointer' }}>
+            <input type="checkbox" checked={form.ehvcg} disabled={readOnly}
+              onChange={(e) => setForm((f) => ({ ...f, ehvcg: e.target.checked }))}
+              style={{ width: 18, height: 18, accentColor: C.green, cursor: readOnly ? 'default' : 'pointer' }} />
+            <span style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a' }}>Applicable for EHVCG grant</span>
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: readOnly ? 'default' : 'pointer' }}>
+            <input type="checkbox" checked={form.high_potential} disabled={readOnly}
+              onChange={(e) => setForm((f) => ({ ...f, high_potential: e.target.checked }))}
+              style={{ width: 18, height: 18, accentColor: '#E11D2E', cursor: readOnly ? 'default' : 'pointer' }} />
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13, fontWeight: 600, color: '#1a1a1a' }}>
+              <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#E11D2E' }} />
+              High Potential
+            </span>
+          </label>
+        </div>
+
         {/* Quotations — one or more versions, each a PDF + amount */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
@@ -842,6 +988,145 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
           <textarea value={form.notes} disabled={readOnly} rows={2} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
             style={{ ...input(readOnly), resize: 'vertical', lineHeight: 1.5 }} />
         </div>
+        </>)}
+
+        {!isNew && tab === 'others' && (<>
+          {/* Referral */}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: readOnly ? 'default' : 'pointer' }}>
+            <input type="checkbox" checked={form.referral} disabled={readOnly}
+              onChange={(e) => setForm((f) => ({ ...f, referral: e.target.checked }))}
+              style={{ width: 18, height: 18, accentColor: C.green, cursor: readOnly ? 'default' : 'pointer' }} />
+            <span style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a' }}>Referral</span>
+          </label>
+          {form.referral && (
+            <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+                <div>
+                  <label style={label}>Referral Name</label>
+                  <input value={form.referral_name} disabled={readOnly} onChange={(e) => setForm((f) => ({ ...f, referral_name: e.target.value }))} style={input(readOnly)} />
+                </div>
+                <div>
+                  <label style={label}>Contact</label>
+                  <input value={form.referral_contact} disabled={readOnly} onChange={(e) => setForm((f) => ({ ...f, referral_contact: e.target.value }))} style={input(readOnly)} />
+                </div>
+              </div>
+              <div>
+                <label style={label}>Email</label>
+                <input value={form.referral_email} disabled={readOnly} onChange={(e) => setForm((f) => ({ ...f, referral_email: e.target.value }))} style={input(readOnly)} />
+              </div>
+              <div>
+                <label style={label}>Notes</label>
+                <textarea value={form.referral_notes} disabled={readOnly} rows={2} onChange={(e) => setForm((f) => ({ ...f, referral_notes: e.target.value }))}
+                  style={{ ...input(readOnly), resize: 'vertical', lineHeight: 1.5 }} />
+              </div>
+            </div>
+          )}
+
+          {/* Margin calculator */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <label style={{ ...label, marginBottom: 0 }}>Margin Calculator</label>
+              <span style={{ fontSize: 11, color: C.slate }}>cost items vs the pipeline value</span>
+              {isAdmin && !readOnly && (
+                <button type="button" onClick={() => setManagingOptions((m) => !m)}
+                  style={{ marginLeft: 'auto', padding: 0, border: 'none', background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer', textDecoration: 'underline' }}>
+                  {managingOptions ? 'Done' : 'Manage items'}
+                </button>
+              )}
+            </div>
+
+            {isAdmin && !readOnly && managingOptions && (
+              <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <span style={{ flex: 1, fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Item</span>
+                  <span style={{ width: 130, fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Default cost</span>
+                  <span style={{ width: 26 }} />
+                </div>
+                {costOptions.map((o) => (
+                  <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ flex: 1, fontSize: 13, color: '#1a1a1a' }}>{o.label}</span>
+                    <input type="text" inputMode="decimal" value={optCostValue(o)} placeholder="—"
+                      onChange={(e) => setOptCostDraft((d) => ({ ...d, [o.id]: e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1') }))}
+                      onBlur={() => void saveOptionCost(o)}
+                      style={{ ...input(false), width: 130 }} />
+                    <button type="button" onClick={() => void deleteOption(o.id)} style={{ width: 26, height: 26, flexShrink: 0, borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <X size={12} strokeWidth={2.5} />
+                    </button>
+                  </div>
+                ))}
+                {costOptions.length === 0 && <span style={{ fontSize: 12, color: C.slate }}>No options yet — add one below.</span>}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input value={newOption} onChange={(e) => setNewOption(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void addOption(); } }}
+                    placeholder="New cost item" style={{ ...input(false), flex: 1 }} />
+                  <input type="text" inputMode="decimal" value={newOptionCost} placeholder="Cost"
+                    onChange={(e) => setNewOptionCost(e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1'))}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void addOption(); } }}
+                    style={{ ...input(false), width: 130 }} />
+                  <button type="button" onClick={() => void addOption()}
+                    style={{ padding: '8px 16px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', flexShrink: 0 }}>Add</button>
+                </div>
+              </div>
+            )}
+
+            {costItems.map((c, i) => (
+              <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <select value={c.custom ? '__other__' : (costOptions.some((o) => o.label === c.label) ? c.label : '')}
+                    disabled={readOnly}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === '__other__') { patchCost(i, { custom: true, label: '' }); return; }
+                      const opt = costOptions.find((o) => o.label === v);
+                      // Prefill the admin's default cost on selection; the user can still edit it.
+                      patchCost(i, { custom: false, label: v, ...(opt?.default_cost != null ? { amountText: String(opt.default_cost) } : {}) });
+                    }}
+                    style={{ ...input(readOnly), flex: 1, fontFamily: 'Figtree' }}>
+                    <option value="">— Select cost item —</option>
+                    {costOptions.map((o) => <option key={o.id} value={o.label}>{o.label}</option>)}
+                    <option value="__other__">Other (specify)…</option>
+                  </select>
+                  <input type="text" inputMode="decimal" value={c.amountText} disabled={readOnly} placeholder="Cost ($)"
+                    onChange={(e) => setCostAmount(i, e.target.value)}
+                    onPaste={(e) => { e.preventDefault(); setCostAmount(i, c.amountText + e.clipboardData.getData('text')); }}
+                    style={{ ...input(readOnly), width: 140 }} />
+                  {!readOnly && (
+                    <button type="button" onClick={() => removeCost(i)} style={{ width: 32, height: 32, flexShrink: 0, borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <X size={13} strokeWidth={2.5} />
+                    </button>
+                  )}
+                </div>
+                {c.custom && (
+                  <input value={c.label} disabled={readOnly} placeholder="Custom cost item"
+                    onChange={(e) => patchCost(i, { label: e.target.value })}
+                    style={{ ...input(readOnly), marginRight: 180 }} />
+                )}
+              </div>
+            ))}
+            {!readOnly && (
+              <button type="button" onClick={addCost}
+                style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 5, padding: '8px 14px', borderRadius: 10, border: `1px dashed ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                <Plus size={13} strokeWidth={2.5} /> Add cost item
+              </button>
+            )}
+            <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {[
+                ['Revenue (pipeline value)', fmtMoney(revenue), C.slate],
+                ['Total cost', fmtMoney(totalCost), C.slate],
+              ].map(([k, v, col]) => (
+                <div key={k} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, fontWeight: 600, color: col }}>
+                  <span>{k}</span><span>{v}</span>
+                </div>
+              ))}
+              <div style={{ borderTop: '1px solid #E0E5E9', paddingTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>Gross profit</span>
+                <span style={{ fontSize: 16, fontWeight: 700, color: grossProfit >= 0 ? C.green : '#C0321A' }}>
+                  {fmtMoney(grossProfit)} <span style={{ fontSize: 12, fontWeight: 600, color: C.slate }}>({marginPct.toFixed(1)}%)</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </>)}
 
         {confirmDelete && (
           <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>

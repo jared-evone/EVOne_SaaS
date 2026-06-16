@@ -262,7 +262,7 @@ export function ScreenCustomers() {
           onSave={(d) => save(d)} onClose={() => setAdding(false)} />
       )}
       {editing && (
-        <CustomerModal key={editing.customer.id} title="Edit Customer"
+        <CustomerModal key={editing.customer.id} title="Edit Customer" customerId={editing.customer.id}
           initial={{
             name:    editing.customer.name,
             type:    editing.customer.type,
@@ -309,16 +309,49 @@ interface CustomerModalProps {
   initial: CustomerFormData;
   title: string;
   canDelete: boolean;
+  customerId?: string;
   onSave: (data: CustomerFormData) => Promise<void>;
   onDelete?: () => Promise<void>;
   onClose: () => void;
 }
 
-function CustomerModal({ initial, title, canDelete, onSave, onDelete, onClose }: CustomerModalProps) {
+interface ExtraContact { id: string | null; name: string; email: string; phone: string; }
+
+function CustomerModal({ initial, title, canDelete, customerId, onSave, onDelete, onClose }: CustomerModalProps) {
   const [form, setForm] = useState<CustomerFormData>(initial);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  // Additional Contacts tab (edit-only). The first customer_contacts row is the
+  // main contact (handled on the Overview tab); the rest live here.
+  const [tab, setTab] = useState<'overview' | 'contacts'>('overview');
+  const [extras, setExtras] = useState<ExtraContact[]>([]);
+  const [deletedIds, setDeletedIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!customerId) return;
+    void (async () => {
+      const { data } = await supabase
+        .from('customer_contacts')
+        .select('id, name, email, phone, position, created_at')
+        .eq('customer_id', customerId)
+        .order('position', { ascending: true })
+        .order('created_at', { ascending: true });
+      const all = (data ?? []) as Array<{ id: string; name: string | null; email: string | null; phone: string | null }>;
+      setExtras(all.slice(1).map((r) => ({ id: r.id, name: r.name ?? '', email: r.email ?? '', phone: r.phone ?? '' })));
+    })();
+  }, [customerId]);
+
+  const addExtra = () => setExtras((xs) => [...xs, { id: null, name: '', email: '', phone: '' }]);
+  const patchExtra = (i: number, patch: Partial<ExtraContact>) =>
+    setExtras((xs) => xs.map((x, idx) => (idx === i ? { ...x, ...patch } : x)));
+  const removeExtra = (i: number) =>
+    setExtras((xs) => {
+      const x = xs[i];
+      if (x.id) setDeletedIds((d) => [...d, x.id as string]);
+      return xs.filter((_, idx) => idx !== i);
+    });
 
   const set = <K extends keyof CustomerFormData>(k: K, v: CustomerFormData[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
@@ -334,6 +367,20 @@ function CustomerModal({ initial, title, canDelete, onSave, onDelete, onClose }:
       contact_email: form.contact_email?.trim() || '',
       contact_phone: form.contact_phone?.trim() || '',
     });
+    // Sync additional contacts (edit mode only). Inserted without a position so
+    // they default like the main contact and sort after it by created_at.
+    if (customerId) {
+      if (deletedIds.length) await supabase.from('customer_contacts').delete().in('id', deletedIds);
+      for (const x of extras) {
+        const name = x.name.trim();
+        const email = x.email.trim() || null;
+        const phone = x.phone.trim() || null;
+        if (!name && !email && !phone) continue;
+        const payload = { name, email, phone };
+        if (x.id) await supabase.from('customer_contacts').update(payload).eq('id', x.id);
+        else await supabase.from('customer_contacts').insert({ ...payload, customer_id: customerId });
+      }
+    }
     setSaving(false);
     onClose();
   };
@@ -358,6 +405,24 @@ function CustomerModal({ initial, title, canDelete, onSave, onDelete, onClose }:
           <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
         </div>
 
+        {/* Overview / Additional Contacts tabs — only when editing an existing customer */}
+        {customerId && (
+          <div style={{ display: 'flex', gap: 6, background: C.seasalt, borderRadius: 12, padding: 4 }}>
+            {(['overview', 'contacts'] as const).map((t) => (
+              <button key={t} type="button" onClick={() => setTab(t)}
+                style={{
+                  flex: 1, padding: '8px 14px', borderRadius: 9, border: 'none',
+                  background: tab === t ? C.white : 'transparent', color: tab === t ? C.green : C.slate,
+                  fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                  boxShadow: tab === t ? '0 1px 3px rgba(0,0,0,.08)' : 'none',
+                }}>
+                {t === 'overview' ? 'Overview' : 'Additional Contacts'}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {(!customerId || tab === 'overview') && (<>
         <div>
           <FieldLabel>Customer Name</FieldLabel>
           <input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="Jane Tan" style={inputStyle()} autoFocus />
@@ -405,6 +470,45 @@ function CustomerModal({ initial, title, canDelete, onSave, onDelete, onClose }:
             placeholder="Account context, past interactions, billing quirks…"
             style={{ ...inputStyle(), resize: 'vertical', lineHeight: 1.5 }} />
         </div>
+        </>)}
+
+        {customerId && tab === 'contacts' && (<>
+          {extras.length === 0 && (
+            <div style={{ fontSize: 13, color: C.slate, textAlign: 'center', padding: '12px 0' }}>
+              No additional contacts yet. Add people beyond the main contact below.
+            </div>
+          )}
+          {extras.map((x, i) => (
+            <div key={i} style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Contact {i + 1}</div>
+                <button type="button" onClick={() => removeExtra(i)}
+                  style={{ marginLeft: 'auto', width: 26, height: 26, borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, fontFamily: 'Figtree' }}>×</button>
+              </div>
+              <div>
+                <FieldLabel>Attention</FieldLabel>
+                <input value={x.name} onChange={(e) => patchExtra(i, { name: e.target.value })}
+                  placeholder="Contact name" style={{ ...inputStyle(), background: C.white }} />
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+                <div>
+                  <FieldLabel>Email</FieldLabel>
+                  <input type="email" value={x.email} onChange={(e) => patchExtra(i, { email: e.target.value })}
+                    placeholder="name@acme.com" style={{ ...inputStyle(), background: C.white }} />
+                </div>
+                <div>
+                  <FieldLabel>Phone Number</FieldLabel>
+                  <input type="tel" value={x.phone} onChange={(e) => patchExtra(i, { phone: e.target.value })}
+                    placeholder="+65 9123 4567" style={{ ...inputStyle(), background: C.white }} />
+                </div>
+              </div>
+            </div>
+          ))}
+          <button type="button" onClick={addExtra}
+            style={{ alignSelf: 'flex-start', padding: '9px 16px', borderRadius: 10, border: `1px dashed ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+            + Add contact
+          </button>
+        </>)}
 
         {confirmDelete && (
           <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
