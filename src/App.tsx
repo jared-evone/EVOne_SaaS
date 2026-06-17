@@ -60,7 +60,7 @@ const NAV_ALL: NavEntry[] = [
   { kind: 'leaf', id: 'installations',     icon: Wrench,          label: 'Installations' },
   { kind: 'leaf', id: 'customers',         icon: Users,           label: 'Customers' },
   { kind: 'leaf', id: 'projects',          icon: FolderKanban,    label: 'Charger Registry' },
-  { kind: 'leaf', id: 'email_designer',    icon: Mail,            label: 'Email Designer' },
+  { kind: 'leaf', id: 'email_designer',    icon: Mail,            label: 'Email' },
   { kind: 'leaf', id: 'social',            icon: CalendarDays,    label: 'Social Media Planner' },
   { kind: 'leaf', id: 'sales',             icon: Handshake,       label: 'Sales Pipeline' },
   { kind: 'leaf', id: 'sales_manager',     icon: TrendingUp,      label: 'Sales Dashboard' },
@@ -111,7 +111,7 @@ const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
   tsd_forms:           'Form Templates',
   tsd_pic:             'PIC Review',
   tsd_technicians:     'Technicians',
-  email_designer:      'Email Designer',
+  email_designer:      'Email',
   settings:            'Users & Permissions',
   dbhealth:            'DB Health',
 };

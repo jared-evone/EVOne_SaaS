@@ -48,7 +48,7 @@ export const SCREEN_LABELS: Record<ScreenKey, string> = {
   tsd_forms:             'Form Templates',
   tsd_pic:               'PIC Review',
   tsd_technicians:       'Technicians',
-  email_designer:        'Email Designer',
+  email_designer:        'Email',
   settings:              'Users & Permissions',
   dbhealth:              'DB Health',
 };

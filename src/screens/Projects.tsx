@@ -7,6 +7,10 @@ import { Search, Mail, Phone, Pencil, FileText, Upload, Download as DownloadIcon
 import { OneMapAutocomplete } from '../components/OneMapAutocomplete';
 import { useIsMobile } from '../lib/useIsMobile';
 import {
+  type EmailBrand, DEFAULT_LTA_BRAND, fetchLtaBrand, buildLtaEmailHtml,
+  type EmailSender, fetchSenders,
+} from '../lib/ltaEmail';
+import {
   type Customer,
   type CustomerType,
   TYPE_LABEL,
@@ -2360,6 +2364,9 @@ function SendLtaEmailModal({ record, formDisplayName, charger, siteName, custome
   const [cc, setCc] = useState('');
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
+  const [brand, setBrand] = useState<EmailBrand>(DEFAULT_LTA_BRAND);
+  const [senders, setSenders] = useState<EmailSender[]>([]);
+  const [senderId, setSenderId] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2367,9 +2374,13 @@ function SendLtaEmailModal({ record, formDisplayName, charger, siteName, custome
 
   useEffect(() => {
     void (async () => {
-      const { data } = await supabase.from('lta_email_templates').select('subject, body').eq('form_type', record.form_type).maybeSingle();
-      const tpl = (data as { subject: string; body: string } | null) ?? { subject: '', body: '' };
-      const fill = (s: string) => s
+      const [tplRes, b, s] = await Promise.all([
+        supabase.from('lta_email_templates').select('subject, body').eq('form_type', record.form_type).maybeSingle(),
+        fetchLtaBrand(),
+        fetchSenders(),
+      ]);
+      const tpl = (tplRes.data as { subject: string; body: string } | null) ?? { subject: '', body: '' };
+      const fill = (str: string) => str
         .replace(/\{\{\s*charger\s*\}\}/gi, charger.asset_tag)
         .replace(/\{\{\s*form_type\s*\}\}/gi, `Form ${record.form_type}`)
         .replace(/\{\{\s*site\s*\}\}/gi, siteName)
@@ -2377,10 +2388,15 @@ function SendLtaEmailModal({ record, formDisplayName, charger, siteName, custome
         .replace(/\{\{\s*date\s*\}\}/gi, fmtDate(record.performed_at) ?? record.performed_at);
       setSubject(fill(tpl.subject));
       setBody(fill(tpl.body));
+      setBrand(b);
+      setSenders(s);
+      setSenderId(s[0]?.id ?? '');
       setLoading(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const selectedSender = senders.find((s) => s.id === senderId) ?? null;
 
   const toList = to.split(/[,;]/).map((e) => e.trim()).filter(Boolean);
   const ccList = cc.split(/[,;]/).map((e) => e.trim()).filter(Boolean);
@@ -2395,9 +2411,13 @@ function SendLtaEmailModal({ record, formDisplayName, charger, siteName, custome
         storageFileBase64(CHARGER_FORMS_BUCKET, record.storage_path),
         storageFileBase64(CHARGER_FORMS_BUCKET, record.invoice_path),
       ]);
+      const fromAddress = selectedSender ? `${selectedSender.from_name} <${selectedSender.from_email}>` : undefined;
       const { data, error: err } = await supabase.functions.invoke('send-customer-email', {
         body: {
-          to: toList, cc: ccList, subject, html: body,
+          to: toList, cc: ccList, subject,
+          html: buildLtaEmailHtml(body, brand),
+          from: fromAddress,
+          replyTo: selectedSender?.reply_to || undefined,
           attachments: [
             { filename: formDisplayName.toLowerCase().endsWith('.pdf') ? formDisplayName : `${formDisplayName}.pdf`, content: formB64 },
             { filename: record.invoice_filename ?? 'invoice.pdf', content: invoiceB64 },
@@ -2405,6 +2425,19 @@ function SendLtaEmailModal({ record, formDisplayName, charger, siteName, custome
         },
       });
       const errMsg = (data as { error?: string } | null)?.error ?? err?.message ?? null;
+      // Audit every attempt (success or failure) for the Email Audit tab.
+      await supabase.from('lta_email_log').insert({
+        lta_record_id: record.id,
+        charger_tag: charger.asset_tag,
+        form_type: record.form_type,
+        site_name: siteName,
+        customer_name: customer.name,
+        to_email: toList.join(', '),
+        cc: ccList,
+        status: errMsg ? 'failed' : 'sent',
+        error: errMsg,
+        sent_at: errMsg ? null : new Date().toISOString(),
+      });
       if (errMsg) { setError(errMsg); setSending(false); return; }
       await supabase.from('charger_lta_records').update({ invoice_sent_at: new Date().toISOString() }).eq('id', record.id);
       setSending(false);
@@ -2436,6 +2469,14 @@ function SendLtaEmailModal({ record, formDisplayName, charger, siteName, custome
         ) : (
           <>
             {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{error}</div>}
+            {senders.length > 0 && (
+              <div>
+                <FieldLabel>From</FieldLabel>
+                <select value={senderId} onChange={(e) => setSenderId(e.target.value)} style={{ ...field, cursor: 'pointer' }}>
+                  {senders.map((s) => <option key={s.id} value={s.id}>{s.from_name} &lt;{s.from_email}&gt;</option>)}
+                </select>
+              </div>
+            )}
             <div>
               <FieldLabel>To</FieldLabel>
               <input value={to} onChange={(e) => setTo(e.target.value)} placeholder="customer@company.com" style={field} />
@@ -2450,9 +2491,9 @@ function SendLtaEmailModal({ record, formDisplayName, charger, siteName, custome
               <input value={subject} onChange={(e) => setSubject(e.target.value)} style={field} />
             </div>
             <div>
-              <FieldLabel>Body (HTML)</FieldLabel>
+              <FieldLabel>Message</FieldLabel>
               <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={8} style={{ ...field, resize: 'vertical', lineHeight: 1.5, fontFamily: 'Figtree' }} />
-              <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Edit the default in Settings → Email Designer. Placeholders are already filled in.</div>
+              <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Plain text — the logo, header and footer are added automatically. Edit defaults in Charger Registry → Email.</div>
             </div>
             <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 6 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Attachments</div>
