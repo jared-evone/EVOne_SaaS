@@ -234,9 +234,18 @@ export function ScreenSales() {
   // salesperson's pipeline. A salesperson with delete access still sees only their own.
   const activeSales = salesUsers.filter((u) => u.is_active);
 
+  // customer_name is a snapshot on the quote; show the live name from the
+  // customers list (by id) so renames in Customers reflect here too.
+  const customerNames = new Map(customers.map((c) => [c.id, c.name]));
+  const liveQuotes = quotes.map((q) =>
+    q.customer_id && customerNames.has(q.customer_id)
+      ? { ...q, customer_name: customerNames.get(q.customer_id) as string }
+      : q,
+  );
+
   const scoped = isAdmin
-    ? (adminView === 'all' ? quotes : quotes.filter((q) => q.salesperson_id === adminView))
-    : (myPerson ? quotes.filter((q) => q.salesperson_id === myPerson.id) : []);
+    ? (adminView === 'all' ? liveQuotes : liveQuotes.filter((q) => q.salesperson_id === adminView))
+    : (myPerson ? liveQuotes.filter((q) => q.salesperson_id === myPerson.id) : []);
 
   // When creating a new quote: the viewed salesperson (admin) or the signed-in user.
   const defaultPerson = isAdmin
