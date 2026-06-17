@@ -39,7 +39,7 @@ export function ScreenEmailDesigner() {
 
 // ── Designer ──────────────────────────────────────────────────────
 
-interface LtaTemplate { form_type: 'A' | 'D'; subject: string; body: string; }
+interface LtaTemplate { form_type: 'A' | 'D'; subject: string; body: string; cc: string; }
 
 const SAMPLE = { charger: 'SN-80250210121', site: '476 Siglap Road', customer: 'Sample Pte Ltd', date: '09 Jun 2026' };
 const fillSample = (s: string, formType: 'A' | 'D') => s
@@ -102,8 +102,8 @@ function EmailDesignerTab() {
   // Per-form-type message templates.
   const [formType, setFormType] = useState<'A' | 'D'>('A');
   const [templates, setTemplates] = useState<Record<'A' | 'D', LtaTemplate>>({
-    A: { form_type: 'A', subject: '', body: '' },
-    D: { form_type: 'D', subject: '', body: '' },
+    A: { form_type: 'A', subject: '', body: '', cc: '' },
+    D: { form_type: 'D', subject: '', body: '', cc: '' },
   });
   const [tplLoaded, setTplLoaded] = useState(false);
   const [savingTpl, setSavingTpl] = useState(false);
@@ -111,11 +111,11 @@ function EmailDesignerTab() {
 
   useEffect(() => {
     void (async () => {
-      const { data } = await supabase.from('lta_email_templates').select('form_type, subject, body');
+      const { data } = await supabase.from('lta_email_templates').select('form_type, subject, body, cc');
       setTemplates((prev) => {
         const map = { ...prev };
         for (const row of (data ?? []) as LtaTemplate[]) {
-          if (row.form_type === 'A' || row.form_type === 'D') map[row.form_type] = row;
+          if (row.form_type === 'A' || row.form_type === 'D') map[row.form_type] = { ...row, cc: row.cc ?? '' };
         }
         return map;
       });
@@ -128,7 +128,7 @@ function EmailDesignerTab() {
   const saveTpl = async () => {
     setSavingTpl(true);
     await supabase.from('lta_email_templates').upsert({
-      form_type: formType, subject: current.subject, body: current.body, updated_at: new Date().toISOString(),
+      form_type: formType, subject: current.subject, body: current.body, cc: current.cc, updated_at: new Date().toISOString(),
     }, { onConflict: 'form_type' });
     setSavingTpl(false);
     setSavedTpl(true);
@@ -243,6 +243,12 @@ function EmailDesignerTab() {
             <label style={label}>Message Body</label>
             <textarea value={current.body} disabled={disabled} onChange={(e) => patchTpl({ body: e.target.value })} rows={9}
               placeholder="Plain text — the logo, header and footer above are added automatically." style={{ ...field, resize: 'vertical', lineHeight: 1.5, fontFamily: 'Figtree' }} />
+          </div>
+          <div>
+            <label style={label}>Fixed CC — internal team (comma-separated)</label>
+            <input value={current.cc} disabled={disabled} onChange={(e) => patchTpl({ cc: e.target.value })}
+              placeholder="ops@evone.com.sg, finance@evone.com.sg" style={field} />
+            <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Always CC'd on every {`Form ${formType}`} send, on top of any recipients added per email.</div>
           </div>
           <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.6, background: C.seasalt, borderRadius: 10, padding: '10px 12px' }}>
             Placeholders (auto-filled when sending): <strong>{'{{charger}}'}</strong> · <strong>{'{{form_type}}'}</strong> · <strong>{'{{site}}'}</strong> · <strong>{'{{customer}}'}</strong> · <strong>{'{{date}}'}</strong>

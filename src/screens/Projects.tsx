@@ -3,7 +3,7 @@ import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
-import { Search, Mail, Phone, Pencil, FileText, Upload, Download as DownloadIcon, ChevronDown } from 'lucide-react';
+import { Search, Mail, Phone, Pencil, FileText, Upload, Download as DownloadIcon, ChevronDown, X } from 'lucide-react';
 import { OneMapAutocomplete } from '../components/OneMapAutocomplete';
 import { useIsMobile } from '../lib/useIsMobile';
 import {
@@ -505,6 +505,7 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
   const [addingSite, setAddingSite] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const fetchAll = async () => {
     const [{ data: p }, { data: f }, { data: s }, { data: bm }] = await Promise.all([
@@ -542,11 +543,27 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
 
   const handleDelete = async () => {
     setDeleting(true);
-    // Clean storage objects before the cascade-deletes the project_files rows.
-    const paths = files.map((f) => f.storage_path).filter(Boolean);
-    if (paths.length) await supabase.storage.from(PROJECT_FILES_BUCKET).remove(paths);
-    await supabase.from('projects').delete().eq('id', projectId);
+    setDeleteError(null);
+    // Deleting the project cascade-deletes its sites, chargers, LTA records,
+    // warranty claims and project_files rows (FK ON DELETE CASCADE). Storage
+    // objects don't cascade, so clean them up first to avoid orphans.
+    const chargers = sites.flatMap((s) => s.site_chargers ?? []);
+    const chargerFormPaths: string[] = chargers.map((c) => c.form_1_path).filter((p): p is string => !!p);
+    const chargerIds = chargers.map((c) => c.id);
+    if (chargerIds.length) {
+      const { data: lta } = await supabase.from('charger_lta_records').select('storage_path, invoice_path').in('charger_id', chargerIds);
+      for (const r of (lta ?? []) as Array<{ storage_path: string | null; invoice_path: string | null }>) {
+        if (r.storage_path) chargerFormPaths.push(r.storage_path);
+        if (r.invoice_path) chargerFormPaths.push(r.invoice_path);
+      }
+    }
+    const projectFilePaths = files.map((f) => f.storage_path).filter(Boolean);
+    if (projectFilePaths.length) await supabase.storage.from(PROJECT_FILES_BUCKET).remove(projectFilePaths);
+    if (chargerFormPaths.length) await supabase.storage.from(CHARGER_FORMS_BUCKET).remove(chargerFormPaths);
+
+    const { error } = await supabase.from('projects').delete().eq('id', projectId);
     setDeleting(false);
+    if (error) { setDeleteError(error.message); return; }
     await onBack();
   };
 
@@ -600,7 +617,9 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
       {confirmDelete && (
         <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: '#C0321A', flex: 1 }}>
-            Delete <strong>{project.name}</strong>? The linked customer is unaffected.
+            {deleteError
+              ? <>Could not delete: {deleteError}</>
+              : <>Delete <strong>{project.name}</strong>? Its sites and chargers will be removed too. The linked customer is unaffected.</>}
           </div>
           <button onClick={() => setConfirmDelete(false)} disabled={deleting}
             style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #FDEAEA', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
@@ -675,7 +694,7 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
                   brandModels={brandModels}
                   canEdit={canEdit}
                   canDelete={canDelete}
-                  customer={{ name: customer?.name ?? project.name, email: contacts.find((c) => c.email)?.email ?? null }}
+                  customer={{ name: customer?.name ?? project.name, email: contacts.find((c) => c.email)?.email ?? null, type: customer?.type }}
                   onChanged={fetchAll}
                   onDeleted={() => setTab('overview')}
                 />
@@ -1560,6 +1579,7 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
           title="New Registration"
           initial={blankCharger()}
           siteName={siteName}
+          isResidential={customer.type === 'residential'}
           brandModels={brandModels}
           canDelete={false}
           canManageBrandModels={canDelete}
@@ -1576,6 +1596,7 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
           key={editing.id}
           title="Edit Charger"
           siteName={siteName}
+          isResidential={customer.type === 'residential'}
           initial={{
             asset_tag: editing.asset_tag,
             brand_model: editing.brand_model,
@@ -1653,16 +1674,20 @@ function ChargerTabPanel({ charger, siteName, tab, onTabChange, canEdit, canDele
   customer: LtaEmailCustomer;
   onChargerChanged: () => Promise<void>;
 }) {
-  if (tab === 'details')     return <ChargerDetailsPanel charger={charger} siteName={siteName} onTabChange={onTabChange} />;
+  if (tab === 'details')     return <ChargerDetailsPanel charger={charger} siteName={siteName} customer={customer} onTabChange={onTabChange} />;
   if (tab === 'maintenance') return <LtaInspectionPanel  charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} onChargerChanged={onChargerChanged} />;
   return <WarrantyPanel charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} />;
 }
 
-function ChargerDetailsPanel({ charger, siteName, onTabChange }: {
+function ChargerDetailsPanel({ charger, siteName, customer, onTabChange }: {
   charger: SiteCharger;
   siteName: string;
+  customer: LtaEmailCustomer;
   onTabChange: (t: ChargerDetailTab) => void;
 }) {
+  // Residential chargers need only Form A, every 24 months — no Form D.
+  const isResidential = customer.type === 'residential';
+  const formAMonths = isResidential ? 24 : 6;
   const [ltaRecords, setLtaRecords] = useState<LtaRecord[]>([]);
 
   useEffect(() => {
@@ -1694,13 +1719,13 @@ function ChargerDetailsPanel({ charger, siteName, onTabChange }: {
   };
 
   const tone = warrantyTone(charger.warranty_end_date);
-  const formADate = nextCycleDate(charger.turn_on_date, 6);
+  const formADate = nextCycleDate(charger.turn_on_date, formAMonths);
   const formDDate = nextCycleDate(charger.turn_on_date, 12);
   const formA = daysFromToday(formADate);
   const formD = daysFromToday(formDDate);
   const latestA = ltaRecords.find((r) => r.form_type === 'A') ?? null;
   const latestD = ltaRecords.find((r) => r.form_type === 'D') ?? null;
-  const doneA = isInspectedWithin(latestA, 6);
+  const doneA = isInspectedWithin(latestA, formAMonths);
   const doneD = isInspectedWithin(latestD, 12);
 
   return (
@@ -1787,8 +1812,10 @@ function ChargerDetailsPanel({ charger, siteName, onTabChange }: {
             );
           })()}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10 }}>
-            <FormStatusCard formType="A" period="6-month"  latest={latestA} latestDisplayName={latestA ? computeLtaFilename('A', charger.asset_tag, latestA.performed_at, siteName) : null} done={doneA} nextDate={formADate} nextDays={formA} onDownload={() => void openLtaRecord(latestA!)} />
-            <FormStatusCard formType="D" period="12-month" latest={latestD} latestDisplayName={latestD ? computeLtaFilename('D', charger.asset_tag, latestD.performed_at, siteName) : null} done={doneD} nextDate={formDDate} nextDays={formD} onDownload={() => void openLtaRecord(latestD!)} />
+            <FormStatusCard formType="A" period={isResidential ? '24-month' : '6-month'} latest={latestA} latestDisplayName={latestA ? computeLtaFilename('A', charger.asset_tag, latestA.performed_at, siteName) : null} done={doneA} nextDate={formADate} nextDays={formA} onDownload={() => void openLtaRecord(latestA!)} />
+            {!isResidential && (
+              <FormStatusCard formType="D" period="12-month" latest={latestD} latestDisplayName={latestD ? computeLtaFilename('D', charger.asset_tag, latestD.performed_at, siteName) : null} done={doneD} nextDate={formDDate} nextDays={formD} onDownload={() => void openLtaRecord(latestD!)} />
+            )}
           </div>
         </div>
       </div>
@@ -1833,7 +1860,7 @@ interface LtaRecord {
   invoice_sent_at: string | null;
 }
 
-interface LtaEmailCustomer { name: string; email: string | null }
+interface LtaEmailCustomer { name: string; email: string | null; type?: CustomerType }
 
 function LtaInspectionPanel({ charger, siteName, canEdit, canDelete, customer, onChargerChanged }: {
   charger: SiteCharger;
@@ -1859,22 +1886,29 @@ function LtaInspectionPanel({ charger, siteName, canEdit, canDelete, customer, o
 
   const formA = records.filter((r) => r.form_type === 'A');
   const formD = records.filter((r) => r.form_type === 'D');
+  // Residential chargers need only Form A, every 24 months — no Form D.
+  const isResidential = customer.type === 'residential';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5 }}>
-        Upload completed Form A (6-month) and Form D (12-month) inspection PDFs for <strong style={{ color: '#1a1a1a' }}>{charger.asset_tag}</strong>. Each upload is dated for when the inspection was performed.
+        {isResidential
+          ? <>Upload completed Form A (24-month) inspection PDFs for <strong style={{ color: '#1a1a1a' }}>{charger.asset_tag}</strong>. Residential chargers do not require Form D. Each upload is dated for when the inspection was performed.</>
+          : <>Upload completed Form A (6-month) and Form D (12-month) inspection PDFs for <strong style={{ color: '#1a1a1a' }}>{charger.asset_tag}</strong>. Each upload is dated for when the inspection was performed.</>}
       </div>
-      <ContractCard charger={charger} canEdit={canEdit} onChargerChanged={onChargerChanged} />
-      <LtaSection formType="A" title="Form A · 6-month inspection"  records={formA} charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} loading={loading} onChanged={refresh} />
-      <LtaSection formType="D" title="Form D · 12-month inspection" records={formD} charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} loading={loading} onChanged={refresh} />
+      <ContractCard charger={charger} canEdit={canEdit} isResidential={isResidential} onChargerChanged={onChargerChanged} />
+      <LtaSection formType="A" title={isResidential ? 'Form A · 24-month inspection' : 'Form A · 6-month inspection'}  records={formA} charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} loading={loading} onChanged={refresh} />
+      {!isResidential && (
+        <LtaSection formType="D" title="Form D · 12-month inspection" records={formD} charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} loading={loading} onChanged={refresh} />
+      )}
     </div>
   );
 }
 
-function ContractCard({ charger, canEdit, onChargerChanged }: {
+function ContractCard({ charger, canEdit, isResidential, onChargerChanged }: {
   charger: SiteCharger;
   canEdit: boolean;
+  isResidential: boolean;
   onChargerChanged: () => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
@@ -1975,7 +2009,9 @@ function ContractCard({ charger, canEdit, onChargerChanged }: {
             <div>
               <div style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a' }}>LTA inspection contract is active</div>
               <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
-                1 year of contract covers <strong>2 Form A</strong> inspections + <strong>1 Form D</strong> inspection.
+                {isResidential
+                  ? <>Residential chargers require <strong>1 Form A</strong> inspection every <strong>24 months</strong> — no Form D.</>
+                  : <>1 year of contract covers <strong>2 Form A</strong> inspections + <strong>1 Form D</strong> inspection.</>}
               </div>
             </div>
           </label>
@@ -2362,6 +2398,7 @@ function SendLtaEmailModal({ record, formDisplayName, charger, siteName, custome
 }) {
   const [to, setTo] = useState(customer.email ?? '');
   const [cc, setCc] = useState('');
+  const [fixedCc, setFixedCc] = useState('');
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
   const [brand, setBrand] = useState<EmailBrand>(DEFAULT_LTA_BRAND);
@@ -2371,15 +2408,18 @@ function SendLtaEmailModal({ record, formDisplayName, charger, siteName, custome
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const [includeForm, setIncludeForm] = useState(true);
+  const [includeInvoice, setIncludeInvoice] = useState(true);
 
   useEffect(() => {
     void (async () => {
       const [tplRes, b, s] = await Promise.all([
-        supabase.from('lta_email_templates').select('subject, body').eq('form_type', record.form_type).maybeSingle(),
+        supabase.from('lta_email_templates').select('subject, body, cc').eq('form_type', record.form_type).maybeSingle(),
         fetchLtaBrand(),
         fetchSenders(),
       ]);
-      const tpl = (tplRes.data as { subject: string; body: string } | null) ?? { subject: '', body: '' };
+      const tpl = (tplRes.data as { subject: string; body: string; cc: string | null } | null) ?? { subject: '', body: '', cc: '' };
+      setFixedCc(tpl.cc ?? '');
       const fill = (str: string) => str
         .replace(/\{\{\s*charger\s*\}\}/gi, charger.asset_tag)
         .replace(/\{\{\s*form_type\s*\}\}/gi, `Form ${record.form_type}`)
@@ -2399,18 +2439,27 @@ function SendLtaEmailModal({ record, formDisplayName, charger, siteName, custome
   const selectedSender = senders.find((s) => s.id === senderId) ?? null;
 
   const toList = to.split(/[,;]/).map((e) => e.trim()).filter(Boolean);
-  const ccList = cc.split(/[,;]/).map((e) => e.trim()).filter(Boolean);
-  const canSend = toList.length > 0 && !!subject.trim() && !!body.trim() && !sending && !loading;
+  // Per-email CC plus the admin-configured fixed internal CC (deduped).
+  const fixedCcList = fixedCc.split(/[,;]/).map((e) => e.trim()).filter(Boolean);
+  const ccList = Array.from(new Set([...cc.split(/[,;]/).map((e) => e.trim()).filter(Boolean), ...fixedCcList]));
+  const hasInvoice = !!record.invoice_path;
+  const attachCount = (includeForm ? 1 : 0) + (includeInvoice && hasInvoice ? 1 : 0);
+  const canSend = toList.length > 0 && !!subject.trim() && !!body.trim() && attachCount > 0 && !sending && !loading;
 
   const handleSend = async () => {
-    if (!canSend || !record.invoice_path) return;
+    if (!canSend) return;
     setSending(true);
     setError(null);
     try {
-      const [formB64, invoiceB64] = await Promise.all([
-        storageFileBase64(CHARGER_FORMS_BUCKET, record.storage_path),
-        storageFileBase64(CHARGER_FORMS_BUCKET, record.invoice_path),
-      ]);
+      const attachments: { filename: string; content: string }[] = [];
+      if (includeForm) {
+        const formB64 = await storageFileBase64(CHARGER_FORMS_BUCKET, record.storage_path);
+        attachments.push({ filename: formDisplayName.toLowerCase().endsWith('.pdf') ? formDisplayName : `${formDisplayName}.pdf`, content: formB64 });
+      }
+      if (includeInvoice && record.invoice_path) {
+        const invoiceB64 = await storageFileBase64(CHARGER_FORMS_BUCKET, record.invoice_path);
+        attachments.push({ filename: record.invoice_filename ?? 'invoice.pdf', content: invoiceB64 });
+      }
       const fromAddress = selectedSender ? `${selectedSender.from_name} <${selectedSender.from_email}>` : undefined;
       const { data, error: err } = await supabase.functions.invoke('send-customer-email', {
         body: {
@@ -2418,10 +2467,7 @@ function SendLtaEmailModal({ record, formDisplayName, charger, siteName, custome
           html: buildLtaEmailHtml(body, brand),
           from: fromAddress,
           replyTo: selectedSender?.reply_to || undefined,
-          attachments: [
-            { filename: formDisplayName.toLowerCase().endsWith('.pdf') ? formDisplayName : `${formDisplayName}.pdf`, content: formB64 },
-            { filename: record.invoice_filename ?? 'invoice.pdf', content: invoiceB64 },
-          ],
+          attachments,
         },
       });
       const errMsg = (data as { error?: string } | null)?.error ?? err?.message ?? null;
@@ -2439,7 +2485,10 @@ function SendLtaEmailModal({ record, formDisplayName, charger, siteName, custome
         sent_at: errMsg ? null : new Date().toISOString(),
       });
       if (errMsg) { setError(errMsg); setSending(false); return; }
-      await supabase.from('charger_lta_records').update({ invoice_sent_at: new Date().toISOString() }).eq('id', record.id);
+      // Only mark the invoice as sent if it was actually attached.
+      if (includeInvoice && record.invoice_path) {
+        await supabase.from('charger_lta_records').update({ invoice_sent_at: new Date().toISOString() }).eq('id', record.id);
+      }
       setSending(false);
       setDone(true);
       await onSent();
@@ -2485,6 +2534,9 @@ function SendLtaEmailModal({ record, formDisplayName, charger, siteName, custome
             <div>
               <FieldLabel>CC (comma-separated)</FieldLabel>
               <input value={cc} onChange={(e) => setCc(e.target.value)} placeholder="optional" style={field} />
+              {fixedCcList.length > 0 && (
+                <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Internal team auto-CC'd: {fixedCcList.join(', ')}</div>
+              )}
             </div>
             <div>
               <FieldLabel>Subject</FieldLabel>
@@ -2495,10 +2547,29 @@ function SendLtaEmailModal({ record, formDisplayName, charger, siteName, custome
               <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={8} style={{ ...field, resize: 'vertical', lineHeight: 1.5, fontFamily: 'Figtree' }} />
               <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Plain text — the logo, header and footer are added automatically. Edit defaults in Charger Registry → Email.</div>
             </div>
-            <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Attachments</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#1a1a1a' }}><FileText size={14} color={C.green} /> {formDisplayName}</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#1a1a1a' }}><FileText size={14} color={C.green} /> {record.invoice_filename}</div>
+              {([
+                { name: formDisplayName, on: includeForm, set: setIncludeForm, show: true },
+                { name: record.invoice_filename ?? 'invoice.pdf', on: includeInvoice, set: setIncludeInvoice, show: hasInvoice },
+              ] as const).filter((a) => a.show).map((a) => (
+                <div key={a.name} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <FileText size={14} color={a.on ? C.green : C.slate} style={{ flexShrink: 0 }} />
+                  <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: a.on ? '#1a1a1a' : C.slate, textDecoration: a.on ? 'none' : 'line-through', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</span>
+                  {a.on ? (
+                    <button type="button" onClick={() => a.set(false)} title="Don't attach"
+                      style={{ width: 24, height: 24, flexShrink: 0, borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <X size={12} strokeWidth={2.5} />
+                    </button>
+                  ) : (
+                    <button type="button" onClick={() => a.set(true)}
+                      style={{ flexShrink: 0, padding: '3px 10px', borderRadius: 6, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                      Attach
+                    </button>
+                  )}
+                </div>
+              ))}
+              {attachCount === 0 && <div style={{ fontSize: 11, color: '#C0321A', fontWeight: 600 }}>Attach at least one file to send.</div>}
             </div>
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
               <button onClick={onClose} style={{ padding: '9px 20px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
@@ -3079,10 +3150,11 @@ function blankCharger(): ChargerFormData {
   };
 }
 
-function ChargerModal({ title, initial, siteName, brandModels, canDelete, canManageBrandModels, onSave, onDelete, onBrandModelsChanged, onClose }: {
+function ChargerModal({ title, initial, siteName, isResidential, brandModels, canDelete, canManageBrandModels, onSave, onDelete, onBrandModelsChanged, onClose }: {
   title: string;
   initial: ChargerFormData;
   siteName: string;
+  isResidential: boolean;
   brandModels: BrandModel[];
   canDelete: boolean;
   canManageBrandModels: boolean;
@@ -3156,8 +3228,8 @@ function ChargerModal({ title, initial, siteName, brandModels, canDelete, canMan
       asset_tag:               form.asset_tag.trim(),
       brand_model:             form.brand_model && form.brand_model.trim() ? form.brand_model.trim() : null,
       turn_on_date:            turnOn,
-      form_a_next_date:        nextCycleDate(turnOn, 6),
-      form_d_next_date:        nextCycleDate(turnOn, 12),
+      form_a_next_date:        nextCycleDate(turnOn, isResidential ? 24 : 6),
+      form_d_next_date:        isResidential ? null : nextCycleDate(turnOn, 12),
       warranty_start_date:     turnOn ? turnOn : null,
       warranty_end_date:       turnOn && yrs  ? addYears(turnOn, yrs) : null,
       form_1_path:             form.form_1_path || null,
@@ -3223,12 +3295,16 @@ function ChargerModal({ title, initial, siteName, brandModels, canDelete, canMan
             <FieldLabel>Turn-on Date</FieldLabel>
             <input type="date" value={form.turn_on_date ?? ''} onChange={(e) => set('turn_on_date', e.target.value || null)} style={{ ...inputStyle(), background: C.white }} />
             <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
-              Form A repeats every <strong>6 months</strong>, Form D every <strong>12 months</strong> from turn-on. The system always shows the <strong>next upcoming</strong> date so cold calls stay on track.
+              {isResidential
+                ? <>Residential chargers need only <strong>Form A every 24 months</strong> from turn-on — no Form D. The system always shows the <strong>next upcoming</strong> date.</>
+                : <>Form A repeats every <strong>6 months</strong>, Form D every <strong>12 months</strong> from turn-on. The system always shows the <strong>next upcoming</strong> date so cold calls stay on track.</>}
             </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
-            <ReadOnlyField label="Next Form A (auto)" value={fmtDate(nextCycleDate(form.turn_on_date, 6))}  placeholder="Set turn-on date" />
-            <ReadOnlyField label="Next Form D (auto)" value={fmtDate(nextCycleDate(form.turn_on_date, 12))} placeholder="Set turn-on date" />
+            <ReadOnlyField label="Next Form A (auto)" value={fmtDate(nextCycleDate(form.turn_on_date, isResidential ? 24 : 6))}  placeholder="Set turn-on date" />
+            {!isResidential && (
+              <ReadOnlyField label="Next Form D (auto)" value={fmtDate(nextCycleDate(form.turn_on_date, 12))} placeholder="Set turn-on date" />
+            )}
           </div>
         </div>
 

@@ -4,7 +4,7 @@ import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
 import { useIsMobile } from '../lib/useIsMobile';
-import { Search, ChevronDown, ChevronLeft, ChevronRight, Handshake, FileUp, FileText, X, Plus } from 'lucide-react';
+import { Search, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Handshake, FileUp, FileText, X, Plus } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -689,6 +689,18 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
     await supabase.from('sales_cost_item_options').delete().eq('id', id);
     await onCostOptionsChanged();
   };
+  // Reorder the dropdown sequence: swap with the neighbour, then renumber
+  // sort_order to the new positions (only the rows that changed are written).
+  const moveOption = async (i: number, dir: -1 | 1) => {
+    const j = i + dir;
+    if (j < 0 || j >= costOptions.length) return;
+    const reordered = [...costOptions];
+    [reordered[i], reordered[j]] = [reordered[j], reordered[i]];
+    await Promise.all(reordered.map((o, idx) =>
+      o.sort_order === idx ? null : supabase.from('sales_cost_item_options').update({ sort_order: idx }).eq('id', o.id),
+    ).filter(Boolean));
+    await onCostOptionsChanged();
+  };
   // Default-cost edits are held locally per option and persisted on blur.
   const [optCostDraft, setOptCostDraft] = useState<Record<string, string>>({});
   const optCostValue = (o: CostOption) => optCostDraft[o.id] ?? (o.default_cost != null ? String(o.default_cost) : '');
@@ -1055,12 +1067,24 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
             {isAdmin && !readOnly && managingOptions && (
               <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <div style={{ display: 'flex', gap: 8 }}>
+                  <span style={{ width: 44 }} />
                   <span style={{ flex: 1, fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Item</span>
                   <span style={{ width: 130, fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Default cost</span>
                   <span style={{ width: 26 }} />
                 </div>
-                {costOptions.map((o) => (
+                {costOptions.map((o, i) => {
+                  const arrow = (dir: -1 | 1, disabled: boolean) => (
+                    <button type="button" disabled={disabled} onClick={() => void moveOption(i, dir)}
+                      style={{ width: 20, height: 18, flexShrink: 0, borderRadius: 5, border: '1px solid #EBEBEB', background: disabled ? '#F9F9F9' : C.white, color: disabled ? '#CBD5DD' : C.slate, cursor: disabled ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}>
+                      {dir === -1 ? <ChevronUp size={12} strokeWidth={2.5} /> : <ChevronDown size={12} strokeWidth={2.5} />}
+                    </button>
+                  );
+                  return (
                   <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ width: 44, flexShrink: 0, display: 'flex', gap: 4 }}>
+                      {arrow(-1, i === 0)}
+                      {arrow(1, i === costOptions.length - 1)}
+                    </div>
                     <span style={{ flex: 1, fontSize: 13, color: '#1a1a1a' }}>{o.label}</span>
                     <input type="text" inputMode="decimal" value={optCostValue(o)} placeholder="—"
                       onChange={(e) => setOptCostDraft((d) => ({ ...d, [o.id]: e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1') }))}
@@ -1070,7 +1094,8 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
                       <X size={12} strokeWidth={2.5} />
                     </button>
                   </div>
-                ))}
+                  );
+                })}
                 {costOptions.length === 0 && <span style={{ fontSize: 12, color: C.slate }}>No options yet — add one below.</span>}
                 <div style={{ display: 'flex', gap: 8 }}>
                   <input value={newOption} onChange={(e) => setNewOption(e.target.value)}
