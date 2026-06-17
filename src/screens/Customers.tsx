@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
@@ -54,24 +54,51 @@ function inputStyle(): React.CSSProperties {
   return { width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 }
 
-// Phone numbers are stored as `+65` + 8-or-more local digits, no spaces. The
-// `+65` is a fixed prefix in the UI; the editable part is local digits only.
-// Pasting spaces, a leading +65, or 65 country code is normalised away.
-function localPhone(full: string): string {
+// Phone numbers are stored as `+65` + local digits, no spaces. The `+65` is a
+// fixed UI prefix; the editable part is the local digits only.
+// `localPart` strips a leading +65 / 65 country code (only when long enough that
+// it can't be the local number itself), so it's the inverse of the stored form
+// without eating a genuine local number that happens to start with 65.
+function localPart(full: string): string {
   let d = (full || '').replace(/\D/g, '');
-  while (d.length > 8 && d.startsWith('65')) d = d.slice(2);
+  if (d.startsWith('65') && d.length > 8) d = d.slice(2);
   return d;
 }
-function fullPhone(raw: string): string {
-  const d = localPhone(raw);
-  return d ? '+65' + d : '';
+// Normalise any stored/legacy value for saving: `+65` + local digits, or null.
+function storePhone(full: string | undefined | null): string | null {
+  const d = localPart(full ?? '');
+  return d ? '+65' + d : null;
 }
 
 function PhoneInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  // The local digits are the source of truth in the input's own state — we never
+  // re-derive them from the combined `+65…` value on every render (that round-trip
+  // is what made the prefix's "65" leak back in and multiply while typing).
+  const [local, setLocal] = useState(() => localPart(value));
+  const lastEmitted = useRef(value);
+
+  // Re-seed only when the parent value changes for a reason other than our own
+  // emit (e.g. switching to a different customer / contact).
+  useEffect(() => {
+    if (value !== lastEmitted.current) setLocal(localPart(value));
+  }, [value]);
+
+  const emit = (digits: string) => {
+    setLocal(digits);
+    const full = digits ? '+65' + digits : '';
+    lastEmitted.current = full;
+    onChange(full);
+  };
+
   return (
     <div style={{ display: 'flex', alignItems: 'stretch', borderRadius: 10, border: '1px solid #EBEBEB', background: C.white, overflow: 'hidden' }}>
       <span style={{ display: 'inline-flex', alignItems: 'center', padding: '0 12px', fontSize: 13, fontWeight: 600, color: C.slate, background: C.seasalt, borderRight: '1px solid #EBEBEB' }}>+65</span>
-      <input type="tel" value={localPhone(value)} onChange={(e) => onChange(fullPhone(e.target.value))}
+      <input type="tel" value={local}
+        onChange={(e) => emit(e.target.value.replace(/\D/g, ''))}
+        onPaste={(e) => {
+          e.preventDefault();
+          emit(localPart(e.clipboardData.getData('text')));
+        }}
         placeholder="9123 4567"
         style={{ flex: 1, minWidth: 0, border: 'none', outline: 'none', padding: '10px 14px', fontFamily: 'Figtree', fontSize: 13, background: 'transparent' }} />
     </div>
@@ -154,7 +181,7 @@ export function ScreenCustomers() {
     const contactPayload = {
       name:  (data.contact_name  ?? '').trim(),
       email: (data.contact_email ?? '').trim() || null,
-      phone: fullPhone(data.contact_phone ?? '') || null,
+      phone: storePhone(data.contact_phone),
     };
     if (id) {
       await supabase.from('customers').update({
@@ -398,7 +425,7 @@ function CustomerModal({ initial, title, canDelete, customerId, onSave, onDelete
       for (const x of extras) {
         const name = x.name.trim();
         const email = x.email.trim() || null;
-        const phone = fullPhone(x.phone) || null;
+        const phone = storePhone(x.phone);
         if (!name && !email && !phone) continue;
         const payload = { name, email, phone };
         if (x.id) await supabase.from('customer_contacts').update(payload).eq('id', x.id);

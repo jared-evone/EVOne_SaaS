@@ -6,7 +6,7 @@ import {
   LayoutDashboard, Home, Receipt, Wrench, Users, FolderKanban, CalendarDays,
   Handshake, ClipboardList, Boxes, Truck, Building2, Plug, Zap, FileText,
   Hammer, Settings as SettingsIcon, ShieldCheck, Database, ChevronRight, ChevronDown,
-  Power, Menu, TrendingUp, UserCog,
+  Power, Menu, TrendingUp, UserCog, Mail,
   type LucideIcon,
 } from 'lucide-react';
 import { useIsMobile } from './lib/useIsMobile';
@@ -29,6 +29,8 @@ import { ScreenCorporateInvoicing } from './screens/CorporateInvoicing';
 import { ScreenCPOChargers } from './screens/CPOChargers';
 import { ScreenSettings } from './screens/Settings';
 import { ScreenDBHealth } from './screens/DBHealth';
+import { ScreenEmailDesigner } from './screens/EmailDesigner';
+import { SuperAdminConsole } from './screens/SuperAdmin';
 import { ScreenChargingDashboard } from './screens/ChargingDashboard';
 import { ScreenDashboard } from './screens/Dashboard';
 import { Login } from './screens/Login';
@@ -58,6 +60,7 @@ const NAV_ALL: NavEntry[] = [
   { kind: 'leaf', id: 'installations',     icon: Wrench,          label: 'Installations' },
   { kind: 'leaf', id: 'customers',         icon: Users,           label: 'Customers' },
   { kind: 'leaf', id: 'projects',          icon: FolderKanban,    label: 'Charger Registry' },
+  { kind: 'leaf', id: 'email_designer',    icon: Mail,            label: 'Email Designer' },
   { kind: 'leaf', id: 'social',            icon: CalendarDays,    label: 'Social Media Planner' },
   { kind: 'leaf', id: 'sales',             icon: Handshake,       label: 'Sales Pipeline' },
   { kind: 'leaf', id: 'sales_manager',     icon: TrendingUp,      label: 'Sales Dashboard' },
@@ -108,6 +111,7 @@ const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
   tsd_forms:           'Form Templates',
   tsd_pic:             'PIC Review',
   tsd_technicians:     'Technicians',
+  email_designer:      'Email Designer',
   settings:            'Users & Permissions',
   dbhealth:            'DB Health',
 };
@@ -136,6 +140,7 @@ const screens: Partial<Record<ScreenId, JSX.Element>> = {
   tsd_forms:           <FormBuilder />,
   tsd_pic:             <PICReviewBoard />,
   tsd_technicians:     <TechniciansAdmin />,
+  email_designer:      <ScreenEmailDesigner />,
   settings:            <ScreenSettings />,
   dbhealth:            <ScreenDBHealth />,
 };
@@ -435,6 +440,15 @@ export default function App() {
 
   if (!user) {
     return <Login onLogin={handleLogin} />;
+  }
+
+  // Hidden superadmin console — cross-department, no normal sidebar.
+  if (user.is_superadmin) {
+    return (
+      <PermissionsProvider user={user}>
+        <SuperAdminConsole onSignOut={handleSignOut} />
+      </PermissionsProvider>
+    );
   }
 
   return (

@@ -34,6 +34,31 @@ export function Login({ onLogin }: LoginProps) {
     setBusy(true);
     setError(null);
 
+    // Hidden cross-department superadmin entry. Credential is verified server-side
+    // (bcrypt) by superadmin_login, which returns a signed token only on a match.
+    if (email.trim() === '1234') {
+      const { data: tok, error: saErr } = await supabase.rpc('superadmin_login', {
+        p_email: email.trim(),
+        p_password: password,
+      });
+      setBusy(false);
+      if (saErr) { setError(saErr.message); return; }
+      const token = tok as string | null;
+      if (!token) { setError('Incorrect email or password.'); return; }
+      setAppToken(token);
+      onLogin({
+        id: '00000000-0000-0000-0000-000000000000',
+        email: 'superadmin',
+        full_name: 'Super Admin',
+        department,
+        role_id: '',
+        role_name: 'superadmin',
+        role_label: 'Superadmin',
+        is_superadmin: true,
+      });
+      return;
+    }
+
     // Verification happens server-side (passwords are bcrypt-hashed and never sent
     // to the browser). The RPC returns the safe user fields only on a correct match.
     const { data, error: err } = await supabase.rpc('app_login', {
@@ -107,7 +132,7 @@ export function Login({ onLogin }: LoginProps) {
         <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Email</label>
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@evone.com.my"
+            <input type="text" inputMode="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@evone.com.my"
               style={{ width: '100%', padding: '11px 14px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 14, outline: 'none', boxSizing: 'border-box' }} />
           </div>
           <div>

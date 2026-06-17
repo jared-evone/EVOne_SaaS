@@ -18,6 +18,7 @@ export type ScreenKey =
   | 'cpochargers' | 'charging' | 'corporateinvoicing' | 'charging_dashboard'
   | 'charging_cpo_carparks' | 'charging_sp_price'
   | 'tsd_technician' | 'tsd_workorders' | 'tsd_forms' | 'tsd_pic' | 'tsd_technicians'
+  | 'email_designer'
   | 'settings' | 'dbhealth';
 
 export const SCREEN_LABELS: Record<ScreenKey, string> = {
@@ -47,18 +48,22 @@ export const SCREEN_LABELS: Record<ScreenKey, string> = {
   tsd_forms:             'Form Templates',
   tsd_pic:               'PIC Review',
   tsd_technicians:       'Technicians',
+  email_designer:        'Email Designer',
   settings:              'Users & Permissions',
   dbhealth:              'DB Health',
 };
 
 // Each department exposes only its own screens in the NAV + Settings matrix.
 export const DEPARTMENT_SCREENS: Record<Department, ScreenKey[]> = {
+  // Users & Permissions ('settings') and DB Health ('dbhealth') are no longer
+  // per-department — they live only in the hidden cross-department superadmin
+  // console (superadmin_login / 1234). Don't add them back to any department.
   cpo:   ['charging_dashboard', 'corporatecrm', 'corporatecrm_invoicing', 'cpochargers', 'charging',
           'charging_cpo_carparks', 'charging_sp_price',
-          'corporateinvoicing', 'settings', 'dbhealth'],
-  sales: ['customers', 'sales', 'sales_manager', 'sales_team', 'settings', 'dbhealth'],
-  tech:  ['tsd_technician', 'tsd_workorders', 'tsd_forms', 'tsd_pic', 'tsd_technicians', 'customers', 'projects', 'settings', 'dbhealth'],
-  pm:    ['dashboard', 'customers', 'projects', 'settings', 'dbhealth'],
+          'corporateinvoicing'],
+  sales: ['customers', 'sales', 'sales_manager', 'sales_team'],
+  tech:  ['tsd_technician', 'tsd_workorders', 'tsd_forms', 'tsd_pic', 'tsd_technicians', 'customers', 'projects'],
+  pm:    ['dashboard', 'customers', 'projects', 'email_designer'],
 };
 
 export interface ScreenCap {
@@ -77,6 +82,8 @@ export interface SignedInUser {
   role_id: string;
   role_name: string;
   role_label: string;
+  /** Hidden cross-department superadmin (signed in via superadmin_login). */
+  is_superadmin?: boolean;
 }
 
 interface PermissionsContextValue {
@@ -117,16 +124,19 @@ export function PermissionsProvider({ user, children }: PermissionsProviderProps
 
   const refresh = async () => {
     setLoading(true);
-    const m = await loadPermissionsForRole(user.role_id);
+    // Superadmin has no department role — it bypasses the permission matrix.
+    const m = user.is_superadmin ? {} : await loadPermissionsForRole(user.role_id);
     setPerms(m);
     setLoading(false);
   };
 
   useEffect(() => { refresh(); }, [user.role_id]);
 
-  const can = (screen: ScreenKey, cap: keyof ScreenCap) => (perms[screen] ?? DENY)[cap];
+  // Superadmin sees and can do everything, in any department.
+  const can = (screen: ScreenKey, cap: keyof ScreenCap) =>
+    user.is_superadmin ? true : (perms[screen] ?? DENY)[cap];
 
-  const isAdmin = DEPARTMENT_SCREENS[user.department].every((k) => {
+  const isAdmin = user.is_superadmin || DEPARTMENT_SCREENS[user.department].every((k) => {
     const c = perms[k] ?? DENY;
     return c.can_view && c.can_edit && c.can_delete;
   });
