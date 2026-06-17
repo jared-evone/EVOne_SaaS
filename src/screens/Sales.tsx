@@ -485,7 +485,15 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                     )}
                   </div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.customer_name}</div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>{fmtMoney(Number(q.total))}</div>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: C.green }}>{fmtMoney(Number(q.total))}</span>
+                    {(q.cost_items?.length ?? 0) > 0 && (() => {
+                      const cost = (q.cost_items ?? []).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+                      const gp = Number(q.total) - cost;
+                      const pct = Number(q.total) > 0 ? (gp / Number(q.total)) * 100 : 0;
+                      return <span style={{ fontSize: 11, fontWeight: 600, color: gp >= 0 ? C.slate : '#C0321A' }}>GP {fmtMoney(gp)} ({pct.toFixed(0)}%)</span>;
+                    })()}
+                  </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: C.slate, overflow: 'hidden' }}>
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.salesperson_name}</span>
                     <span style={{ marginLeft: 'auto', whiteSpace: 'nowrap', flexShrink: 0 }}>{q.quote_date}</span>

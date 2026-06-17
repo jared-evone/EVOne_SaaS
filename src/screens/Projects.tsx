@@ -671,6 +671,7 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
                   brandModels={brandModels}
                   canEdit={canEdit}
                   canDelete={canDelete}
+                  customer={{ name: customer?.name ?? project.name, email: contacts.find((c) => c.email)?.email ?? null }}
                   onChanged={fetchAll}
                   onDeleted={() => setTab('overview')}
                 />
@@ -1020,11 +1021,12 @@ function SummaryStat({ label, value, sub }: { label: string; value: string; sub?
 
 // ── Site tab (one per site) ───────────────────────────────────────
 
-function SiteTab({ site, brandModels, canEdit, canDelete, onChanged, onDeleted }: {
+function SiteTab({ site, brandModels, canEdit, canDelete, customer, onChanged, onDeleted }: {
   site: ProjectSite;
   brandModels: BrandModel[];
   canEdit: boolean;
   canDelete: boolean;
+  customer: LtaEmailCustomer;
   onChanged: () => Promise<void>;
   onDeleted: () => void;
 }) {
@@ -1093,6 +1095,7 @@ function SiteTab({ site, brandModels, canEdit, canDelete, onChanged, onDeleted }
         brandModels={brandModels}
         canEdit={canEdit}
         canDelete={canDelete}
+        customer={customer}
         onChanged={onChanged}
       />
 
@@ -1432,13 +1435,14 @@ function warrantyTone(endDate: string | null): { label: string; bg: string; colo
 
 type ChargerDetailTab = 'details' | 'maintenance' | 'warranty';
 
-function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, canDelete, onChanged }: {
+function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, canDelete, customer, onChanged }: {
   siteId: string;
   siteName: string;
   chargers: SiteCharger[];
   brandModels: BrandModel[];
   canEdit: boolean;
   canDelete: boolean;
+  customer: LtaEmailCustomer;
   onChanged: () => Promise<void>;
 }) {
   const [adding, setAdding] = useState(false);
@@ -1542,7 +1546,7 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
             </div>
           )}
           <div style={{ padding: 18 }}>
-            <ChargerTabPanel charger={selected} siteName={siteName} tab={tab} onTabChange={setTab} canEdit={canEdit} canDelete={canDelete} onChargerChanged={onChanged} />
+            <ChargerTabPanel charger={selected} siteName={siteName} tab={tab} onTabChange={setTab} canEdit={canEdit} canDelete={canDelete} customer={customer} onChargerChanged={onChanged} />
           </div>
         </div>
       )}
@@ -1635,17 +1639,18 @@ function ChargerCard({ charger, selected, onClick }: { charger: SiteCharger; sel
   );
 }
 
-function ChargerTabPanel({ charger, siteName, tab, onTabChange, canEdit, canDelete, onChargerChanged }: {
+function ChargerTabPanel({ charger, siteName, tab, onTabChange, canEdit, canDelete, customer, onChargerChanged }: {
   charger: SiteCharger;
   siteName: string;
   tab: ChargerDetailTab;
   onTabChange: (t: ChargerDetailTab) => void;
   canEdit: boolean;
   canDelete: boolean;
+  customer: LtaEmailCustomer;
   onChargerChanged: () => Promise<void>;
 }) {
   if (tab === 'details')     return <ChargerDetailsPanel charger={charger} siteName={siteName} onTabChange={onTabChange} />;
-  if (tab === 'maintenance') return <LtaInspectionPanel  charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} onChargerChanged={onChargerChanged} />;
+  if (tab === 'maintenance') return <LtaInspectionPanel  charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} onChargerChanged={onChargerChanged} />;
   return <WarrantyPanel charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} />;
 }
 
@@ -1819,13 +1824,19 @@ interface LtaRecord {
   filename: string;
   notes: string | null;
   created_at: string;
+  invoice_path: string | null;
+  invoice_filename: string | null;
+  invoice_sent_at: string | null;
 }
 
-function LtaInspectionPanel({ charger, siteName, canEdit, canDelete, onChargerChanged }: {
+interface LtaEmailCustomer { name: string; email: string | null }
+
+function LtaInspectionPanel({ charger, siteName, canEdit, canDelete, customer, onChargerChanged }: {
   charger: SiteCharger;
   siteName: string;
   canEdit: boolean;
   canDelete: boolean;
+  customer: LtaEmailCustomer;
   onChargerChanged: () => Promise<void>;
 }) {
   const [records, setRecords] = useState<LtaRecord[]>([]);
@@ -1851,8 +1862,8 @@ function LtaInspectionPanel({ charger, siteName, canEdit, canDelete, onChargerCh
         Upload completed Form A (6-month) and Form D (12-month) inspection PDFs for <strong style={{ color: '#1a1a1a' }}>{charger.asset_tag}</strong>. Each upload is dated for when the inspection was performed.
       </div>
       <ContractCard charger={charger} canEdit={canEdit} onChargerChanged={onChargerChanged} />
-      <LtaSection formType="A" title="Form A · 6-month inspection"  records={formA} charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} loading={loading} onChanged={refresh} />
-      <LtaSection formType="D" title="Form D · 12-month inspection" records={formD} charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} loading={loading} onChanged={refresh} />
+      <LtaSection formType="A" title="Form A · 6-month inspection"  records={formA} charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} loading={loading} onChanged={refresh} />
+      <LtaSection formType="D" title="Form D · 12-month inspection" records={formD} charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} loading={loading} onChanged={refresh} />
     </div>
   );
 }
@@ -2030,7 +2041,7 @@ function ContractCard({ charger, canEdit, onChargerChanged }: {
   );
 }
 
-function LtaSection({ formType, title, records, charger, siteName, canEdit, canDelete, loading, onChanged }: {
+function LtaSection({ formType, title, records, charger, siteName, canEdit, canDelete, customer, loading, onChanged }: {
   formType: LtaFormType;
   title: string;
   records: LtaRecord[];
@@ -2038,6 +2049,7 @@ function LtaSection({ formType, title, records, charger, siteName, canEdit, canD
   siteName: string;
   canEdit: boolean;
   canDelete: boolean;
+  customer: LtaEmailCustomer;
   loading: boolean;
   onChanged: () => Promise<void>;
 }) {
@@ -2177,7 +2189,7 @@ function LtaSection({ formType, title, records, charger, siteName, canEdit, canD
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {records.map((r) => (
-            <LtaRecordRow key={r.id} record={r} displayName={computeLtaFilename(r.form_type, charger.asset_tag, r.performed_at, siteName)} canDelete={canDelete} onChanged={onChanged} />
+            <LtaRecordRow key={r.id} record={r} displayName={computeLtaFilename(r.form_type, charger.asset_tag, r.performed_at, siteName)} charger={charger} siteName={siteName} customer={customer} canEdit={canEdit} canDelete={canDelete} onChanged={onChanged} />
           ))}
         </div>
       )}
@@ -2185,14 +2197,34 @@ function LtaSection({ formType, title, records, charger, siteName, canEdit, canD
   );
 }
 
-function LtaRecordRow({ record, displayName, canDelete, onChanged }: {
+// Download a storage object and base64-encode it (for email attachments).
+async function storageFileBase64(bucket: string, path: string): Promise<string> {
+  const { data, error } = await supabase.storage.from(bucket).download(path);
+  if (error || !data) throw new Error(error?.message ?? 'Could not read file from storage.');
+  const bytes = new Uint8Array(await data.arrayBuffer());
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function LtaRecordRow({ record, displayName, charger, siteName, customer, canEdit, canDelete, onChanged }: {
   record: LtaRecord;
   displayName: string;
+  charger: SiteCharger;
+  siteName: string;
+  customer: LtaEmailCustomer;
+  canEdit: boolean;
   canDelete: boolean;
   onChanged: () => Promise<void>;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [uploadingInvoice, setUploadingInvoice] = useState(false);
+  const [emailing, setEmailing] = useState(false);
+  const invoiceInputRef = useRef<HTMLInputElement>(null);
 
   const open = async (mode: 'view' | 'download') => {
     const { data } = await supabase.storage.from(CHARGER_FORMS_BUCKET)
@@ -2200,9 +2232,35 @@ function LtaRecordRow({ record, displayName, canDelete, onChanged }: {
     if (data?.signedUrl) window.open(data.signedUrl, mode === 'download' ? '_self' : '_blank');
   };
 
+  const openInvoice = async (mode: 'view' | 'download') => {
+    if (!record.invoice_path) return;
+    const { data } = await supabase.storage.from(CHARGER_FORMS_BUCKET)
+      .createSignedUrl(record.invoice_path, 60, mode === 'download' ? { download: record.invoice_filename ?? 'invoice.pdf' } : undefined);
+    if (data?.signedUrl) window.open(data.signedUrl, mode === 'download' ? '_self' : '_blank');
+  };
+
+  const handleInvoiceFile = async (file: File) => {
+    if (file.type && file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) return;
+    setUploadingInvoice(true);
+    const path = `lta/${charger.id}/${record.id}/invoice/${pathSafe(file.name)}`;
+    const up = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(path, file, { contentType: file.type || 'application/pdf', upsert: true });
+    if (!up.error) {
+      await supabase.from('charger_lta_records').update({ invoice_path: path, invoice_filename: file.name }).eq('id', record.id);
+      await onChanged();
+    }
+    setUploadingInvoice(false);
+  };
+
+  const removeInvoice = async () => {
+    if (record.invoice_path) void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([record.invoice_path]);
+    await supabase.from('charger_lta_records').update({ invoice_path: null, invoice_filename: null, invoice_sent_at: null }).eq('id', record.id);
+    await onChanged();
+  };
+
   const handleDelete = async () => {
     setDeleting(true);
-    void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([record.storage_path]);
+    const paths = [record.storage_path, ...(record.invoice_path ? [record.invoice_path] : [])];
+    void supabase.storage.from(CHARGER_FORMS_BUCKET).remove(paths);
     await supabase.from('charger_lta_records').delete().eq('id', record.id);
     setDeleting(false);
     setConfirming(false);
@@ -2227,29 +2285,190 @@ function LtaRecordRow({ record, displayName, canDelete, onChanged }: {
     );
   }
 
+  const btnGhost: React.CSSProperties = { padding: '5px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' };
+
   return (
-    <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10 }}>
-      <FileText size={16} strokeWidth={1.8} color={C.green} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', letterSpacing: '-0.01em' }}>
-          {fmtDate(record.performed_at)}
+    <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <FileText size={16} strokeWidth={1.8} color={C.green} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', letterSpacing: '-0.01em' }}>
+            {fmtDate(record.performed_at)}
+          </div>
+          <div style={{ fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</div>
         </div>
-        <div style={{ fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</div>
-      </div>
-      <button onClick={() => void open('view')}
-        style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-        View
-      </button>
-      <button onClick={() => void open('download')}
-        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-        <DownloadIcon size={11} strokeWidth={2.25} /> Download
-      </button>
-      {canDelete && (
-        <button onClick={() => setConfirming(true)}
-          style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-          Delete
+        <button onClick={() => void open('view')} style={btnGhost}>View</button>
+        <button onClick={() => void open('download')} style={{ ...btnGhost, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <DownloadIcon size={11} strokeWidth={2.25} /> Download
         </button>
+        {canDelete && (
+          <button onClick={() => setConfirming(true)}
+            style={{ ...btnGhost, border: '1px solid #FDEAEA', color: '#C0321A' }}>
+            Delete
+          </button>
+        )}
+      </div>
+
+      {/* Invoice sub-row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingLeft: 26 }}>
+        <input ref={invoiceInputRef} type="file" accept="application/pdf" style={{ display: 'none' }}
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleInvoiceFile(f); e.target.value = ''; }} />
+        {record.invoice_path ? (
+          <>
+            <span style={{ fontSize: 10, fontWeight: 700, color: C.green, background: C.honeydew, padding: '2px 8px', borderRadius: 6, textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>Invoice</span>
+            <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{record.invoice_filename}</span>
+            {record.invoice_sent_at && (
+              <span style={{ fontSize: 10, fontWeight: 600, color: C.slate, whiteSpace: 'nowrap' }}>Sent {fmtDate(record.invoice_sent_at.slice(0, 10))}</span>
+            )}
+            <button onClick={() => void openInvoice('view')} style={btnGhost}>View</button>
+            <button onClick={() => setEmailing(true)}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', borderRadius: 6, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+              <Mail size={11} strokeWidth={2.25} /> Email
+            </button>
+            {canEdit && (
+              <button onClick={() => void removeInvoice()} style={{ ...btnGhost, border: '1px solid #FDEAEA', color: '#C0321A' }}>Remove</button>
+            )}
+          </>
+        ) : canEdit ? (
+          <button onClick={() => invoiceInputRef.current?.click()} disabled={uploadingInvoice}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 6, border: '1px dashed #C8E6C9', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: uploadingInvoice ? 'default' : 'pointer' }}>
+            <Upload size={11} strokeWidth={2.25} /> {uploadingInvoice ? 'Uploading…' : 'Attach invoice (PDF)'}
+          </button>
+        ) : (
+          <span style={{ fontSize: 11, color: C.slate, fontStyle: 'italic' }}>No invoice attached.</span>
+        )}
+      </div>
+
+      {emailing && (
+        <SendLtaEmailModal record={record} formDisplayName={displayName} charger={charger} siteName={siteName} customer={customer}
+          onClose={() => setEmailing(false)} onSent={onChanged} />
       )}
+    </div>
+  );
+}
+
+function SendLtaEmailModal({ record, formDisplayName, charger, siteName, customer, onClose, onSent }: {
+  record: LtaRecord;
+  formDisplayName: string;
+  charger: SiteCharger;
+  siteName: string;
+  customer: LtaEmailCustomer;
+  onClose: () => void;
+  onSent: () => Promise<void>;
+}) {
+  const [to, setTo] = useState(customer.email ?? '');
+  const [cc, setCc] = useState('');
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      const { data } = await supabase.from('lta_email_templates').select('subject, body').eq('form_type', record.form_type).maybeSingle();
+      const tpl = (data as { subject: string; body: string } | null) ?? { subject: '', body: '' };
+      const fill = (s: string) => s
+        .replace(/\{\{\s*charger\s*\}\}/gi, charger.asset_tag)
+        .replace(/\{\{\s*form_type\s*\}\}/gi, `Form ${record.form_type}`)
+        .replace(/\{\{\s*site\s*\}\}/gi, siteName)
+        .replace(/\{\{\s*customer\s*\}\}/gi, customer.name)
+        .replace(/\{\{\s*date\s*\}\}/gi, fmtDate(record.performed_at) ?? record.performed_at);
+      setSubject(fill(tpl.subject));
+      setBody(fill(tpl.body));
+      setLoading(false);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const toList = to.split(/[,;]/).map((e) => e.trim()).filter(Boolean);
+  const ccList = cc.split(/[,;]/).map((e) => e.trim()).filter(Boolean);
+  const canSend = toList.length > 0 && !!subject.trim() && !!body.trim() && !sending && !loading;
+
+  const handleSend = async () => {
+    if (!canSend || !record.invoice_path) return;
+    setSending(true);
+    setError(null);
+    try {
+      const [formB64, invoiceB64] = await Promise.all([
+        storageFileBase64(CHARGER_FORMS_BUCKET, record.storage_path),
+        storageFileBase64(CHARGER_FORMS_BUCKET, record.invoice_path),
+      ]);
+      const { data, error: err } = await supabase.functions.invoke('send-customer-email', {
+        body: {
+          to: toList, cc: ccList, subject, html: body,
+          attachments: [
+            { filename: formDisplayName.toLowerCase().endsWith('.pdf') ? formDisplayName : `${formDisplayName}.pdf`, content: formB64 },
+            { filename: record.invoice_filename ?? 'invoice.pdf', content: invoiceB64 },
+          ],
+        },
+      });
+      const errMsg = (data as { error?: string } | null)?.error ?? err?.message ?? null;
+      if (errMsg) { setError(errMsg); setSending(false); return; }
+      await supabase.from('charger_lta_records').update({ invoice_sent_at: new Date().toISOString() }).eq('id', record.id);
+      setSending(false);
+      setDone(true);
+      await onSent();
+    } catch (e) {
+      setError((e as Error).message || 'Send failed.');
+      setSending(false);
+    }
+  };
+
+  const field: React.CSSProperties = { ...inputStyle(), background: C.white };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onClick={(e) => e.stopPropagation()}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 600, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>Email Form {record.form_type} &amp; Invoice</div>
+          <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
+        </div>
+
+        {done ? (
+          <div style={{ background: C.honeydew, color: '#1B512D', borderRadius: 12, padding: '14px 16px', fontSize: 13, fontWeight: 600 }}>
+            Email sent to {toList.join(', ')}.
+          </div>
+        ) : loading ? (
+          <div style={{ fontSize: 13, color: C.slate, padding: '12px 0' }}>Loading template…</div>
+        ) : (
+          <>
+            {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{error}</div>}
+            <div>
+              <FieldLabel>To</FieldLabel>
+              <input value={to} onChange={(e) => setTo(e.target.value)} placeholder="customer@company.com" style={field} />
+              {!customer.email && <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>The linked customer has no contact email on file — enter one above.</div>}
+            </div>
+            <div>
+              <FieldLabel>CC (comma-separated)</FieldLabel>
+              <input value={cc} onChange={(e) => setCc(e.target.value)} placeholder="optional" style={field} />
+            </div>
+            <div>
+              <FieldLabel>Subject</FieldLabel>
+              <input value={subject} onChange={(e) => setSubject(e.target.value)} style={field} />
+            </div>
+            <div>
+              <FieldLabel>Body (HTML)</FieldLabel>
+              <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={8} style={{ ...field, resize: 'vertical', lineHeight: 1.5, fontFamily: 'Figtree' }} />
+              <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Edit the default in Settings → Email Designer. Placeholders are already filled in.</div>
+            </div>
+            <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Attachments</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#1a1a1a' }}><FileText size={14} color={C.green} /> {formDisplayName}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#1a1a1a' }}><FileText size={14} color={C.green} /> {record.invoice_filename}</div>
+            </div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button onClick={onClose} style={{ padding: '9px 20px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+              <button onClick={() => void handleSend()} disabled={!canSend}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 22px', borderRadius: 10, border: 'none', background: canSend ? C.green : '#A5D6A7', color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: canSend ? 'pointer' : 'not-allowed' }}>
+                <Mail size={13} strokeWidth={2.25} /> {sending ? 'Sending…' : 'Send email'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

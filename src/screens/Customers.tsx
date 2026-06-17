@@ -54,6 +54,30 @@ function inputStyle(): React.CSSProperties {
   return { width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 }
 
+// Phone numbers are stored as `+65` + 8-or-more local digits, no spaces. The
+// `+65` is a fixed prefix in the UI; the editable part is local digits only.
+// Pasting spaces, a leading +65, or 65 country code is normalised away.
+function localPhone(full: string): string {
+  let d = (full || '').replace(/\D/g, '');
+  while (d.length > 8 && d.startsWith('65')) d = d.slice(2);
+  return d;
+}
+function fullPhone(raw: string): string {
+  const d = localPhone(raw);
+  return d ? '+65' + d : '';
+}
+
+function PhoneInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'stretch', borderRadius: 10, border: '1px solid #EBEBEB', background: C.white, overflow: 'hidden' }}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', padding: '0 12px', fontSize: 13, fontWeight: 600, color: C.slate, background: C.seasalt, borderRight: '1px solid #EBEBEB' }}>+65</span>
+      <input type="tel" value={localPhone(value)} onChange={(e) => onChange(fullPhone(e.target.value))}
+        placeholder="9123 4567"
+        style={{ flex: 1, minWidth: 0, border: 'none', outline: 'none', padding: '10px 14px', fontFamily: 'Figtree', fontSize: 13, background: 'transparent' }} />
+    </div>
+  );
+}
+
 // ── Top-level screen — list + add/edit modal ──────────────────────
 
 export function ScreenCustomers() {
@@ -130,7 +154,7 @@ export function ScreenCustomers() {
     const contactPayload = {
       name:  (data.contact_name  ?? '').trim(),
       email: (data.contact_email ?? '').trim() || null,
-      phone: (data.contact_phone ?? '').trim() || null,
+      phone: fullPhone(data.contact_phone ?? '') || null,
     };
     if (id) {
       await supabase.from('customers').update({
@@ -374,7 +398,7 @@ function CustomerModal({ initial, title, canDelete, customerId, onSave, onDelete
       for (const x of extras) {
         const name = x.name.trim();
         const email = x.email.trim() || null;
-        const phone = x.phone.trim() || null;
+        const phone = fullPhone(x.phone) || null;
         if (!name && !email && !phone) continue;
         const payload = { name, email, phone };
         if (x.id) await supabase.from('customer_contacts').update(payload).eq('id', x.id);
@@ -451,8 +475,7 @@ function CustomerModal({ initial, title, canDelete, customerId, onSave, onDelete
             </div>
             <div>
               <FieldLabel>Phone Number</FieldLabel>
-              <input type="tel" value={form.contact_phone ?? ''} onChange={(e) => set('contact_phone', e.target.value)}
-                placeholder="+65 9123 4567" style={{ ...inputStyle(), background: C.white }} />
+              <PhoneInput value={form.contact_phone ?? ''} onChange={(v) => set('contact_phone', v)} />
             </div>
           </div>
         </div>
@@ -498,8 +521,7 @@ function CustomerModal({ initial, title, canDelete, customerId, onSave, onDelete
                 </div>
                 <div>
                   <FieldLabel>Phone Number</FieldLabel>
-                  <input type="tel" value={x.phone} onChange={(e) => patchExtra(i, { phone: e.target.value })}
-                    placeholder="+65 9123 4567" style={{ ...inputStyle(), background: C.white }} />
+                  <PhoneInput value={x.phone} onChange={(v) => patchExtra(i, { phone: v })} />
                 </div>
               </div>
             </div>
