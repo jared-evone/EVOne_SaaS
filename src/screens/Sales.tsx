@@ -64,14 +64,18 @@ export interface CostOption {
 export interface QuoteFile {
   path: string;
   name: string;
+  quote_no?: string;
 }
 
-// An opportunity can carry several quotation versions, each its own amount + PDF.
+// An opportunity can carry several quotation versions, each its own amount + PDFs.
 // The pipeline value uses the LARGEST amount across versions (stored in `total`).
+// `files` holds all PDFs for the version; pdf_path/pdf_filename keep the first
+// one for backward-compatibility with older rows + the list-view badge.
 export interface QuoteVersion {
   amount: number;
   pdf_path: string | null;
   pdf_filename: string | null;
+  files?: QuoteFile[];
 }
 
 interface CustomerOpt {
@@ -90,6 +94,14 @@ interface SalesUser {
 }
 
 export const fmtMoney = (n: number) => `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+// Display a raw numeric string with thousands separators while typing
+// (e.g. "41202" -> "41,202", "41202.5" -> "41,202.5"). Storage stays raw.
+const fmtAmountInput = (raw: string) => {
+  if (!raw) return '';
+  const [int, dec] = raw.split('.');
+  const grouped = (int || '').replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return dec !== undefined ? `${grouped}.${dec}` : grouped;
+};
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const isDecided = (s: QuoteStatus) => s === 'Won' || s === 'Lost';
 
@@ -626,32 +638,38 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  // Quotation versions: each is a PDF + an amount. The pipeline counts the largest.
-  interface VersionDraft { amountText: string; pdfPath: string | null; pdfName: string | null; newFile: File | null; }
+  // Quotation versions: each is an amount + one or more PDFs. Pipeline = largest.
+  interface VFile { path: string | null; name: string; newFile: File | null; quoteNo: string; }
+  interface VersionDraft { amountText: string; files: VFile[]; }
+  const versionFiles = (v: QuoteVersion): VFile[] => {
+    if (v.files?.length) return v.files.map((f) => ({ path: f.path, name: f.name, newFile: null, quoteNo: f.quote_no ?? '' }));
+    if (v.pdf_path) return [{ path: v.pdf_path, name: v.pdf_filename ?? 'quotation.pdf', newFile: null, quoteNo: '' }];
+    return [];
+  };
   const seedVersions: VersionDraft[] = quote?.versions?.length
-    ? quote.versions.map((v) => ({ amountText: v.amount ? String(v.amount) : '', pdfPath: v.pdf_path, pdfName: v.pdf_filename, newFile: null }))
+    ? quote.versions.map((v) => ({ amountText: v.amount ? String(v.amount) : '', files: versionFiles(v) }))
     : [{
         amountText: quote?.total ? String(quote.total) : '',
-        pdfPath: quote?.files?.[0]?.path ?? quote?.pdf_path ?? null,
-        pdfName: quote?.files?.[0]?.name ?? quote?.pdf_filename ?? null,
-        newFile: null,
+        files: (quote?.files?.length ? quote.files : (quote?.pdf_path ? [{ path: quote.pdf_path, name: quote.pdf_filename ?? 'quotation.pdf' }] : []))
+          .map((f) => ({ path: f.path, name: f.name, newFile: null, quoteNo: f.quote_no ?? '' })),
       }];
   const [versions, setVersions] = useState<VersionDraft[]>(seedVersions);
 
-  const patchVersion = (i: number, patch: Partial<VersionDraft>) =>
-    setVersions((vs) => vs.map((v, idx) => (idx === i ? { ...v, ...patch } : v)));
   const setVAmount = (i: number, raw: string) =>
-    patchVersion(i, { amountText: raw.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1') });
-  const pickVFile = (i: number, e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
+    setVersions((vs) => vs.map((v, idx) => (idx === i ? { ...v, amountText: raw.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1') } : v)));
+  const pickVFiles = (i: number, e: React.ChangeEvent<HTMLInputElement>) => {
+    const list = Array.from(e.target.files ?? []);
     e.target.value = '';
-    if (!f) return;
-    if (f.type !== 'application/pdf' && !/\.pdf$/i.test(f.name)) { setError('Only PDF files can be attached.'); return; }
-    setError(null);
-    patchVersion(i, { newFile: f, pdfName: f.name });
+    const pdfs = list.filter((f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name));
+    if (pdfs.length !== list.length) setError('Only PDF files can be attached.'); else setError(null);
+    if (!pdfs.length) return;
+    setVersions((vs) => vs.map((v, idx) => (idx === i ? { ...v, files: [...v.files, ...pdfs.map((f) => ({ path: null, name: f.name, newFile: f, quoteNo: '' }))] } : v)));
   };
-  const clearVFile = (i: number) => patchVersion(i, { newFile: null, pdfPath: null, pdfName: null });
-  const addVersion = () => setVersions((vs) => [...vs, { amountText: '', pdfPath: null, pdfName: null, newFile: null }]);
+  const removeVFile = (i: number, fi: number) =>
+    setVersions((vs) => vs.map((v, idx) => (idx === i ? { ...v, files: v.files.filter((_, k) => k !== fi) } : v)));
+  const setVFileQuoteNo = (i: number, fi: number, val: string) =>
+    setVersions((vs) => vs.map((v, idx) => (idx === i ? { ...v, files: v.files.map((f, k) => (k === fi ? { ...f, quoteNo: val } : f)) } : v)));
+  const addVersion = () => setVersions((vs) => [...vs, { amountText: '', files: [] }]);
   const removeVersion = (i: number) => setVersions((vs) => vs.filter((_, idx) => idx !== i));
   const maxAmount = Math.max(0, ...versions.map((v) => Number(v.amountText) || 0));
 
@@ -752,23 +770,23 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
     const outVersions: QuoteVersion[] = [];
     for (const v of versions) {
       const amount = Math.max(0, Number(v.amountText) || 0);
-      let pdf_path = v.pdfPath;
-      let pdf_filename = v.pdfName;
-      if (v.newFile) {
-        const safe = v.newFile.name.replace(/[^a-zA-Z0-9.]/g, '_');
-        const path = `quote_${Date.now()}_${Math.round(performance.now() % 1000)}_${safe}`;
-        const { error: upErr } = await supabase.storage.from('sales-quotations').upload(path, v.newFile, { upsert: true, contentType: 'application/pdf' });
-        if (upErr) { setError(`Upload failed (${v.newFile.name}): ${upErr.message}`); setSaving(false); return; }
-        pdf_path = path;
-        pdf_filename = v.newFile.name;
+      const outFiles: QuoteFile[] = [];
+      for (const f of v.files) {
+        if (f.newFile) {
+          const safe = f.newFile.name.replace(/[^a-zA-Z0-9.]/g, '_');
+          const path = `quote_${Date.now()}_${Math.round(performance.now() % 1000)}_${outFiles.length}_${safe}`;
+          const { error: upErr } = await supabase.storage.from('sales-quotations').upload(path, f.newFile, { upsert: true, contentType: 'application/pdf' });
+          if (upErr) { setError(`Upload failed (${f.newFile.name}): ${upErr.message}`); setSaving(false); return; }
+          outFiles.push({ path, name: f.newFile.name, quote_no: f.quoteNo.trim() || undefined });
+        } else if (f.path) {
+          outFiles.push({ path: f.path, name: f.name, quote_no: f.quoteNo.trim() || undefined });
+        }
       }
-      if (amount <= 0 && !pdf_path) continue; // drop empty rows
-      outVersions.push({ amount, pdf_path, pdf_filename });
+      if (amount <= 0 && outFiles.length === 0) continue; // drop empty rows
+      outVersions.push({ amount, files: outFiles, pdf_path: outFiles[0]?.path ?? null, pdf_filename: outFiles[0]?.name ?? null });
     }
     const total = Math.max(0, ...outVersions.map((v) => v.amount), 0);
-    const files: QuoteFile[] = outVersions
-      .filter((v) => v.pdf_path)
-      .map((v) => ({ path: v.pdf_path as string, name: v.pdf_filename ?? 'quotation.pdf' }));
+    const files: QuoteFile[] = outVersions.flatMap((v) => v.files ?? []);
 
     const payload = {
       customer_id: form.customer_id || null,
@@ -971,32 +989,38 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
                     </button>
                   )}
                 </div>
-                <input type="text" inputMode="decimal" value={v.amountText} disabled={readOnly}
+                <input type="text" inputMode="decimal" value={fmtAmountInput(v.amountText)} disabled={readOnly}
                   onChange={(e) => setVAmount(i, e.target.value)}
                   onPaste={(e) => { e.preventDefault(); setVAmount(i, v.amountText + e.clipboardData.getData('text')); }}
                   placeholder="Amount ($)" style={{ ...input(readOnly), fontSize: 15, fontWeight: 700, color: C.green }} />
-                {v.pdfName ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 10, border: v.newFile ? '1px dashed #CBD5DD' : '1px solid #EBEBEB', background: v.newFile ? C.seasalt : C.white }}>
-                    {v.newFile ? <FileUp size={14} color={C.slate} style={{ flexShrink: 0 }} /> : <FileText size={14} color={C.slate} style={{ flexShrink: 0 }} />}
-                    <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.pdfName}</span>
-                    {v.pdfPath && !v.newFile && (
-                      <button type="button" onClick={() => void viewFile(v.pdfPath as string)} style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', flexShrink: 0 }}>View</button>
-                    )}
-                    {v.newFile && <span style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0 }}>New</span>}
-                    {!readOnly && (
-                      <button type="button" onClick={() => clearVFile(i)} style={{ width: 26, height: 26, borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                        <X size={12} strokeWidth={2.5} />
-                      </button>
-                    )}
+                {v.files.map((f, fi) => (
+                  <div key={fi} style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '8px 12px', borderRadius: 10, border: f.newFile ? '1px dashed #CBD5DD' : '1px solid #EBEBEB', background: f.newFile ? C.seasalt : C.white }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {f.newFile ? <FileUp size={14} color={C.slate} style={{ flexShrink: 0 }} /> : <FileText size={14} color={C.slate} style={{ flexShrink: 0 }} />}
+                      <span style={{ flex: 1, minWidth: 0, fontSize: 13, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+                      {f.path && !f.newFile && (
+                        <button type="button" onClick={() => void viewFile(f.path as string)} style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', flexShrink: 0 }}>View</button>
+                      )}
+                      {f.newFile && <span style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0 }}>New</span>}
+                      {!readOnly && (
+                        <button type="button" onClick={() => removeVFile(i, fi)} style={{ width: 26, height: 26, borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                          <X size={12} strokeWidth={2.5} />
+                        </button>
+                      )}
+                    </div>
+                    <input value={f.quoteNo} disabled={readOnly} onChange={(e) => setVFileQuoteNo(i, fi, e.target.value)}
+                      placeholder="Quotation no. (e.g. Q-2026-014)"
+                      style={{ ...input(readOnly), fontSize: 12, padding: '7px 10px' }} />
                   </div>
-                ) : !readOnly ? (
+                ))}
+                {!readOnly ? (
                   <label style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-                    <FileUp size={13} strokeWidth={2.25} /> Attach PDF
-                    <input type="file" accept="application/pdf" style={{ display: 'none' }} onChange={(e) => pickVFile(i, e)} />
+                    <FileUp size={13} strokeWidth={2.25} /> {v.files.length ? 'Add PDF' : 'Attach PDF'}
+                    <input type="file" accept="application/pdf" multiple style={{ display: 'none' }} onChange={(e) => pickVFiles(i, e)} />
                   </label>
-                ) : (
+                ) : v.files.length === 0 ? (
                   <span style={{ fontSize: 12, color: C.slate }}>No PDF attached.</span>
-                )}
+                ) : null}
               </div>
             );
           })}
