@@ -751,8 +751,10 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
       ...f,
       customer_id: c.id,
       customer_name: c.name,
-      contact_name: f.contact_name || (c.contact_name ?? ''),
-      contact_email: f.contact_email || (c.contact_email ?? ''),
+      // Always refresh the contact to the selected customer's — switching customer
+      // should replace the previously pre-filled name/email, not keep the old one.
+      contact_name: c.contact_name ?? '',
+      contact_email: c.contact_email ?? '',
     }));
   };
 
