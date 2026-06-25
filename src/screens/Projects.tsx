@@ -436,9 +436,14 @@ interface SiteCharger {
   asset_tag: string;
   brand_model: string | null;
   registration_code: string | null;
+  procurement_date: string | null;
   turn_on_date: string | null;
   form_a_next_date: string | null;
   form_d_next_date: string | null;
+  form_a_override_date: string | null;
+  form_a_override_count: number | null;
+  form_d_override_date: string | null;
+  form_d_override_count: number | null;
   warranty_start_date: string | null;
   warranty_end_date: string | null;
   has_maintenance_package: boolean;
@@ -487,6 +492,25 @@ interface ProjectFile {
 }
 
 const PROJECT_FILES_BUCKET = 'project-files';
+
+// Storage objects don't cascade when a charger/site/project row is deleted, so every
+// delete path must collect and remove them first. This gathers the charger-forms paths
+// tied to a set of chargers: LTA record PDFs + invoices + warranty-claim documents.
+// (Form 1 PDFs and site LTA contracts live on the charger/site rows and are added by callers.)
+async function collectChargerStoragePaths(chargerIds: string[]): Promise<string[]> {
+  if (!chargerIds.length) return [];
+  const paths: string[] = [];
+  const { data: lta } = await supabase.from('charger_lta_records').select('storage_path, invoice_path').in('charger_id', chargerIds);
+  for (const r of (lta ?? []) as Array<{ storage_path: string | null; invoice_path: string | null }>) {
+    if (r.storage_path) paths.push(r.storage_path);
+    if (r.invoice_path) paths.push(r.invoice_path);
+  }
+  const { data: claims } = await supabase.from('charger_warranty_claims').select('storage_path').in('charger_id', chargerIds);
+  for (const r of (claims ?? []) as Array<{ storage_path: string | null }>) {
+    if (r.storage_path) paths.push(r.storage_path);
+  }
+  return paths;
+}
 
 type DetailTabId = 'overview' | 'files' | `site:${string}`;
 
@@ -565,15 +589,13 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
     // warranty claims and project_files rows (FK ON DELETE CASCADE). Storage
     // objects don't cascade, so clean them up first to avoid orphans.
     const chargers = sites.flatMap((s) => s.site_chargers ?? []);
-    const chargerFormPaths: string[] = chargers.map((c) => c.form_1_path).filter((p): p is string => !!p);
     const chargerIds = chargers.map((c) => c.id);
-    if (chargerIds.length) {
-      const { data: lta } = await supabase.from('charger_lta_records').select('storage_path, invoice_path').in('charger_id', chargerIds);
-      for (const r of (lta ?? []) as Array<{ storage_path: string | null; invoice_path: string | null }>) {
-        if (r.storage_path) chargerFormPaths.push(r.storage_path);
-        if (r.invoice_path) chargerFormPaths.push(r.invoice_path);
-      }
-    }
+    // charger-forms bucket: Form 1 PDFs, site LTA contracts, LTA records (+invoices), warranty claims.
+    const chargerFormPaths: string[] = [
+      ...chargers.map((c) => c.form_1_path),
+      ...sites.map((s) => s.lta_contract_path),
+      ...(await collectChargerStoragePaths(chargerIds)),
+    ].filter((p): p is string => !!p);
     const projectFilePaths = files.map((f) => f.storage_path).filter(Boolean);
     if (projectFilePaths.length) await supabase.storage.from(PROJECT_FILES_BUCKET).remove(projectFilePaths);
     if (chargerFormPaths.length) await supabase.storage.from(CHARGER_FORMS_BUCKET).remove(chargerFormPaths);
@@ -966,22 +988,25 @@ function OverviewTab({ project, customers, customer, contacts, sites, lta, onPic
   const isResidential = customer?.type === 'residential';
   const formAMonths = isResidential ? 24 : 6;
 
-  // Latest A / D record per charger (rows arrive newest-first).
-  const latest = new Map<string, { A?: SiteLtaRow; D?: SiteLtaRow }>();
+  // All A / D records per charger (rows arrive newest-first) — drives the due/invoice flags.
+  const byCharger = new Map<string, { A: SiteLtaRow[]; D: SiteLtaRow[] }>();
   for (const r of lta) {
-    const e = latest.get(r.charger_id) ?? {};
-    if (r.form_type === 'A' && !e.A) e.A = r;
-    if (r.form_type === 'D' && !e.D) e.D = r;
-    latest.set(r.charger_id, e);
+    const e = byCharger.get(r.charger_id) ?? { A: [], D: [] };
+    e[r.form_type].push(r);
+    byCharger.set(r.charger_id, e);
   }
   const siteFlags = (site: ProjectSite) => {
     let form1Missing = 0, formADue = 0, invoiceMissing = 0;
     for (const c of site.site_chargers) {
       if (!c.form_1_path) form1Missing++;
-      const l = latest.get(c.id) ?? {};
-      if (isCycleOverdue(c.turn_on_date, l.A?.performed_at ?? null, formAMonths)) formADue++;
-      if (l.A && !l.A.invoice_path) invoiceMissing++;
-      if (!isResidential && l.D && !l.D.invoice_path) invoiceMissing++;
+      const e = byCharger.get(c.id) ?? { A: [], D: [] };
+      const performedA = e.A.map((r) => r.performed_at);
+      const performedD = e.D.map((r) => r.performed_at);
+      if (ltaSchedule(c.turn_on_date, formAMonths, performedA).overdueCount > 0) formADue++;
+      if (!isResidential && ltaSchedule(c.turn_on_date, 12, performedD).overdueCount > 0) formADue++;
+      // Newest record (rows arrive newest-first) drives the "invoice missing" flag.
+      if (e.A[0] && !e.A[0].invoice_path) invoiceMissing++;
+      if (!isResidential && e.D[0] && !e.D[0].invoice_path) invoiceMissing++;
     }
     return { form1Missing, formADue, invoiceMissing };
   };
@@ -1110,6 +1135,14 @@ function SiteTab({ site, brandModels, canEdit, canDelete, customer, onChanged, o
 
   const handleDelete = async () => {
     setDeleting(true);
+    // Row cascade (site_chargers → charger_lta_records / warranty_claims) is handled
+    // by the DB, but storage objects don't cascade — clean them up first.
+    const paths: string[] = [
+      ...site.site_chargers.map((c) => c.form_1_path),
+      site.lta_contract_path,
+      ...(await collectChargerStoragePaths(site.site_chargers.map((c) => c.id))),
+    ].filter((p): p is string => !!p);
+    if (paths.length) await supabase.storage.from(CHARGER_FORMS_BUCKET).remove(paths);
     await supabase.from('project_sites').delete().eq('id', site.id);
     setDeleting(false);
     onDeleted();
@@ -1562,24 +1595,23 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  // Latest A/D inspection per charger — drives the due/missing chips on the cards.
-  const [ltaLatest, setLtaLatest] = useState<Map<string, { A?: string; D?: string }>>(new Map());
+  // All A/D inspection dates per charger — drives the due/missing chips on the cards.
+  const [ltaByCharger, setLtaByCharger] = useState<Map<string, { A: string[]; D: string[] }>>(new Map());
   const chargerIdsKey = chargers.map((c) => c.id).sort().join(',');
   useEffect(() => {
     const ids = chargers.map((c) => c.id);
-    if (!ids.length) { setLtaLatest(new Map()); return; }
+    if (!ids.length) { setLtaByCharger(new Map()); return; }
     let cancelled = false;
     void (async () => {
-      const { data } = await supabase.from('charger_lta_records').select('charger_id, form_type, performed_at').in('charger_id', ids).order('performed_at', { ascending: false });
+      const { data } = await supabase.from('charger_lta_records').select('charger_id, form_type, performed_at').in('charger_id', ids);
       if (cancelled) return;
-      const m = new Map<string, { A?: string; D?: string }>();
+      const m = new Map<string, { A: string[]; D: string[] }>();
       for (const r of (data ?? []) as Array<{ charger_id: string; form_type: 'A' | 'D'; performed_at: string }>) {
-        const e = m.get(r.charger_id) ?? {};
-        if (r.form_type === 'A' && !e.A) e.A = r.performed_at;
-        if (r.form_type === 'D' && !e.D) e.D = r.performed_at;
+        const e = m.get(r.charger_id) ?? { A: [], D: [] };
+        e[r.form_type].push(r.performed_at);
         m.set(r.charger_id, e);
       }
-      setLtaLatest(m);
+      setLtaByCharger(m);
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1600,6 +1632,13 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
   const handleDeleteSelected = async () => {
     if (!selected) return;
     setDeleting(true);
+    // Row cascade (LTA records / warranty claims) is handled by the DB; clean their
+    // storage objects + the Form 1 PDF first so nothing is orphaned in the bucket.
+    const paths: string[] = [
+      selected.form_1_path,
+      ...(await collectChargerStoragePaths([selected.id])),
+    ].filter((p): p is string => !!p);
+    if (paths.length) await supabase.storage.from(CHARGER_FORMS_BUCKET).remove(paths);
     await supabase.from('site_chargers').delete().eq('id', selected.id);
     await onChanged();
     setDeleting(false);
@@ -1632,15 +1671,15 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
       ) : (
         <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
           {chargers.map((ch) => {
-            const l = ltaLatest.get(ch.id) ?? {};
+            const l = ltaByCharger.get(ch.id) ?? { A: [], D: [] };
             return (
               <ChargerCard
                 key={ch.id}
                 charger={ch}
                 selected={selectedId === ch.id}
                 flags={{
-                  formADue: isCycleOverdue(ch.turn_on_date, l.A ?? null, formAMonths),
-                  formDDue: !isResidential && isCycleOverdue(ch.turn_on_date, l.D ?? null, 12),
+                  formADue: ltaSchedule(ch.turn_on_date, formAMonths, l.A).overdueCount > 0,
+                  formDDue: !isResidential && ltaSchedule(ch.turn_on_date, 12, l.D).overdueCount > 0,
                   form1Missing: !ch.form_1_path,
                 }}
                 onClick={() => setSelectedId(selectedId === ch.id ? null : ch.id)}
@@ -1689,7 +1728,7 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
             </div>
           )}
           <div style={{ padding: 18 }}>
-            <ChargerTabPanel charger={selected} siteName={siteName} tab={tab} onTabChange={setTab} canEdit={canEdit} canDelete={canDelete} customer={customer} />
+            <ChargerTabPanel charger={selected} siteName={siteName} tab={tab} onTabChange={setTab} canEdit={canEdit} canDelete={canDelete} customer={customer} onChargerChanged={onChanged} />
           </div>
         </div>
       )}
@@ -1721,6 +1760,7 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
             asset_tag: editing.asset_tag,
             brand_model: editing.brand_model,
             registration_code: editing.registration_code,
+            procurement_date: editing.procurement_date,
             turn_on_date: editing.turn_on_date,
             form_a_next_date: editing.form_a_next_date,
             form_d_next_date: editing.form_d_next_date,
@@ -1739,6 +1779,11 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
           }}
           onBrandModelsChanged={onChanged}
           onDelete={async () => {
+            const paths: string[] = [
+              editing.form_1_path,
+              ...(await collectChargerStoragePaths([editing.id])),
+            ].filter((p): p is string => !!p);
+            if (paths.length) await supabase.storage.from(CHARGER_FORMS_BUCKET).remove(paths);
             await supabase.from('site_chargers').delete().eq('id', editing.id);
             await onChanged();
           }}
@@ -1791,7 +1836,7 @@ function ChargerCard({ charger, selected, flags, onClick }: { charger: SiteCharg
   );
 }
 
-function ChargerTabPanel({ charger, siteName, tab, onTabChange, canEdit, canDelete, customer }: {
+function ChargerTabPanel({ charger, siteName, tab, onTabChange, canEdit, canDelete, customer, onChargerChanged }: {
   charger: SiteCharger;
   siteName: string;
   tab: ChargerDetailTab;
@@ -1799,17 +1844,19 @@ function ChargerTabPanel({ charger, siteName, tab, onTabChange, canEdit, canDele
   canEdit: boolean;
   canDelete: boolean;
   customer: LtaEmailCustomer;
+  onChargerChanged: () => Promise<void>;
 }) {
-  if (tab === 'details')     return <ChargerDetailsPanel charger={charger} siteName={siteName} customer={customer} onTabChange={onTabChange} />;
+  if (tab === 'details')     return <ChargerDetailsPanel charger={charger} siteName={siteName} customer={customer} onTabChange={onTabChange} onChargerChanged={onChargerChanged} />;
   if (tab === 'maintenance') return <LtaInspectionPanel  charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} />;
   return <WarrantyPanel charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} />;
 }
 
-function ChargerDetailsPanel({ charger, siteName, customer, onTabChange }: {
+function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onChargerChanged }: {
   charger: SiteCharger;
   siteName: string;
   customer: LtaEmailCustomer;
   onTabChange: (t: ChargerDetailTab) => void;
+  onChargerChanged: () => Promise<void>;
 }) {
   // Residential chargers need only Form A, every 24 months — no Form D.
   const isResidential = customer.type === 'residential';
@@ -1817,6 +1864,10 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange }: {
   const [ltaRecords, setLtaRecords] = useState<LtaRecord[]>([]);
   const [addingForm, setAddingForm] = useState<LtaFormType | null>(null);
   const [addingInvoiceFor, setAddingInvoiceFor] = useState<LtaRecord | null>(null);
+  const [addingForm1, setAddingForm1] = useState(false);
+  const [editingDue, setEditingDue] = useState<LtaFormType | null>(null);
+  const [dueDraft, setDueDraft] = useState('');
+  const [timelineExpanded, setTimelineExpanded] = useState(false);
 
   const refresh = async () => {
     const { data } = await supabase.from('charger_lta_records')
@@ -1844,38 +1895,130 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange }: {
   };
 
   const tone = warrantyTone(charger.warranty_end_date);
-  const formADate = nextCycleDate(charger.turn_on_date, formAMonths);
-  const formDDate = nextCycleDate(charger.turn_on_date, 12);
+  const performedA = ltaRecords.filter((r) => r.form_type === 'A').map((r) => r.performed_at);
+  const performedD = ltaRecords.filter((r) => r.form_type === 'D').map((r) => r.performed_at);
+  const overrideA = resolveDueOverride(charger.form_a_override_date, charger.form_a_override_count, performedA.length);
+  const overrideD = resolveDueOverride(charger.form_d_override_date, charger.form_d_override_count, performedD.length);
+  const schedA = ltaSchedule(charger.turn_on_date, formAMonths, performedA);
+  const schedD = ltaSchedule(charger.turn_on_date, 12, performedD);
+  const formADate = overrideA ?? schedA.nextDue;
+  const formDDate = overrideD ?? schedD.nextDue;
   const formA = daysFromToday(formADate);
   const formD = daysFromToday(formDDate);
-  const latestA = ltaRecords.find((r) => r.form_type === 'A') ?? null;
-  const latestD = ltaRecords.find((r) => r.form_type === 'D') ?? null;
 
-  // Lifecycle timeline — newest milestone at top, registration at the bottom.
+  // Manually override a next-due date. The count is stamped so the override is
+  // dropped once a further inspection is logged (then the schedule resumes).
+  const saveOverride = async (ft: LtaFormType, date: string | null) => {
+    const count = ft === 'A' ? performedA.length : performedD.length;
+    const patch = ft === 'A'
+      ? { form_a_override_date: date, form_a_override_count: date ? count : null }
+      : { form_d_override_date: date, form_d_override_count: date ? count : null };
+    await supabase.from('site_chargers').update(patch).eq('id', charger.id);
+    setEditingDue(null);
+    await onChargerChanged();
+  };
+
+  // Lifecycle timeline — chronological top → bottom: procurement → installation
+  // (Form 1) → registration → recurring Form A / Form D (latest done + next due).
   type TLAction = { label: string; onClick: () => void; tone: 'green' | 'amber' | 'plain' };
-  type TLNode = { done: boolean; dotPending?: boolean; title: string; date: string | null; subtitle: React.ReactNode; actions: TLAction[] };
+  type TLNode = { dot: string; titleColor: string; title: string; date: string | null; subtitle: React.ReactNode; actions: TLAction[] };
+  const GREEN = C.green, RED = '#C2410C', AMBER = '#F1B04C', PURPLE = '#6B21A8', BLACK = '#1a1a1a';
+  const underContract = charger.has_maintenance_package;
+  const dueColor = underContract ? RED : PURPLE;
+
   const inspectedSub = (rec: LtaRecord) => rec.invoice_path
     ? <>Inspected · invoice attached</>
-    : <>Inspected · <span style={{ color: '#F1B04C', fontWeight: 700 }}>invoice pending</span></>;
+    : <>Inspected · <span style={{ color: AMBER, fontWeight: 700 }}>invoice pending</span></>;
   const completedActions = (rec: LtaRecord): TLAction[] => {
     const a: TLAction[] = [{ label: 'View', onClick: () => void openLtaRecord(rec), tone: 'green' }];
     if (!rec.invoice_path) a.push({ label: 'Add invoice', onClick: () => setAddingInvoiceFor(rec), tone: 'amber' });
     return a;
   };
-  const dueSub = (date: string | null, days: number | null) => date ? `Next due ${fmtDate(date)} · ${days != null ? relDays(days) : ''}` : 'Set registration date';
-  const nodes: TLNode[] = [];
-  if (!isResidential) {
-    nodes.push(latestD
-      ? { done: true, dotPending: !latestD.invoice_path, title: 'Form D — Completed', date: latestD.performed_at, subtitle: inspectedSub(latestD), actions: completedActions(latestD) }
-      : { done: false, title: 'Form D — Due', date: null, subtitle: dueSub(formDDate, formD), actions: [{ label: 'Add →', onClick: () => setAddingForm('D'), tone: 'plain' }] });
+  const dueSubtitle = (date: string | null, days: number | null): React.ReactNode => {
+    if (!date) return 'Set registration date';
+    const due = <>Next due {fmtDate(date)}{days != null && <> · {relDays(days)}</>}</>;
+    return underContract ? due : <><span style={{ color: PURPLE, fontWeight: 700 }}>No contract</span> · {due}</>;
+  };
+  const completedNode = (label: string, rec: LtaRecord): TLNode => ({
+    dot: rec.invoice_path ? GREEN : AMBER, titleColor: BLACK, title: `${label} — Completed`,
+    date: rec.performed_at, subtitle: inspectedSub(rec), actions: completedActions(rec),
+  });
+  const overdueNode = (label: string, due: string): TLNode => ({
+    dot: dueColor, titleColor: dueColor, title: `${label} — Overdue`, date: due,
+    subtitle: underContract
+      ? <span style={{ color: dueColor, fontWeight: 700 }}>Not performed</span>
+      : <><span style={{ color: PURPLE, fontWeight: 700 }}>No contract</span> · <span style={{ color: dueColor, fontWeight: 700 }}>Not performed</span></>,
+    actions: [],
+  });
+  const dueNode = (label: string, ft: LtaFormType, date: string | null, days: number | null): TLNode => ({
+    dot: dueColor, titleColor: dueColor, title: `${label} — Due`, date: null,
+    subtitle: dueSubtitle(date, days), actions: [{ label: 'Add →', onClick: () => setAddingForm(ft), tone: 'plain' }],
+  });
+  // Every node carries a sort value (ms since epoch) so Form A & Form D interleave
+  // strictly by date rather than being grouped. Form A wins same-date ties (+0.2 > +0.1).
+  type TLEntry = { node: TLNode; sort: number };
+  const DAY = 86400000, FAR_FUTURE = 8.64e15;
+  const parseMs = (s: string | null): number => { if (!s) return NaN; const d = new Date(s + 'T00:00:00'); return isNaN(d.getTime()) ? NaN : d.getTime(); };
+  const regMs = parseMs(charger.turn_on_date);
+  const procMs = parseMs(charger.procurement_date);
+  // Genesis nodes always sort Procurement < Installation < Registration, even when dates are missing/equal.
+  const regSort = !isNaN(regMs) ? regMs : (!isNaN(procMs) ? procMs + 2 * DAY : 2);
+  const installSort = !isNaN(regMs) ? regMs - DAY : (!isNaN(procMs) ? procMs + DAY : 1);
+  const procSort = !isNaN(procMs) ? procMs : (!isNaN(regMs) ? regMs - 2 * DAY : 0);
+
+  // Build the recurring nodes for one form type: one entry per scheduled period
+  // (Completed or Overdue · not performed) + the upcoming Due, each dated for sorting.
+  const formEntries = (label: string, ft: LtaFormType, sched: LtaScheduleResult, dueDate: string | null, dueDays: number | null): TLEntry[] => {
+    const eps = ft === 'A' ? 0.2 : 0.1;
+    const recByDate = new Map(ltaRecords.filter((r) => r.form_type === ft).map((r) => [r.performed_at, r] as const));
+    const out: TLEntry[] = [];
+    for (const p of sched.periods) {
+      const dm = parseMs(p.performedAt ?? p.due);
+      const sort = (isNaN(dm) ? regSort : dm) + eps;
+      if (p.performedAt) {
+        const rec = recByDate.get(p.performedAt);
+        out.push({ node: rec ? completedNode(label, rec)
+          : { dot: GREEN, titleColor: BLACK, title: `${label} — Completed`, date: p.performedAt, subtitle: 'Inspected', actions: [] }, sort });
+      } else {
+        out.push({ node: overdueNode(label, p.due), sort });
+      }
+    }
+    const dm = parseMs(dueDate);
+    out.push({ node: dueNode(label, ft, dueDate, dueDays), sort: (isNaN(dm) ? FAR_FUTURE : dm) + eps });
+    return out;
+  };
+
+  const entries: TLEntry[] = [
+    { node: charger.procurement_date
+        ? { dot: GREEN, titleColor: BLACK, title: 'Procurement', date: charger.procurement_date, subtitle: 'Charger procured', actions: [] }
+        : { dot: RED, titleColor: RED, title: 'Procurement', date: null, subtitle: 'Procurement date pending', actions: [] }, sort: procSort },
+    { node: charger.form_1_path
+        ? { dot: GREEN, titleColor: BLACK, title: 'Installation + Form 1', date: null, subtitle: 'Form 1 attached', actions: [{ label: 'View', onClick: () => void openForm1('view'), tone: 'green' }] }
+        : { dot: RED, titleColor: RED, title: 'Installation + Form 1', date: null, subtitle: 'Form 1 pending upload', actions: [{ label: 'Upload →', onClick: () => setAddingForm1(true), tone: 'plain' }] }, sort: installSort },
+    { node: { dot: charger.turn_on_date ? GREEN : RED, titleColor: charger.turn_on_date ? BLACK : RED, title: 'Registration', date: charger.turn_on_date, subtitle: charger.turn_on_date ? 'Charger commissioned' : 'Registration date not set', actions: [] }, sort: regSort },
+    ...formEntries('Form A', 'A', schedA, formADate, formA),
+    ...(!isResidential ? formEntries('Form D', 'D', schedD, formDDate, formD) : []),
+  ];
+  // Newest-at-top: sort by date descending.
+  entries.sort((a, b) => b.sort - a.sort);
+  const nodes = entries.map((e) => e.node);
+
+  // Keep the 4 most-recent nodes and the 3 genesis nodes (down to Registration)
+  // always visible; collapse the overdue middle behind a click-to-expand toggle.
+  const TOP_KEEP = 4, BOTTOM_KEEP = 3;
+  type TLItem = { kind: 'node'; node: TLNode } | { kind: 'toggle'; count: number };
+  let timelineItems: TLItem[];
+  if (nodes.length <= TOP_KEEP + BOTTOM_KEEP + 1) {
+    timelineItems = nodes.map((n) => ({ kind: 'node', node: n }));
+  } else {
+    const middle = nodes.slice(TOP_KEEP, nodes.length - BOTTOM_KEEP);
+    timelineItems = [
+      ...nodes.slice(0, TOP_KEEP).map((n): TLItem => ({ kind: 'node', node: n })),
+      ...(timelineExpanded ? middle.map((n): TLItem => ({ kind: 'node', node: n })) : []),
+      { kind: 'toggle', count: middle.length },
+      ...nodes.slice(nodes.length - BOTTOM_KEEP).map((n): TLItem => ({ kind: 'node', node: n })),
+    ];
   }
-  nodes.push(latestA
-    ? { done: true, dotPending: !latestA.invoice_path, title: 'Form A — Completed', date: latestA.performed_at, subtitle: inspectedSub(latestA), actions: completedActions(latestA) }
-    : { done: false, title: 'Form A — Due', date: null, subtitle: dueSub(formADate, formA), actions: [{ label: 'Add →', onClick: () => setAddingForm('A'), tone: 'plain' }] });
-  nodes.push(charger.form_1_path
-    ? { done: true, title: 'Installation + Form 1', date: null, subtitle: 'Form 1 attached', actions: [{ label: 'View', onClick: () => void openForm1('view'), tone: 'green' }] }
-    : { done: false, title: 'Installation + Form 1', date: null, subtitle: 'Form 1 pending upload', actions: [] });
-  nodes.push({ done: !!charger.turn_on_date, title: 'Registration', date: charger.turn_on_date, subtitle: charger.turn_on_date ? 'Charger commissioned' : 'Registration date not set', actions: [] });
 
   const kvLabel: React.CSSProperties = { fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' };
   const KV = ({ label, value, muted }: { label: string; value: string; muted?: boolean }) => (
@@ -1902,45 +2045,70 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange }: {
       <AddInvoiceModal record={addingInvoiceFor}
         onClose={() => setAddingInvoiceFor(null)} onSaved={async () => { await refresh(); setAddingInvoiceFor(null); }} />
     )}
+    {addingForm1 && (
+      <AddForm1Modal charger={charger} siteName={siteName}
+        onClose={() => setAddingForm1(false)} onSaved={async () => { await onChargerChanged(); setAddingForm1(false); }} />
+    )}
     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) minmax(260px, 1fr)', gap: 16, alignItems: 'start' }}>
       {/* Left — lifecycle timeline */}
       <div style={{ border: '1px solid #EBEBEB', borderRadius: 12, padding: '14px 16px' }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 12 }}>Lifecycle Timeline</div>
         <div>
-          {nodes.map((n, i) => (
-            <div key={i} style={{ display: 'flex', gap: 12 }}>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: 16 }}>
-                <div style={{ width: 14, height: 14, borderRadius: '50%', background: n.done ? (n.dotPending ? '#F1B04C' : C.green) : '#C2410C', flexShrink: 0, marginTop: 2, boxShadow: '0 0 0 3px #fff, 0 0 0 4px #EBEBEB' }} />
-                {i < nodes.length - 1 && <div style={{ flex: 1, width: 2, background: '#EBEBEB', marginTop: 4 }} />}
-              </div>
-              <div style={{ flex: 1, minWidth: 0, paddingBottom: i < nodes.length - 1 ? 16 : 0 }}>
-                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: n.done ? '#1a1a1a' : '#C2410C' }}>{n.title}</div>
-                    {n.date && <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>{fmtDate(n.date)}</div>}
-                    <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>{n.subtitle}</div>
+          {timelineItems.map((item, i) => {
+            const isLast = i === timelineItems.length - 1;
+            if (item.kind === 'toggle') {
+              return (
+                <div key="toggle" style={{ display: 'flex', gap: 12 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: 16 }}>
+                    <div style={{ width: 10, height: 10, borderRadius: '50%', background: C.white, border: '2px solid #EBEBEB', flexShrink: 0, marginTop: 4 }} />
+                    {!isLast && <div style={{ flex: 1, width: 2, background: '#EBEBEB', marginTop: 4 }} />}
                   </div>
-                  {n.actions.length > 0 && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0, alignItems: 'flex-end' }}>
-                      {n.actions.map((a) => {
-                        const ts = a.tone === 'green'
-                          ? { border: '1px solid #C8E6C9', background: C.honeydew, color: C.green }
-                          : a.tone === 'amber'
-                          ? { border: '1px solid #FBD8B6', background: '#FFF0E0', color: '#B45309' }
-                          : { border: '1px solid #EBEBEB', background: C.white, color: C.slate };
-                        return (
-                          <button key={a.label} onClick={a.onClick}
-                            style={{ padding: '4px 10px', borderRadius: 8, ...ts, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                            {a.label}
-                          </button>
-                        );
-                      })}
+                  <div style={{ flex: 1, minWidth: 0, paddingBottom: isLast ? 0 : 16 }}>
+                    <button onClick={() => setTimelineExpanded((v) => !v)}
+                      style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <ChevronDown size={12} strokeWidth={2.5} style={{ transform: timelineExpanded ? 'rotate(180deg)' : 'none' }} />
+                      {timelineExpanded ? 'Show less' : `Show ${item.count} more`}
+                    </button>
+                  </div>
+                </div>
+              );
+            }
+            const n = item.node;
+            return (
+              <div key={i} style={{ display: 'flex', gap: 12 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: 16 }}>
+                  <div style={{ width: 14, height: 14, borderRadius: '50%', background: n.dot, flexShrink: 0, marginTop: 2, boxShadow: '0 0 0 3px #fff, 0 0 0 4px #EBEBEB' }} />
+                  {!isLast && <div style={{ flex: 1, width: 2, background: '#EBEBEB', marginTop: 4 }} />}
+                </div>
+                <div style={{ flex: 1, minWidth: 0, paddingBottom: isLast ? 0 : 16 }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: n.titleColor }}>{n.title}</div>
+                      {n.date && <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>{fmtDate(n.date)}</div>}
+                      <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>{n.subtitle}</div>
                     </div>
-                  )}
+                    {n.actions.length > 0 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0, alignItems: 'flex-end' }}>
+                        {n.actions.map((a) => {
+                          const ts = a.tone === 'green'
+                            ? { border: '1px solid #C8E6C9', background: C.honeydew, color: C.green }
+                            : a.tone === 'amber'
+                            ? { border: '1px solid #FBD8B6', background: '#FFF0E0', color: '#B45309' }
+                            : { border: '1px solid #EBEBEB', background: C.white, color: C.slate };
+                          return (
+                            <button key={a.label} onClick={a.onClick}
+                              style={{ padding: '4px 10px', borderRadius: 8, ...ts, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                              {a.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
@@ -1955,6 +2123,7 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange }: {
 
         <div style={cardStyle}>
           {sectionHeader('Registration & Form 1')}
+          <KV label="Procurement Date" value={fmtDate(charger.procurement_date) ?? 'Not recorded'} muted={!charger.procurement_date} />
           <KV label="Registration Date" value={fmtDate(charger.turn_on_date) ?? 'Not recorded'} muted={!charger.turn_on_date} />
           {charger.form_1_path ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1970,10 +2139,46 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange }: {
 
         <div style={cardStyle}>
           {sectionHeader('LTA Inspection', { label: 'View →', onClick: () => onTabChange('maintenance') })}
-          <KV label={isResidential ? 'Next Form A (24-mo)' : 'Next Form A (6-mo)'} value={formADate ? `${fmtDate(formADate)} · ${formA != null ? relDays(formA) : ''}` : '—'} muted={!formADate} />
-          {!isResidential && (
-            <KV label="Next Form D (12-mo)" value={formDDate ? `${fmtDate(formDDate)} · ${formD != null ? relDays(formD) : ''}` : '—'} muted={!formDDate} />
-          )}
+          {(() => {
+            const dueRow = (label: string, ft: LtaFormType, date: string | null, days: number | null, isOverride: boolean) => {
+              if (editingDue === ft) {
+                return (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={kvLabel}>{label}</span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <input type="date" value={dueDraft} onChange={(e) => setDueDraft(e.target.value)}
+                        style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none' }} />
+                      <button onClick={() => void saveOverride(ft, dueDraft || null)} title="Save override"
+                        style={{ width: 26, height: 26, borderRadius: 6, border: 'none', background: C.green, color: C.white, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>✓</button>
+                      <button onClick={() => void saveOverride(ft, null)} title="Clear override (use schedule)"
+                        style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Auto</button>
+                      <button onClick={() => setEditingDue(null)} title="Cancel"
+                        style={{ width: 26, height: 26, borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}><X size={12} strokeWidth={2.5} /></button>
+                    </span>
+                  </div>
+                );
+              }
+              return (
+                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+                  <span style={kvLabel}>{label}</span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                    {isOverride && <span style={{ fontSize: 9, fontWeight: 700, color: PURPLE, background: '#F0E8FF', padding: '1px 6px', borderRadius: 99, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Manual</span>}
+                    <span style={{ fontSize: 12, fontWeight: 600, color: date ? '#1a1a1a' : C.slate }}>{date ? `${fmtDate(date)} · ${days != null ? relDays(days) : ''}` : '—'}</span>
+                    <button onClick={() => { setDueDraft(date ?? ''); setEditingDue(ft); }} title="Override due date"
+                      style={{ width: 22, height: 22, borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <Pencil size={10} strokeWidth={2.25} />
+                    </button>
+                  </span>
+                </div>
+              );
+            };
+            return (
+              <>
+                {dueRow(isResidential ? 'Next Form A (24-mo)' : 'Next Form A (6-mo)', 'A', formADate, formA, !!overrideA)}
+                {!isResidential && dueRow('Next Form D (12-mo)', 'D', formDDate, formD, !!overrideD)}
+              </>
+            );
+          })()}
         </div>
 
         <div style={cardStyle}>
@@ -2010,6 +2215,9 @@ function AddLtaRecordModal({ charger, siteName, formType, onClose, onSaved }: {
     setError(null);
     if (!pendingFile) { setError('Pick the form PDF first.'); return; }
     if (!date) { setError('Pick the inspection date first.'); return; }
+    const todayStr = new Date().toISOString().slice(0, 10);
+    if (date > todayStr) { setError('Inspection date can’t be in the future.'); return; }
+    if (charger.turn_on_date && date <= charger.turn_on_date) { setError('Inspection date must be after the registration date.'); return; }
     setBusy(true);
     const friendly = computeLtaFilename(formType, charger.asset_tag, date, siteName);
     const path = `lta/${charger.id}/${crypto.randomUUID()}/${pathSafe(friendly)}`;
@@ -2160,6 +2368,71 @@ function AddInvoiceModal({ record, onClose, onSaved }: {
           <button onClick={() => void submit()} disabled={busy || !file}
             style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: (busy || !file) ? '#A5D6A7' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: (busy || !file) ? 'not-allowed' : 'pointer' }}>
             {busy ? 'Saving…' : 'Attach invoice'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Upload the installation Form 1 PDF for a charger (from the timeline, via popup).
+function AddForm1Modal({ charger, siteName, onClose, onSaved }: {
+  charger: SiteCharger;
+  siteName: string;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const ref = useRef<HTMLInputElement>(null);
+  const isPdf = (f: File) => !f.type || f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf');
+
+  const submit = async () => {
+    if (!file) { setError('Pick the Form 1 PDF first.'); return; }
+    setBusy(true);
+    setError(null);
+    const friendly = computeForm1Filename(charger.asset_tag, charger.turn_on_date, siteName);
+    const path = `form-1/${crypto.randomUUID()}/${pathSafe(friendly)}`;
+    const up = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(path, file, { contentType: file.type || 'application/pdf' });
+    if (up.error) { setBusy(false); setError(up.error.message); return; }
+    if (charger.form_1_path) void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([charger.form_1_path]);
+    const { error: err } = await supabase.from('site_chargers').update({ form_1_path: path, form_1_filename: friendly }).eq('id', charger.id);
+    setBusy(false);
+    if (err) { void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([path]); setError(err.message); return; }
+    await onSaved();
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 440, maxWidth: 'calc(100vw - 24px)', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>Upload Form 1 — {charger.asset_tag}</div>
+          <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
+        </div>
+        {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{error}</div>}
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Form 1 PDF <span style={{ color: '#C0321A' }}>*</span></div>
+          <input ref={ref} type="file" accept="application/pdf" style={{ display: 'none' }}
+            onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) { if (!isPdf(f)) { setError('File must be a PDF.'); return; } setError(null); setFile(f); } }} />
+          {file ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: C.seasalt, border: '1px solid #EBEBEB', borderRadius: 10, padding: '8px 10px' }}>
+              <FileText size={14} strokeWidth={1.8} color={C.green} style={{ flexShrink: 0 }} />
+              <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
+              <button type="button" onClick={() => ref.current?.click()} style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Change</button>
+            </div>
+          ) : (
+            <button type="button" onClick={() => ref.current?.click()}
+              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 14px', borderRadius: 10, border: '1px dashed #C8E6C9', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', width: '100%' }}>
+              <Upload size={14} strokeWidth={2} /> Choose Form 1 PDF
+            </button>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button onClick={onClose} disabled={busy} style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+          <button onClick={() => void submit()} disabled={busy || !file}
+            style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: (busy || !file) ? '#A5D6A7' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: (busy || !file) ? 'not-allowed' : 'pointer' }}>
+            {busy ? 'Uploading…' : 'Upload Form 1'}
           </button>
         </div>
       </div>
@@ -3428,21 +3701,64 @@ function ReadOnlyField({ label, value, placeholder }: { label: string; value: st
 // A form cycle is overdue once the charger is past its first due date and has no
 // inspection within the latest cadence window. `latestPerformedAt` is the most
 // recent inspection of that form type (or null if none).
-function isCycleOverdue(turnOn: string | null, latestPerformedAt: string | null, months: number): boolean {
-  if (!turnOn) return false;
-  const firstDue = new Date(turnOn + 'T00:00:00');
-  if (isNaN(firstDue.getTime())) return false;
-  firstDue.setMonth(firstDue.getMonth() + months);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  if (firstDue > today) return false;        // first inspection not due yet
-  if (!latestPerformedAt) return true;       // due, never inspected
-  const cutoff = new Date();
-  cutoff.setHours(0, 0, 0, 0);
-  cutoff.setMonth(cutoff.getMonth() - months);
-  const performed = new Date(latestPerformedAt + 'T00:00:00');
-  return isNaN(performed.getTime()) || performed < cutoff;
+// A manual next-due override applies only while no further inspection has been
+// logged since it was set (overrideCount === current inspection count).
+function resolveDueOverride(overrideDate: string | null, overrideCount: number | null, count: number): string | null {
+  return overrideDate && overrideCount === count ? overrideDate : null;
 }
+
+interface LtaPeriod { n: number; due: string; performedAt: string | null }
+interface LtaScheduleResult {
+  periods: LtaPeriod[];  // chronological (n ascending): every period up to & incl. the latest performed / past-due one
+  nextDue: string | null; // earliest scheduled date ≥ today with no inspection in its window (forward-looking)
+  overdueCount: number;    // past periods (due < today) with no inspection performed
+}
+
+// Build the LTA schedule for one form type. The schedule is fixed at registration +
+// n × interval. An inspection performed within a period's window (D_{n-1}, D_n] marks
+// that period performed (window match — so a late inspection lands in the period it
+// actually falls in, leaving genuinely missed periods flagged overdue). The headline
+// `nextDue` is forward-looking: the next scheduled date from today, NOT a stale
+// overdue one — those live in `periods`/`overdueCount` for the timeline audit.
+function ltaSchedule(registration: string | null, intervalMonths: number, performedDates: string[]): LtaScheduleResult {
+  const empty: LtaScheduleResult = { periods: [], nextDue: null, overdueCount: 0 };
+  if (!registration) return empty;
+  const reg = new Date(registration + 'T00:00:00');
+  if (isNaN(reg.getTime())) return empty;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const periodEnd = (n: number) => { const d = new Date(reg); d.setMonth(d.getMonth() + n * intervalMonths); return d; };
+
+  const performed = performedDates
+    .map((d) => new Date(d + 'T00:00:00'))
+    .filter((d) => !isNaN(d.getTime()) && d > reg)
+    .sort((a, b) => a.getTime() - b.getTime());
+  const performedByPeriod = new Map<number, string>();
+  for (const p of performed) {
+    for (let n = 1; n <= 600; n++) {
+      if (p <= periodEnd(n)) { if (!performedByPeriod.has(n)) performedByPeriod.set(n, toYmd(p)); break; }
+    }
+  }
+
+  const periods: LtaPeriod[] = [];
+  let nextDue: string | null = null;
+  let overdueCount = 0;
+  for (let n = 1; n <= 600; n++) {
+    const end = periodEnd(n);
+    const due = toYmd(end);
+    const performedAt = performedByPeriod.get(n) ?? null;
+    if (end < today) {
+      periods.push({ n, due, performedAt });
+      if (!performedAt) overdueCount++;
+    } else if (!performedAt) {
+      nextDue = due;
+      break;
+    } else {
+      periods.push({ n, due, performedAt }); // performed early — list it and keep scanning for the next gap
+    }
+  }
+  return { periods, nextDue, overdueCount };
+}
+
 
 function fmtDate(s: string | null): string | null {
   if (!s) return null;
@@ -3519,6 +3835,7 @@ interface ChargerFormData {
   asset_tag: string;
   brand_model: string | null;
   registration_code: string | null;
+  procurement_date: string | null;
   turn_on_date: string | null;
   form_a_next_date: string | null;
   form_d_next_date: string | null;
@@ -3531,7 +3848,7 @@ interface ChargerFormData {
 
 function blankCharger(): ChargerFormData {
   return {
-    asset_tag: '', brand_model: null, registration_code: null,
+    asset_tag: '', brand_model: null, registration_code: null, procurement_date: null,
     turn_on_date: null, form_a_next_date: null, form_d_next_date: null,
     warranty_start_date: null, warranty_end_date: null,
     form_1_path: null, form_1_filename: null,
@@ -3616,6 +3933,7 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
       asset_tag:               form.asset_tag.trim(),
       brand_model:             form.brand_model && form.brand_model.trim() ? form.brand_model.trim() : null,
       registration_code:       form.registration_code && form.registration_code.trim() ? form.registration_code.trim() : null,
+      procurement_date:        form.procurement_date || null,
       turn_on_date:            turnOn,
       form_a_next_date:        nextCycleDate(turnOn, isResidential ? 24 : 6),
       form_d_next_date:        isResidential ? null : nextCycleDate(turnOn, 12),
@@ -3684,6 +4002,11 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
           <div>
             <FieldLabel>Registration Code</FieldLabel>
             <input value={form.registration_code ?? ''} onChange={(e) => set('registration_code', e.target.value || null)} placeholder="e.g. REG-2026-001" style={{ ...inputStyle(), background: C.white }} />
+          </div>
+          <div>
+            <FieldLabel>Procurement Date</FieldLabel>
+            <input type="date" value={form.procurement_date ?? ''} onChange={(e) => set('procurement_date', e.target.value || null)} style={{ ...inputStyle(), background: C.white }} />
+            <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>When the charger was procured — the first step in its lifecycle.</div>
           </div>
           <div>
             <FieldLabel>Registration Date</FieldLabel>
