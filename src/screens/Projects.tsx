@@ -1837,10 +1837,10 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange }: {
   };
 
   const openLtaRecord = async (record: LtaRecord) => {
-    const downloadName = computeLtaFilename(record.form_type, charger.asset_tag, record.performed_at, siteName);
+    // Open inline in a new tab (no `download` option) so it displays, not downloads.
     const { data } = await supabase.storage.from(CHARGER_FORMS_BUCKET)
-      .createSignedUrl(record.storage_path, 60, { download: downloadName });
-    if (data?.signedUrl) window.open(data.signedUrl, '_self');
+      .createSignedUrl(record.storage_path, 60);
+    if (data?.signedUrl) window.open(data.signedUrl, '_blank');
   };
 
   const tone = warrantyTone(charger.warranty_end_date);

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { C } from './theme';
 import { Logo } from './components/Logo';
 import { NavItem } from './components/NavItem';
@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useIsMobile } from './lib/useIsMobile';
 import { setAppToken, hasValidAppToken } from './lib/supabase';
+import { startVersionWatch } from './lib/version';
 import { ScreenOverview } from './screens/Overview';
 import { ScreenInvoices } from './screens/Invoices';
 import { ScreenInstallations } from './screens/Installations';
@@ -406,6 +407,23 @@ function Dashboard({ onSignOut }: DashboardProps) {
 
 const USER_KEY = 'evone_app_user';
 
+// When a new version is deployed, also clear the session so everyone re-logs in.
+const FORCE_RELOGIN_ON_UPDATE = true;
+
+function UpdateOverlay({ relogin }: { relogin: boolean }) {
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: C.seasalt, zIndex: 5000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ background: C.white, borderRadius: 20, border: '1px solid #EBEBEB', padding: '32px 36px', boxShadow: '0 24px 64px rgba(0,0,0,.12)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, maxWidth: 360, textAlign: 'center' }}>
+        <Logo height={34} />
+        <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>Updating to the latest version…</div>
+        <div style={{ fontSize: 13, color: C.slate, lineHeight: 1.5 }}>
+          A new version was just released.{relogin ? ' Please sign in again after the page reloads.' : ' The page will reload automatically.'}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   // Restore the session on reload — only if the stored auth token is still valid.
   const [user, setUser] = useState<SignedInUser | null>(() => {
@@ -415,6 +433,20 @@ export default function App() {
     } catch { /* ignore */ }
     return null;
   });
+  const [updating, setUpdating] = useState(false);
+
+  // Watch for a newer deploy. When found, optionally drop the session (force a
+  // re-login) and reload so everyone runs the latest bundle.
+  useEffect(() => {
+    startVersionWatch(() => {
+      setUpdating(true);
+      if (FORCE_RELOGIN_ON_UPDATE) {
+        setAppToken(null);
+        try { localStorage.removeItem(USER_KEY); } catch { /* ignore */ }
+      }
+      window.setTimeout(() => window.location.reload(), 1200);
+    });
+  }, []);
 
   const handleLogin = (u: SignedInUser) => {
     try { localStorage.setItem(USER_KEY, JSON.stringify(u)); } catch { /* ignore */ }
@@ -425,6 +457,11 @@ export default function App() {
     try { localStorage.removeItem(USER_KEY); } catch { /* ignore */ }
     setUser(null);
   };
+
+  // A newer version was deployed — show the updating splash while we reload.
+  if (updating) {
+    return <UpdateOverlay relogin={FORCE_RELOGIN_ON_UPDATE} />;
+  }
 
   // Public account-opening invite: bypass login entirely.
   const applyToken = new URLSearchParams(window.location.search).get('apply');

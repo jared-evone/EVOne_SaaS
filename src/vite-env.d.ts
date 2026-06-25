@@ -8,3 +8,6 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+// Build identity injected by Vite's `define` (commit SHA on Vercel, 'dev' locally).
+declare const __APP_VERSION__: string;
