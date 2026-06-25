@@ -3,9 +3,8 @@ import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
-import { Search, Mail, Phone, Pencil, FileText, Upload, Download as DownloadIcon, ChevronDown, X } from 'lucide-react';
+import { Search, Mail, Pencil, FileText, Upload, Download as DownloadIcon, ChevronDown, X } from 'lucide-react';
 import { OneMapAutocomplete } from '../components/OneMapAutocomplete';
-import { useIsMobile } from '../lib/useIsMobile';
 import {
   type EmailBrand, DEFAULT_LTA_BRAND, fetchLtaBrand, buildLtaEmailHtml,
   type EmailSender, fetchSenders,
@@ -436,6 +435,7 @@ interface SiteCharger {
   site_id: string;
   asset_tag: string;
   brand_model: string | null;
+  registration_code: string | null;
   turn_on_date: string | null;
   form_a_next_date: string | null;
   form_d_next_date: string | null;
@@ -460,6 +460,10 @@ interface ProjectSite {
   longitude: number | null;
   notes: string | null;
   position: number;
+  lta_contract_years: number | null;
+  lta_contract_start_date: string | null;
+  lta_contract_path: string | null;
+  lta_contract_filename: string | null;
   site_chargers: SiteCharger[];
 }
 
@@ -493,11 +497,11 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
   canDelete: boolean;
   onBack: () => Promise<void>;
 }) {
-  const isMobile = useIsMobile();
   const [project, setProject]   = useState<Project | null>(null);
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [contacts, setContacts] = useState<CustomerContact[]>([]);
   const [sites, setSites]       = useState<ProjectSite[]>([]);
+  const [lta, setLta]           = useState<SiteLtaRow[]>([]);
   const [files, setFiles]       = useState<ProjectFile[]>([]);
   const [brandModels, setBrandModels] = useState<BrandModel[]>([]);
   const [loading, setLoading]   = useState(true);
@@ -517,8 +521,21 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
     const proj = (p as Project | null) ?? null;
     setProject(proj);
     setFiles((f ?? []) as ProjectFile[]);
-    setSites((s ?? []) as ProjectSite[]);
+    const siteRows = (s ?? []) as ProjectSite[];
+    setSites(siteRows);
     setBrandModels((bm ?? []) as BrandModel[]);
+
+    // LTA records for every charger in the project — drives the Overview flags.
+    const chargerIds = siteRows.flatMap((st) => st.site_chargers.map((c) => c.id));
+    if (chargerIds.length) {
+      const { data: lr } = await supabase.from('charger_lta_records')
+        .select('charger_id, form_type, performed_at, invoice_path')
+        .in('charger_id', chargerIds)
+        .order('performed_at', { ascending: false });
+      setLta((lr ?? []) as SiteLtaRow[]);
+    } else {
+      setLta([]);
+    }
     if (proj?.customer_id) {
       const [{ data: c }, { data: cc }] = await Promise.all([
         supabase.from('customers').select('*').eq('id', proj.customer_id).maybeSingle(),
@@ -630,21 +647,8 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
         </div>
       )}
 
-      {/* Two-column body */}
-      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '360px 1fr', gap: 18, alignItems: 'start' }}>
-        {/* Left column */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <ProjectDetailsCard
-            project={project}
-            customers={customers}
-            canEdit={canEdit}
-            onSaved={fetchAll}
-          />
-          <LinkedCustomerCard customer={customer} contacts={contacts} hasLink={!!project.customer_id} />
-        </div>
-
-        {/* Right column */}
-        <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+      {/* Tabbed detail — full width */}
+      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <div style={{ display: 'flex', borderBottom: '1px solid #EBEBEB', padding: '8px 12px', gap: 4, overflowX: 'auto', flexWrap: 'nowrap' }}>
             <TabButton active={tab === 'overview'} onClick={() => setTab('overview')}>Overview</TabButton>
             <TabButton active={tab === 'files'}    onClick={() => setTab('files')}>
@@ -669,11 +673,14 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
             {tab === 'overview' && (
               <OverviewTab
                 project={project}
+                customers={customers}
+                customer={customer}
                 contacts={contacts}
                 sites={sites}
+                lta={lta}
                 onPickSite={(id) => setTab(`site:${id}`)}
                 canEdit={canEdit}
-                onAddSite={() => setAddingSite(true)}
+                onSaved={fetchAll}
               />
             )}
             {tab === 'files' && (
@@ -719,7 +726,6 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
           />
         )}
       </div>
-    </div>
   );
 }
 
@@ -790,9 +796,9 @@ function ProjectDetailsCard({ project, customers, canEdit, onSaved }: {
   const palette = PROJECT_STATUS_PALETTE[project.status];
 
   return (
-    <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: 18, height: '100%', display: 'flex', flexDirection: 'column', gap: 12, boxSizing: 'border-box' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Charger Details</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Registry Details</div>
         {canEdit && !editing && (
           <button onClick={() => setEditing(true)}
             style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
@@ -869,6 +875,7 @@ function DetailRow({ label, value, multiline }: { label: string; value: string; 
 // ── Left column: Linked Customer (read-only summary) ──────────────
 
 function LinkedCustomerCard({ customer, contacts, hasLink }: { customer: Customer | null; contacts: CustomerContact[]; hasLink: boolean }) {
+  const [expanded, setExpanded] = useState(false);
   if (!hasLink) {
     return (
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: 18, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -882,11 +889,12 @@ function LinkedCustomerCard({ customer, contacts, hasLink }: { customer: Custome
   if (!customer) return null;
 
   const palette = TYPE_PALETTE[customer.type];
-  const visibleContacts = contacts.slice(0, 3);
-  const extras = contacts.length - visibleContacts.length;
+  const COLLAPSED = 3;
+  const visibleContacts = expanded ? contacts : contacts.slice(0, COLLAPSED);
+  const extras = contacts.length - COLLAPSED;
 
   return (
-    <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: 18, height: '100%', display: 'flex', flexDirection: 'column', gap: 12, boxSizing: 'border-box' }}>
       <div style={{ fontSize: 13, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Linked Customer</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <div style={{ width: 36, height: 36, borderRadius: 10, background: C.honeydew, color: C.green, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 700, flexShrink: 0 }}>
@@ -913,26 +921,24 @@ function LinkedCustomerCard({ customer, contacts, hasLink }: { customer: Custome
           <div style={{ fontSize: 12, color: C.slate, fontStyle: 'italic' }}>No contacts yet.</div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {visibleContacts.map((c) => (
-              <div key={c.id} style={{ background: C.seasalt, borderRadius: 10, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 3 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ fontSize: 9, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Attn:</span>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: '#1a1a1a' }}>{c.name}</span>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 8 }}>
+              {visibleContacts.map((c) => (
+                <div key={c.id} style={{ background: C.seasalt, borderRadius: 8, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+                  {c.email && (
+                    <a href={`mailto:${c.email}`} title={c.email} style={{ fontSize: 11, color: C.green, textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.email}</a>
+                  )}
+                  {c.phone && (
+                    <span style={{ fontSize: 11, color: C.slate, fontVariantNumeric: 'tabular-nums' }}>{c.phone}</span>
+                  )}
                 </div>
-                {c.email && (
-                  <a href={`mailto:${c.email}`} style={{ fontSize: 11, color: C.green, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 5, wordBreak: 'break-all' }}>
-                    <Mail size={11} strokeWidth={2.25} /> {c.email}
-                  </a>
-                )}
-                {c.phone && (
-                  <a href={`tel:${c.phone.replace(/\s+/g, '')}`} style={{ fontSize: 11, color: '#1a1a1a', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 5, fontVariantNumeric: 'tabular-nums' }}>
-                    <Phone size={11} strokeWidth={2.25} /> {c.phone}
-                  </a>
-                )}
-              </div>
-            ))}
+              ))}
+            </div>
             {extras > 0 && (
-              <div style={{ fontSize: 11, color: C.slate, alignSelf: 'flex-start' }}>+ {extras} more — manage from the Customers tab.</div>
+              <button type="button" onClick={() => setExpanded((v) => !v)}
+                style={{ alignSelf: 'flex-start', padding: 0, border: 'none', background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                {expanded ? 'Show less' : `+ ${extras} more`}
+              </button>
             )}
           </div>
         )}
@@ -943,69 +949,114 @@ function LinkedCustomerCard({ customer, contacts, hasLink }: { customer: Custome
 
 // ── Right column: Overview tab ────────────────────────────────────
 
-function OverviewTab({ project, contacts, sites, onPickSite, canEdit, onAddSite }: {
+function OverviewTab({ project, customers, customer, contacts, sites, lta, onPickSite, canEdit, onSaved }: {
   project: Project;
+  customers: CustomerLite[];
+  customer: Customer | null;
   contacts: CustomerContact[];
   sites: ProjectSite[];
+  lta: SiteLtaRow[];
   onPickSite: (id: string) => void;
   canEdit: boolean;
-  onAddSite: () => void;
+  onSaved: () => Promise<void>;
 }) {
   const emailCount   = contacts.filter((c) => !!c.email).length;
   const phoneCount   = contacts.filter((c) => !!c.phone).length;
   const chargerCount = sites.reduce((n, s) => n + s.site_chargers.length, 0);
+  const isResidential = customer?.type === 'residential';
+  const formAMonths = isResidential ? 24 : 6;
+
+  // Latest A / D record per charger (rows arrive newest-first).
+  const latest = new Map<string, { A?: SiteLtaRow; D?: SiteLtaRow }>();
+  for (const r of lta) {
+    const e = latest.get(r.charger_id) ?? {};
+    if (r.form_type === 'A' && !e.A) e.A = r;
+    if (r.form_type === 'D' && !e.D) e.D = r;
+    latest.set(r.charger_id, e);
+  }
+  const siteFlags = (site: ProjectSite) => {
+    let form1Missing = 0, formADue = 0, invoiceMissing = 0;
+    for (const c of site.site_chargers) {
+      if (!c.form_1_path) form1Missing++;
+      const l = latest.get(c.id) ?? {};
+      if (isCycleOverdue(c.turn_on_date, l.A?.performed_at ?? null, formAMonths)) formADue++;
+      if (l.A && !l.A.invoice_path) invoiceMissing++;
+      if (!isResidential && l.D && !l.D.invoice_path) invoiceMissing++;
+    }
+    return { form1Missing, formADue, invoiceMissing };
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Registry details + linked customer (moved here from the old side column) */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14, alignItems: 'stretch' }}>
+        <ProjectDetailsCard project={project} customers={customers} canEdit={canEdit} onSaved={onSaved} />
+        <LinkedCustomerCard customer={customer} contacts={contacts} hasLink={!!project.customer_id} />
+      </div>
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
         <SummaryStat label="Sites"    value={String(sites.length)} />
         <SummaryStat label="Chargers" value={String(chargerCount)} />
         <SummaryStat label="Contacts" value={String(contacts.length)} sub={`${emailCount} email${emailCount === 1 ? '' : 's'} · ${phoneCount} phone${phoneCount === 1 ? '' : 's'} on file`} />
       </div>
 
-      <div style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-              Sites{sites.length > 0 && <span style={{ color: C.slate, marginLeft: 4 }}>· {sites.length}</span>}
-            </div>
-            <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
-              One tab per site — chargers, address, and notes live inside each site.
-            </div>
-          </div>
-          {canEdit && (
-            <button onClick={onAddSite}
-              style={{ padding: '7px 14px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-              + Add Site
-            </button>
-          )}
-        </div>
         {sites.length === 0 ? (
           <div style={{ background: C.seasalt, border: '1px dashed #EBEBEB', borderRadius: 10, padding: '14px 16px', fontSize: 12, color: C.slate, textAlign: 'center', lineHeight: 1.6 }}>
-            No sites yet.{canEdit && ' Click + Add Site to add the first one.'}
+            No sites yet.{canEdit && ' Click + Site (top right) to add the first one.'}
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {sites.map((s) => (
-              <div key={s.id}
-                onClick={() => onPickSite(s.id)}
-                style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}
-                onMouseEnter={(e) => (e.currentTarget.style.borderColor = '#C8E6C9')}
-                onMouseLeave={(e) => (e.currentTarget.style.borderColor = '#EBEBEB')}>
-                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{s.name}</div>
-                  {s.address && (
-                    <div style={{ fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.address}</div>
-                  )}
-                </div>
-                <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, background: C.honeydew, color: C.green, whiteSpace: 'nowrap', flexShrink: 0 }}>
-                  {s.site_chargers.length} charger{s.site_chargers.length === 1 ? '' : 's'}
-                </span>
-                <span style={{ color: C.green, fontWeight: 700, fontSize: 12 }}>Open →</span>
-              </div>
-            ))}
+          <div style={{ border: '1px solid #EBEBEB', borderRadius: 12, overflow: 'hidden' }}>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', minWidth: 640, borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: C.seasalt }}>
+                    {([['Site', 'left'], ['Chargers', 'center'], ['Form 1 Missing', 'center'], ['Form A Due', 'center'], ['Invoices Missing', 'center'], ['Contract', 'center'], ['', 'right']] as const).map(([h, align]) => (
+                      <th key={h} style={{ padding: '10px 14px', textAlign: align, fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {sites.map((s) => {
+                    const f = siteFlags(s);
+                    const cYears = s.lta_contract_years ?? 0;
+                    const cEnd = cYears > 0 && s.lta_contract_start_date ? addYears(s.lta_contract_start_date, cYears) : null;
+                    const cDaysLeft = cEnd ? daysFromToday(cEnd) : null;
+                    const contractActive = cYears > 0 && (cDaysLeft === null || cDaysLeft >= 0);
+                    const numCell = (n: number) => (
+                      <td style={{ padding: '12px 14px', textAlign: 'center', borderBottom: '1px solid #F3F3F3', fontWeight: 700, color: n > 0 ? '#C0321A' : C.slate }}>{n}</td>
+                    );
+                    return (
+                      <tr key={s.id} onClick={() => onPickSite(s.id)} style={{ cursor: 'pointer' }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = '#FAFAFA')}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
+                        <td style={{ padding: '12px 14px', borderBottom: '1px solid #F3F3F3', minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{s.name}</div>
+                          {s.address && <div style={{ fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 360 }}>{s.address}</div>}
+                        </td>
+                        <td style={{ padding: '12px 14px', textAlign: 'center', borderBottom: '1px solid #F3F3F3', fontWeight: 700, color: C.green }}>{s.site_chargers.length}</td>
+                        {numCell(f.form1Missing)}
+                        {numCell(f.formADue)}
+                        {numCell(f.invoiceMissing)}
+                        <td style={{ padding: '12px 14px', textAlign: 'center', borderBottom: '1px solid #F3F3F3', whiteSpace: 'nowrap' }}>
+                          {contractActive ? (
+                            <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: '#E4F3E3', color: '#1B512D', letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                              {cYears} yr{cYears === 1 ? '' : 's'}
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: 11, color: C.slate }}>—</span>
+                          )}
+                        </td>
+                        <td style={{ padding: '12px 14px', textAlign: 'right', borderBottom: '1px solid #F3F3F3', whiteSpace: 'nowrap' }}>
+                          <span style={{ color: C.green, fontWeight: 700, fontSize: 12 }}>Open →</span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
-      </div>
 
       <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 6 }}>
         <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Created</div>
@@ -1109,6 +1160,42 @@ function SiteTab({ site, brandModels, canEdit, canDelete, customer, onChanged, o
             </button>
           </div>
         )}
+      </div>
+
+      {/* LTA inspection contract — at the site level */}
+      <div style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: 16 }}>
+        <ContractCard
+          years={site.lta_contract_years}
+          startDate={site.lta_contract_start_date}
+          turnOn={site.site_chargers.map((c) => c.turn_on_date).filter((d): d is string => !!d).sort()[0] ?? null}
+          canEdit={canEdit}
+          isResidential={customer.type === 'residential'}
+          chargers={site.site_chargers.map((c) => ({ id: c.id, label: c.asset_tag, covered: c.has_maintenance_package }))}
+          contractPath={site.lta_contract_path}
+          contractFilename={site.lta_contract_filename}
+          onSave={async (years, startDate, coveredIds, newFile) => {
+            let path = site.lta_contract_path;
+            let filename = site.lta_contract_filename;
+            if (years == null) {
+              if (path) void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([path]);
+              path = null; filename = null;
+            } else if (newFile) {
+              const p = `lta-contract/${site.id}/${crypto.randomUUID()}/${pathSafe(newFile.name)}`;
+              const up = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(p, newFile, { contentType: newFile.type || 'application/pdf' });
+              if (up.error) throw new Error(up.error.message);
+              if (path) void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([path]);
+              path = p; filename = newFile.name;
+            }
+            await supabase.from('project_sites').update({ lta_contract_years: years, lta_contract_start_date: startDate, lta_contract_path: path, lta_contract_filename: filename }).eq('id', site.id);
+            const allIds = site.site_chargers.map((c) => c.id);
+            const coveredSet = new Set(coveredIds);
+            const yes = allIds.filter((id) => coveredSet.has(id));
+            const no = allIds.filter((id) => !coveredSet.has(id));
+            if (yes.length) await supabase.from('site_chargers').update({ has_maintenance_package: true }).in('id', yes);
+            if (no.length) await supabase.from('site_chargers').update({ has_maintenance_package: false }).in('id', no);
+            await onChanged();
+          }}
+        />
       </div>
 
       <SiteChargersCard
@@ -1475,6 +1562,31 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
+  // Latest A/D inspection per charger — drives the due/missing chips on the cards.
+  const [ltaLatest, setLtaLatest] = useState<Map<string, { A?: string; D?: string }>>(new Map());
+  const chargerIdsKey = chargers.map((c) => c.id).sort().join(',');
+  useEffect(() => {
+    const ids = chargers.map((c) => c.id);
+    if (!ids.length) { setLtaLatest(new Map()); return; }
+    let cancelled = false;
+    void (async () => {
+      const { data } = await supabase.from('charger_lta_records').select('charger_id, form_type, performed_at').in('charger_id', ids).order('performed_at', { ascending: false });
+      if (cancelled) return;
+      const m = new Map<string, { A?: string; D?: string }>();
+      for (const r of (data ?? []) as Array<{ charger_id: string; form_type: 'A' | 'D'; performed_at: string }>) {
+        const e = m.get(r.charger_id) ?? {};
+        if (r.form_type === 'A' && !e.A) e.A = r.performed_at;
+        if (r.form_type === 'D' && !e.D) e.D = r.performed_at;
+        m.set(r.charger_id, e);
+      }
+      setLtaLatest(m);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chargerIdsKey]);
+  const isResidential = customer.type === 'residential';
+  const formAMonths = isResidential ? 24 : 6;
+
   // If the selected charger disappears (deleted / reload) drop the selection.
   useEffect(() => {
     if (selectedId && !chargers.find((c) => c.id === selectedId)) setSelectedId(null);
@@ -1519,14 +1631,22 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
         </div>
       ) : (
         <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
-          {chargers.map((ch) => (
-            <ChargerCard
-              key={ch.id}
-              charger={ch}
-              selected={selectedId === ch.id}
-              onClick={() => setSelectedId(selectedId === ch.id ? null : ch.id)}
-            />
-          ))}
+          {chargers.map((ch) => {
+            const l = ltaLatest.get(ch.id) ?? {};
+            return (
+              <ChargerCard
+                key={ch.id}
+                charger={ch}
+                selected={selectedId === ch.id}
+                flags={{
+                  formADue: isCycleOverdue(ch.turn_on_date, l.A ?? null, formAMonths),
+                  formDDue: !isResidential && isCycleOverdue(ch.turn_on_date, l.D ?? null, 12),
+                  form1Missing: !ch.form_1_path,
+                }}
+                onClick={() => setSelectedId(selectedId === ch.id ? null : ch.id)}
+              />
+            );
+          })}
         </div>
       )}
 
@@ -1569,7 +1689,7 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
             </div>
           )}
           <div style={{ padding: 18 }}>
-            <ChargerTabPanel charger={selected} siteName={siteName} tab={tab} onTabChange={setTab} canEdit={canEdit} canDelete={canDelete} customer={customer} onChargerChanged={onChanged} />
+            <ChargerTabPanel charger={selected} siteName={siteName} tab={tab} onTabChange={setTab} canEdit={canEdit} canDelete={canDelete} customer={customer} />
           </div>
         </div>
       )}
@@ -1600,6 +1720,7 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
           initial={{
             asset_tag: editing.asset_tag,
             brand_model: editing.brand_model,
+            registration_code: editing.registration_code,
             turn_on_date: editing.turn_on_date,
             form_a_next_date: editing.form_a_next_date,
             form_d_next_date: editing.form_d_next_date,
@@ -1628,8 +1749,12 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
   );
 }
 
-function ChargerCard({ charger, selected, onClick }: { charger: SiteCharger; selected: boolean; onClick: () => void }) {
-  const tone = warrantyTone(charger.warranty_end_date);
+function ChargerCard({ charger, selected, flags, onClick }: { charger: SiteCharger; selected: boolean; flags: { formADue: boolean; formDDue: boolean; form1Missing: boolean }; onClick: () => void }) {
+  const chips: { label: string; bg: string; color: string }[] = [];
+  if (flags.formADue) chips.push({ label: 'Form A due', bg: '#FDEAEA', color: '#C0321A' });
+  if (flags.formDDue) chips.push({ label: 'Form D due', bg: '#FDEAEA', color: '#C0321A' });
+  if (flags.form1Missing) chips.push({ label: 'Form 1 missing', bg: '#FFF0E0', color: '#B45309' });
+  if (chips.length === 0) chips.push({ label: 'Up to date', bg: '#E4F3E3', color: '#1B512D' });
   return (
     <div
       onClick={onClick}
@@ -1657,14 +1782,16 @@ function ChargerCard({ charger, selected, onClick }: { charger: SiteCharger; sel
       ) : (
         <div style={{ fontSize: 11, color: C.slate, fontStyle: 'italic' }}>No model</div>
       )}
-      <span style={{ alignSelf: 'flex-start', fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: tone.bg, color: tone.color, whiteSpace: 'nowrap' }}>
-        {tone.label}
-      </span>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+        {chips.map((c) => (
+          <span key={c.label} style={{ fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: c.bg, color: c.color, whiteSpace: 'nowrap' }}>{c.label}</span>
+        ))}
+      </div>
     </div>
   );
 }
 
-function ChargerTabPanel({ charger, siteName, tab, onTabChange, canEdit, canDelete, customer, onChargerChanged }: {
+function ChargerTabPanel({ charger, siteName, tab, onTabChange, canEdit, canDelete, customer }: {
   charger: SiteCharger;
   siteName: string;
   tab: ChargerDetailTab;
@@ -1672,10 +1799,9 @@ function ChargerTabPanel({ charger, siteName, tab, onTabChange, canEdit, canDele
   canEdit: boolean;
   canDelete: boolean;
   customer: LtaEmailCustomer;
-  onChargerChanged: () => Promise<void>;
 }) {
   if (tab === 'details')     return <ChargerDetailsPanel charger={charger} siteName={siteName} customer={customer} onTabChange={onTabChange} />;
-  if (tab === 'maintenance') return <LtaInspectionPanel  charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} onChargerChanged={onChargerChanged} />;
+  if (tab === 'maintenance') return <LtaInspectionPanel  charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} />;
   return <WarrantyPanel charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} />;
 }
 
@@ -1689,18 +1815,17 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange }: {
   const isResidential = customer.type === 'residential';
   const formAMonths = isResidential ? 24 : 6;
   const [ltaRecords, setLtaRecords] = useState<LtaRecord[]>([]);
+  const [addingForm, setAddingForm] = useState<LtaFormType | null>(null);
+  const [addingInvoiceFor, setAddingInvoiceFor] = useState<LtaRecord | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const { data } = await supabase.from('charger_lta_records')
-        .select('*')
-        .eq('charger_id', charger.id)
-        .order('performed_at', { ascending: false });
-      if (!cancelled) setLtaRecords((data ?? []) as LtaRecord[]);
-    })();
-    return () => { cancelled = true; };
-  }, [charger.id]);
+  const refresh = async () => {
+    const { data } = await supabase.from('charger_lta_records')
+      .select('*')
+      .eq('charger_id', charger.id)
+      .order('performed_at', { ascending: false });
+    setLtaRecords((data ?? []) as LtaRecord[]);
+  };
+  useEffect(() => { void refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [charger.id]);
 
   const form1DisplayName = computeForm1Filename(charger.asset_tag, charger.turn_on_date, siteName);
 
@@ -1725,117 +1850,235 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange }: {
   const formD = daysFromToday(formDDate);
   const latestA = ltaRecords.find((r) => r.form_type === 'A') ?? null;
   const latestD = ltaRecords.find((r) => r.form_type === 'D') ?? null;
-  const doneA = isInspectedWithin(latestA, formAMonths);
-  const doneD = isInspectedWithin(latestD, 12);
+
+  // Lifecycle timeline — newest milestone at top, registration at the bottom.
+  type TLAction = { label: string; onClick: () => void; tone: 'green' | 'amber' | 'plain' };
+  type TLNode = { done: boolean; dotPending?: boolean; title: string; date: string | null; subtitle: React.ReactNode; actions: TLAction[] };
+  const inspectedSub = (rec: LtaRecord) => rec.invoice_path
+    ? <>Inspected · invoice attached</>
+    : <>Inspected · <span style={{ color: '#F1B04C', fontWeight: 700 }}>invoice pending</span></>;
+  const completedActions = (rec: LtaRecord): TLAction[] => {
+    const a: TLAction[] = [{ label: 'View', onClick: () => void openLtaRecord(rec), tone: 'green' }];
+    if (!rec.invoice_path) a.push({ label: 'Add invoice', onClick: () => setAddingInvoiceFor(rec), tone: 'amber' });
+    return a;
+  };
+  const dueSub = (date: string | null, days: number | null) => date ? `Next due ${fmtDate(date)} · ${days != null ? relDays(days) : ''}` : 'Set registration date';
+  const nodes: TLNode[] = [];
+  if (!isResidential) {
+    nodes.push(latestD
+      ? { done: true, dotPending: !latestD.invoice_path, title: 'Form D — Completed', date: latestD.performed_at, subtitle: inspectedSub(latestD), actions: completedActions(latestD) }
+      : { done: false, title: 'Form D — Due', date: null, subtitle: dueSub(formDDate, formD), actions: [{ label: 'Add →', onClick: () => setAddingForm('D'), tone: 'plain' }] });
+  }
+  nodes.push(latestA
+    ? { done: true, dotPending: !latestA.invoice_path, title: 'Form A — Completed', date: latestA.performed_at, subtitle: inspectedSub(latestA), actions: completedActions(latestA) }
+    : { done: false, title: 'Form A — Due', date: null, subtitle: dueSub(formADate, formA), actions: [{ label: 'Add →', onClick: () => setAddingForm('A'), tone: 'plain' }] });
+  nodes.push(charger.form_1_path
+    ? { done: true, title: 'Installation + Form 1', date: null, subtitle: 'Form 1 attached', actions: [{ label: 'View', onClick: () => void openForm1('view'), tone: 'green' }] }
+    : { done: false, title: 'Installation + Form 1', date: null, subtitle: 'Form 1 pending upload', actions: [] });
+  nodes.push({ done: !!charger.turn_on_date, title: 'Registration', date: charger.turn_on_date, subtitle: charger.turn_on_date ? 'Charger commissioned' : 'Registration date not set', actions: [] });
+
+  const kvLabel: React.CSSProperties = { fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' };
+  const KV = ({ label, value, muted }: { label: string; value: string; muted?: boolean }) => (
+    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+      <span style={kvLabel}>{label}</span>
+      <span style={{ fontSize: 12, fontWeight: 600, color: muted ? C.slate : '#1a1a1a', textAlign: 'right', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</span>
+    </div>
+  );
+  const sectionHeader = (title: string, link?: { label: string; onClick: () => void }) => (
+    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{title}</div>
+      {link && <button onClick={link.onClick} style={{ padding: 0, border: 'none', background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>{link.label}</button>}
+    </div>
+  );
+  const cardStyle: React.CSSProperties = { border: '1px solid #EBEBEB', borderRadius: 12, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 8 };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
-        <ChargerDetailRow label="Serial Number" value={charger.asset_tag} />
-        <ChargerDetailRow label="Brand & Model" value={charger.brand_model ?? '—'} muted={!charger.brand_model} />
-      </div>
-
-      <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Turn-on &amp; Form 1</div>
-          <div style={{ fontSize: 11, color: C.slate }}>Installation compliance form</div>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10, alignItems: 'stretch' }}>
-          <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '10px 12px' }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Turn-on Date</div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: charger.turn_on_date ? C.green : C.slate, marginTop: 4, letterSpacing: '-0.01em' }}>
-              {fmtDate(charger.turn_on_date) ?? 'Not recorded'}
-            </div>
-          </div>
-          <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Form 1 PDF</div>
-            {charger.form_1_path ? (
-              <>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-                  <FileText size={14} strokeWidth={1.8} color={C.green} />
-                  <div style={{ fontSize: 12, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {form1DisplayName}
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <button onClick={() => void openForm1('view')}
-                    style={{ flex: 1, padding: '5px 8px', borderRadius: 6, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-                    View
-                  </button>
-                  <button onClick={() => void openForm1('download')}
-                    style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '5px 8px', borderRadius: 6, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-                    <DownloadIcon size={11} strokeWidth={2.25} /> Download
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div style={{ fontSize: 12, color: C.slate, fontStyle: 'italic' }}>No Form 1 attached yet. Edit the charger to upload one.</div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>LTA Inspection Records</div>
-          <button onClick={() => onTabChange('maintenance')}
-            style={{ padding: 0, border: 'none', background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
-            View LTA inspection →
-          </button>
-        </div>
-        <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {(() => {
-            const years = charger.lta_contract_years ?? 0;
-            const start = charger.lta_contract_start_date ?? charger.turn_on_date;
-            const endDate = years > 0 && start ? addYears(start, years) : null;
-            const daysLeft = endDate ? daysFromToday(endDate) : null;
-            const active = years > 0 && (daysLeft === null || daysLeft >= 0);
-            if (active) {
-              return (
-                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-                  <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: '#E4F3E3', color: '#1B512D', letterSpacing: '0.04em', textTransform: 'uppercase' }}>
-                    Contract active · {years} yr{years === 1 ? '' : 's'}
-                  </span>
-                  <span style={{ fontSize: 12, color: C.slate }}>
-                    {endDate ? <>Ends <strong style={{ color: '#1a1a1a' }}>{fmtDate(endDate)}</strong>{daysLeft !== null && <> · {relDays(daysLeft)} left</>}.</> : 'Contract active.'}
-                  </span>
-                </div>
-              );
-            }
-            return (
-              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-                <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: '#FFF0E0', color: '#B45309', letterSpacing: '0.04em', textTransform: 'uppercase' }}>
-                  No contract
-                </span>
-                <span style={{ fontSize: 12, color: C.slate }}>Use the cards below to call &amp; pitch an LTA inspection contract.</span>
+    <>
+    {addingForm && (
+      <AddLtaRecordModal charger={charger} siteName={siteName} formType={addingForm}
+        onClose={() => setAddingForm(null)} onSaved={async () => { await refresh(); setAddingForm(null); }} />
+    )}
+    {addingInvoiceFor && (
+      <AddInvoiceModal record={addingInvoiceFor}
+        onClose={() => setAddingInvoiceFor(null)} onSaved={async () => { await refresh(); setAddingInvoiceFor(null); }} />
+    )}
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) minmax(260px, 1fr)', gap: 16, alignItems: 'start' }}>
+      {/* Left — lifecycle timeline */}
+      <div style={{ border: '1px solid #EBEBEB', borderRadius: 12, padding: '14px 16px' }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 12 }}>Lifecycle Timeline</div>
+        <div>
+          {nodes.map((n, i) => (
+            <div key={i} style={{ display: 'flex', gap: 12 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: 16 }}>
+                <div style={{ width: 14, height: 14, borderRadius: '50%', background: n.done ? (n.dotPending ? '#F1B04C' : C.green) : '#C2410C', flexShrink: 0, marginTop: 2, boxShadow: '0 0 0 3px #fff, 0 0 0 4px #EBEBEB' }} />
+                {i < nodes.length - 1 && <div style={{ flex: 1, width: 2, background: '#EBEBEB', marginTop: 4 }} />}
               </div>
-            );
-          })()}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10 }}>
-            <FormStatusCard formType="A" period={isResidential ? '24-month' : '6-month'} latest={latestA} latestDisplayName={latestA ? computeLtaFilename('A', charger.asset_tag, latestA.performed_at, siteName) : null} done={doneA} nextDate={formADate} nextDays={formA} onDownload={() => void openLtaRecord(latestA!)} />
-            {!isResidential && (
-              <FormStatusCard formType="D" period="12-month" latest={latestD} latestDisplayName={latestD ? computeLtaFilename('D', charger.asset_tag, latestD.performed_at, siteName) : null} done={doneD} nextDate={formDDate} nextDays={formD} onDownload={() => void openLtaRecord(latestD!)} />
-            )}
-          </div>
+              <div style={{ flex: 1, minWidth: 0, paddingBottom: i < nodes.length - 1 ? 16 : 0 }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: n.done ? '#1a1a1a' : '#C2410C' }}>{n.title}</div>
+                    {n.date && <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>{fmtDate(n.date)}</div>}
+                    <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>{n.subtitle}</div>
+                  </div>
+                  {n.actions.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0, alignItems: 'flex-end' }}>
+                      {n.actions.map((a) => {
+                        const ts = a.tone === 'green'
+                          ? { border: '1px solid #C8E6C9', background: C.honeydew, color: C.green }
+                          : a.tone === 'amber'
+                          ? { border: '1px solid #FBD8B6', background: '#FFF0E0', color: '#B45309' }
+                          : { border: '1px solid #EBEBEB', background: C.white, color: C.slate };
+                        return (
+                          <button key={a.label} onClick={a.onClick}
+                            style={{ padding: '4px 10px', borderRadius: 8, ...ts, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                            {a.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
-      <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Warranty Records</div>
-          <button onClick={() => onTabChange('warranty')}
-            style={{ padding: 0, border: 'none', background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
-            View warranty →
-          </button>
+      {/* Right — compact details */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={cardStyle}>
+          {sectionHeader('Charger')}
+          <KV label="Serial Number" value={charger.asset_tag} />
+          <KV label="Registration Code" value={charger.registration_code ?? '—'} muted={!charger.registration_code} />
+          <KV label="Brand & Model" value={charger.brand_model ?? '—'} muted={!charger.brand_model} />
         </div>
-        <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <span style={{ alignSelf: 'flex-start', fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: tone.bg, color: tone.color, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
-            {tone.label}
-          </span>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
-            <ChargerDetailRow label="Start" value={fmtDate(charger.warranty_start_date) ?? '—'} muted={!charger.warranty_start_date} />
-            <ChargerDetailRow label="End"   value={fmtDate(charger.warranty_end_date)   ?? '—'} muted={!charger.warranty_end_date} />
-          </div>
+
+        <div style={cardStyle}>
+          {sectionHeader('Registration & Form 1')}
+          <KV label="Registration Date" value={fmtDate(charger.turn_on_date) ?? 'Not recorded'} muted={!charger.turn_on_date} />
+          {charger.form_1_path ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <FileText size={14} strokeWidth={1.8} color={C.green} style={{ flexShrink: 0 }} />
+              <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{form1DisplayName}</span>
+              <button onClick={() => void openForm1('view')} style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>View</button>
+              <button onClick={() => void openForm1('download')} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}><DownloadIcon size={11} strokeWidth={2.25} /></button>
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: C.slate, fontStyle: 'italic' }}>No Form 1 attached yet.</div>
+          )}
+        </div>
+
+        <div style={cardStyle}>
+          {sectionHeader('LTA Inspection', { label: 'View →', onClick: () => onTabChange('maintenance') })}
+          <KV label={isResidential ? 'Next Form A (24-mo)' : 'Next Form A (6-mo)'} value={formADate ? `${fmtDate(formADate)} · ${formA != null ? relDays(formA) : ''}` : '—'} muted={!formADate} />
+          {!isResidential && (
+            <KV label="Next Form D (12-mo)" value={formDDate ? `${fmtDate(formDDate)} · ${formD != null ? relDays(formD) : ''}` : '—'} muted={!formDDate} />
+          )}
+        </div>
+
+        <div style={cardStyle}>
+          {sectionHeader('Warranty', { label: 'View →', onClick: () => onTabChange('warranty') })}
+          <span style={{ alignSelf: 'flex-start', fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: tone.bg, color: tone.color, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{tone.label}</span>
+          <KV label="Start" value={fmtDate(charger.warranty_start_date) ?? '—'} muted={!charger.warranty_start_date} />
+          <KV label="End"   value={fmtDate(charger.warranty_end_date)   ?? '—'} muted={!charger.warranty_end_date} />
+        </div>
+      </div>
+    </div>
+    </>
+  );
+}
+
+// Quick-add an LTA Form A/D record (with optional invoice) from the timeline,
+// without leaving the Details tab.
+function AddLtaRecordModal({ charger, siteName, formType, onClose, onSaved }: {
+  charger: SiteCharger;
+  siteName: string;
+  formType: LtaFormType;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const [date, setDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingInvoice, setPendingInvoice] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const invoiceRef = useRef<HTMLInputElement>(null);
+  const isPdf = (f: File) => !f.type || f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf');
+
+  const submit = async () => {
+    setError(null);
+    if (!pendingFile) { setError('Pick the form PDF first.'); return; }
+    if (!date) { setError('Pick the inspection date first.'); return; }
+    setBusy(true);
+    const friendly = computeLtaFilename(formType, charger.asset_tag, date, siteName);
+    const path = `lta/${charger.id}/${crypto.randomUUID()}/${pathSafe(friendly)}`;
+    const up = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(path, pendingFile, { contentType: pendingFile.type || 'application/pdf' });
+    if (up.error) { setBusy(false); setError(up.error.message); return; }
+    let invoice_path: string | null = null;
+    let invoice_filename: string | null = null;
+    if (pendingInvoice) {
+      const ipath = `lta/${charger.id}/${crypto.randomUUID()}/invoice/${pathSafe(pendingInvoice.name)}`;
+      const iup = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(ipath, pendingInvoice, { contentType: pendingInvoice.type || 'application/pdf' });
+      if (iup.error) { setBusy(false); void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([path]); setError(iup.error.message); return; }
+      invoice_path = ipath;
+      invoice_filename = pendingInvoice.name;
+    }
+    const ins = await supabase.from('charger_lta_records').insert({
+      charger_id: charger.id, form_type: formType, performed_at: date, storage_path: path,
+      filename: computeLtaFilename(formType, charger.asset_tag, date, siteName), invoice_path, invoice_filename,
+    });
+    setBusy(false);
+    if (ins.error) { void supabase.storage.from(CHARGER_FORMS_BUCKET).remove(invoice_path ? [path, invoice_path] : [path]); setError(ins.error.message); return; }
+    await onSaved();
+  };
+
+  const picker = (file: File | null, ref: React.RefObject<HTMLInputElement>, onPick: (f: File) => void, onClear: (() => void) | null, chooseLabel: string, dashed: boolean) => (
+    <>
+      <input ref={ref} type="file" accept="application/pdf" style={{ display: 'none' }}
+        onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) { if (!isPdf(f)) { setError('File must be a PDF.'); return; } setError(null); onPick(f); } }} />
+      {file ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: C.seasalt, border: '1px solid #EBEBEB', borderRadius: 10, padding: '8px 10px' }}>
+          <FileText size={14} strokeWidth={1.8} color={C.green} style={{ flexShrink: 0 }} />
+          <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
+          <button type="button" onClick={() => ref.current?.click()} style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Change</button>
+          {onClear && <button type="button" onClick={onClear} style={{ width: 26, height: 26, borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><X size={12} strokeWidth={2.5} /></button>}
+        </div>
+      ) : (
+        <button type="button" onClick={() => ref.current?.click()}
+          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 14px', borderRadius: 10, border: `1px dashed ${dashed ? '#C8E6C9' : '#EBEBEB'}`, background: C.white, color: dashed ? C.green : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', width: '100%' }}>
+          <Upload size={14} strokeWidth={2} /> {chooseLabel}
+        </button>
+      )}
+    </>
+  );
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 480, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>Add Form {formType} — {charger.asset_tag}</div>
+          <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
+        </div>
+        {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{error}</div>}
+        <div>
+          <FieldLabel>Performed on</FieldLabel>
+          <input type="date" value={date} disabled={busy} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle(), background: C.white }} />
+        </div>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>{`Form ${formType} PDF`} <span style={{ color: '#C0321A' }}>*</span></div>
+          {picker(pendingFile, fileRef, setPendingFile, null, 'Choose PDF', true)}
+        </div>
+        <div>
+          <FieldLabel>Invoice PDF (optional)</FieldLabel>
+          {picker(pendingInvoice, invoiceRef, setPendingInvoice, () => setPendingInvoice(null), 'Choose invoice', false)}
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button onClick={onClose} disabled={busy} style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+          <button onClick={() => void submit()} disabled={busy || !pendingFile || !date}
+            style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: (busy || !pendingFile || !date) ? '#A5D6A7' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: (busy || !pendingFile || !date) ? 'not-allowed' : 'pointer' }}>
+            {busy ? 'Saving…' : `Submit Form ${formType}`}
+          </button>
         </div>
       </div>
     </div>
@@ -1862,13 +2105,77 @@ interface LtaRecord {
 
 interface LtaEmailCustomer { name: string; email: string | null; type?: CustomerType }
 
-function LtaInspectionPanel({ charger, siteName, canEdit, canDelete, customer, onChargerChanged }: {
+// Attach an invoice PDF to an existing LTA record (from the timeline, via popup).
+function AddInvoiceModal({ record, onClose, onSaved }: {
+  record: LtaRecord;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const ref = useRef<HTMLInputElement>(null);
+  const isPdf = (f: File) => !f.type || f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf');
+
+  const submit = async () => {
+    if (!file) { setError('Pick the invoice PDF first.'); return; }
+    setBusy(true);
+    setError(null);
+    const ipath = `lta/${record.charger_id}/${record.id}/invoice/${pathSafe(file.name)}`;
+    const up = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(ipath, file, { contentType: file.type || 'application/pdf', upsert: true });
+    if (up.error) { setBusy(false); setError(up.error.message); return; }
+    const { error: err } = await supabase.from('charger_lta_records').update({ invoice_path: ipath, invoice_filename: file.name }).eq('id', record.id);
+    setBusy(false);
+    if (err) { setError(err.message); return; }
+    await onSaved();
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 440, maxWidth: 'calc(100vw - 24px)', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>Add invoice — Form {record.form_type}</div>
+          <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
+        </div>
+        {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{error}</div>}
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Invoice PDF <span style={{ color: '#C0321A' }}>*</span></div>
+          <input ref={ref} type="file" accept="application/pdf" style={{ display: 'none' }}
+            onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) { if (!isPdf(f)) { setError('File must be a PDF.'); return; } setError(null); setFile(f); } }} />
+          {file ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: C.seasalt, border: '1px solid #EBEBEB', borderRadius: 10, padding: '8px 10px' }}>
+              <FileText size={14} strokeWidth={1.8} color={C.green} style={{ flexShrink: 0 }} />
+              <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
+              <button type="button" onClick={() => ref.current?.click()} style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Change</button>
+            </div>
+          ) : (
+            <button type="button" onClick={() => ref.current?.click()}
+              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 14px', borderRadius: 10, border: '1px dashed #C8E6C9', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', width: '100%' }}>
+              <Upload size={14} strokeWidth={2} /> Choose invoice PDF
+            </button>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button onClick={onClose} disabled={busy} style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+          <button onClick={() => void submit()} disabled={busy || !file}
+            style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: (busy || !file) ? '#A5D6A7' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: (busy || !file) ? 'not-allowed' : 'pointer' }}>
+            {busy ? 'Saving…' : 'Attach invoice'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Lightweight LTA record used to flag overdue inspections / missing invoices per site.
+interface SiteLtaRow { charger_id: string; form_type: LtaFormType; performed_at: string; invoice_path: string | null; }
+
+function LtaInspectionPanel({ charger, siteName, canEdit, canDelete, customer }: {
   charger: SiteCharger;
   siteName: string;
   canEdit: boolean;
   canDelete: boolean;
   customer: LtaEmailCustomer;
-  onChargerChanged: () => Promise<void>;
 }) {
   const [records, setRecords] = useState<LtaRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1896,7 +2203,6 @@ function LtaInspectionPanel({ charger, siteName, canEdit, canDelete, customer, o
           ? <>Upload completed Form A (24-month) inspection PDFs for <strong style={{ color: '#1a1a1a' }}>{charger.asset_tag}</strong>. Residential chargers do not require Form D. Each upload is dated for when the inspection was performed.</>
           : <>Upload completed Form A (6-month) and Form D (12-month) inspection PDFs for <strong style={{ color: '#1a1a1a' }}>{charger.asset_tag}</strong>. Each upload is dated for when the inspection was performed.</>}
       </div>
-      <ContractCard charger={charger} canEdit={canEdit} isResidential={isResidential} onChargerChanged={onChargerChanged} />
       <LtaSection formType="A" title={isResidential ? 'Form A · 24-month inspection' : 'Form A · 6-month inspection'}  records={formA} charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} loading={loading} onChanged={refresh} />
       {!isResidential && (
         <LtaSection formType="D" title="Form D · 12-month inspection" records={formD} charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} loading={loading} onChanged={refresh} />
@@ -1905,69 +2211,90 @@ function LtaInspectionPanel({ charger, siteName, canEdit, canDelete, customer, o
   );
 }
 
-function ContractCard({ charger, canEdit, isResidential, onChargerChanged }: {
-  charger: SiteCharger;
+function ContractCard({ years: years0, startDate: start0, turnOn, canEdit, isResidential, chargers, contractPath, contractFilename, onSave }: {
+  years: number | null;
+  startDate: string | null;
+  turnOn: string | null;
   canEdit: boolean;
   isResidential: boolean;
-  onChargerChanged: () => Promise<void>;
+  chargers: { id: string; label: string; covered: boolean }[];
+  contractPath: string | null;
+  contractFilename: string | null;
+  onSave: (years: number | null, startDate: string | null, coveredIds: string[], newFile: File | null) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
-  const [years, setYears] = useState<number | null>(charger.lta_contract_years);
-  const [startDate, setStartDate] = useState<string | null>(charger.lta_contract_start_date);
-  const [active, setActive] = useState<boolean>(!!charger.lta_contract_years && charger.lta_contract_years > 0);
+  const [years, setYears] = useState<number | null>(years0);
+  const [startDate, setStartDate] = useState<string | null>(start0);
+  const [active, setActive] = useState<boolean>(!!years0 && years0 > 0);
+  const [covered, setCovered] = useState<Set<string>>(() => new Set(chargers.filter((c) => c.covered).map((c) => c.id)));
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    setYears(charger.lta_contract_years);
-    setStartDate(charger.lta_contract_start_date);
-    setActive(!!charger.lta_contract_years && charger.lta_contract_years > 0);
-  }, [charger.id, charger.lta_contract_years, charger.lta_contract_start_date]);
+  const viewContract = async () => {
+    if (!contractPath) return;
+    const { data } = await supabase.storage.from(CHARGER_FORMS_BUCKET).createSignedUrl(contractPath, 60, { download: contractFilename ?? 'contract.pdf' });
+    if (data?.signedUrl) window.open(data.signedUrl, '_blank');
+  };
+  const pickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    if (f.type && f.type !== 'application/pdf' && !f.name.toLowerCase().endsWith('.pdf')) { setError('Contract must be a PDF.'); return; }
+    setError(null);
+    setPendingFile(f);
+  };
 
-  const storedYears = charger.lta_contract_years ?? 0;
-  const storedStart = charger.lta_contract_start_date ?? charger.turn_on_date;
+  const coveredKey = chargers.filter((c) => c.covered).map((c) => c.id).sort().join(',');
+  useEffect(() => {
+    setYears(years0);
+    setStartDate(start0);
+    setActive(!!years0 && years0 > 0);
+    setCovered(new Set(chargers.filter((c) => c.covered).map((c) => c.id)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [years0, start0, coveredKey]);
+
+  const storedYears = years0 ?? 0;
+  const storedStart = start0 ?? turnOn;
   const endDate     = storedYears > 0 && storedStart ? addYears(storedStart, storedYears) : null;
   const daysLeft    = endDate ? daysFromToday(endDate) : null;
   const isActive    = storedYears > 0 && (daysLeft === null || daysLeft >= 0);
   const isExpired   = storedYears > 0 && daysLeft !== null && daysLeft < 0;
 
   // Auto-clear an expired contract so the UI cleanly returns to "No contract".
-  // Runs once per charger; after the clear, the refreshed charger has no years and the effect won't re-fire.
   const autoClearedRef = useRef(false);
+  useEffect(() => { autoClearedRef.current = false; }, [years0, start0]);
   useEffect(() => {
-    autoClearedRef.current = false;
-  }, [charger.id]);
-  useEffect(() => {
-    if (autoClearedRef.current) return;
-    if (!isExpired) return;
+    if (autoClearedRef.current || !isExpired) return;
     autoClearedRef.current = true;
-    void (async () => {
-      const { error: err } = await supabase.from('site_chargers').update({
-        lta_contract_years: null,
-        lta_contract_start_date: null,
-        has_maintenance_package: false,
-      }).eq('id', charger.id);
-      if (!err) await onChargerChanged();
-    })();
-  }, [charger.id, isExpired, onChargerChanged]);
+    void onSave(null, null, [], null);
+  }, [isExpired, onSave]);
 
   const onToggleActive = (next: boolean) => {
     setActive(next);
     if (next) {
       if (!years) setYears(3);
       if (!startDate) setStartDate(new Date().toISOString().slice(0, 10));
+      // Default a fresh contract to covering every charger.
+      if (covered.size === 0) setCovered(new Set(chargers.map((c) => c.id)));
     }
   };
+  const toggleCovered = (id: string) =>
+    setCovered((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const startEdit = () => {
-    setYears(charger.lta_contract_years);
-    setStartDate(charger.lta_contract_start_date);
-    setActive(!!charger.lta_contract_years && charger.lta_contract_years > 0);
+    setYears(years0);
+    setStartDate(start0);
+    setActive(!!years0 && years0 > 0);
+    setCovered(new Set(chargers.filter((c) => c.covered).map((c) => c.id)));
+    setPendingFile(null);
     setError(null);
     setEditing(true);
   };
   const cancelEdit = () => {
     setEditing(false);
+    setPendingFile(null);
     setError(null);
   };
 
@@ -1975,16 +2302,19 @@ function ContractCard({ charger, canEdit, isResidential, onChargerChanged }: {
     setError(null);
     const finalYears = active && years && years > 0 ? Math.max(1, Math.min(20, Math.floor(years))) : null;
     const finalStart = finalYears ? (startDate || new Date().toISOString().slice(0, 10)) : null;
+    const coveredIds = finalYears ? chargers.filter((c) => covered.has(c.id)).map((c) => c.id) : [];
+    // The contract document is compulsory when a contract is active.
+    if (finalYears && !pendingFile && !contractPath) { setError('Attach the signed contract PDF.'); return; }
     setSaving(true);
-    const { error: err } = await supabase.from('site_chargers').update({
-      lta_contract_years: finalYears,
-      lta_contract_start_date: finalStart,
-      has_maintenance_package: finalYears !== null,
-    }).eq('id', charger.id);
+    try {
+      await onSave(finalYears, finalStart, coveredIds, pendingFile);
+    } catch (e) {
+      setSaving(false);
+      setError((e as Error).message);
+      return;
+    }
     setSaving(false);
-    if (err) { setError(err.message); return; }
     setEditing(false);
-    await onChargerChanged();
   };
 
   return (
@@ -2040,6 +2370,49 @@ function ContractCard({ charger, canEdit, isResidential, onChargerChanged }: {
                 placeholder={startDate ? 'Enter contract years' : 'Pick a start date'} />
             </div>
           )}
+          {active && (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, marginBottom: 6 }}>
+                <FieldLabel>Chargers under contract</FieldLabel>
+                {chargers.length > 0 && (
+                  <button type="button" onClick={() => setCovered(covered.size === chargers.length ? new Set() : new Set(chargers.map((c) => c.id)))}
+                    style={{ padding: 0, border: 'none', background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                    {covered.size === chargers.length ? 'Clear all' : 'Select all'}
+                  </button>
+                )}
+              </div>
+              {chargers.length === 0 ? (
+                <div style={{ fontSize: 12, color: C.slate, fontStyle: 'italic' }}>No chargers at this site yet.</div>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8 }}>
+                  {chargers.map((c) => (
+                    <label key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8, background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '8px 10px', cursor: 'pointer', minWidth: 0 }}>
+                      <input type="checkbox" checked={covered.has(c.id)} onChange={() => toggleCovered(c.id)}
+                        style={{ width: 16, height: 16, accentColor: C.green, cursor: 'pointer', flexShrink: 0 }} />
+                      <span style={{ fontSize: 12, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.label}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {active && (
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>Contract PDF <span style={{ color: '#C0321A' }}>*</span></div>
+              <input ref={fileRef} type="file" accept="application/pdf" style={{ display: 'none' }} onChange={pickFile} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '8px 10px' }}>
+                <FileText size={14} strokeWidth={1.8} color={pendingFile || contractFilename ? C.green : C.slate} style={{ flexShrink: 0 }} />
+                <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: pendingFile || contractFilename ? '#1a1a1a' : C.slate, fontStyle: pendingFile || contractFilename ? 'normal' : 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {pendingFile ? pendingFile.name : contractFilename ? contractFilename : 'No contract attached'}
+                </span>
+                {pendingFile && <span style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em', flexShrink: 0 }}>New</span>}
+                <button type="button" onClick={() => fileRef.current?.click()}
+                  style={{ flexShrink: 0, padding: '5px 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                  {pendingFile || contractFilename ? 'Replace' : 'Choose PDF'}
+                </button>
+              </div>
+            </div>
+          )}
           {error && (
             <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 8, padding: '6px 10px', fontSize: 11, fontWeight: 600 }}>{error}</div>
           )}
@@ -2048,10 +2421,15 @@ function ContractCard({ charger, canEdit, isResidential, onChargerChanged }: {
               style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: saving ? 'default' : 'pointer' }}>
               Cancel
             </button>
-            <button onClick={() => void handleSave()} disabled={saving || (active && (!years || years <= 0))}
-              style={{ padding: '7px 16px', borderRadius: 8, border: 'none', background: (saving || (active && (!years || years <= 0))) ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: (saving || (active && (!years || years <= 0))) ? 'default' : 'pointer' }}>
-              {saving ? 'Saving…' : 'Save'}
-            </button>
+            {(() => {
+              const blocked = saving || (active && (!years || years <= 0)) || (active && !pendingFile && !contractPath);
+              return (
+                <button onClick={() => void handleSave()} disabled={blocked}
+                  style={{ padding: '7px 16px', borderRadius: 8, border: 'none', background: blocked ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: blocked ? 'default' : 'pointer' }}>
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+              );
+            })()}
           </div>
         </>
       ) : (
@@ -2061,9 +2439,18 @@ function ContractCard({ charger, canEdit, isResidential, onChargerChanged }: {
               <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: '#E4F3E3', color: '#1B512D', letterSpacing: '0.04em', textTransform: 'uppercase' }}>
                 Active · {storedYears} yr{storedYears === 1 ? '' : 's'}
               </span>
+              <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: C.honeydew, color: C.green, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                {chargers.filter((c) => c.covered).length}/{chargers.length} chargers
+              </span>
               <span style={{ fontSize: 12, color: C.slate }}>
                 {endDate ? <>Ends <strong style={{ color: '#1a1a1a' }}>{fmtDate(endDate)}</strong>{daysLeft !== null && <> · {relDays(daysLeft)} left</>}.</> : 'Contract active.'}
               </span>
+              {contractPath && (
+                <button onClick={() => void viewContract()}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                  <FileText size={11} strokeWidth={2.25} /> View contract
+                </button>
+              )}
             </>
           ) : (
             <>
@@ -2071,7 +2458,7 @@ function ContractCard({ charger, canEdit, isResidential, onChargerChanged }: {
                 No contract
               </span>
               <span style={{ fontSize: 12, color: C.slate }}>
-                {canEdit ? 'Click Edit to mark this charger as covered by an LTA inspection contract.' : 'No active LTA inspection contract.'}
+                {canEdit ? 'Click Edit to mark this site as covered by an LTA inspection contract.' : 'No active LTA inspection contract.'}
               </span>
             </>
           )}
@@ -2096,45 +2483,65 @@ function LtaSection({ formType, title, records, charger, siteName, canEdit, canD
   const [adding, setAdding] = useState(false);
   const [date, setDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
   const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingInvoice, setPendingInvoice] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const invoiceRef = useRef<HTMLInputElement>(null);
 
   const resetForm = () => {
     setAdding(false);
     setPendingFile(null);
+    setPendingInvoice(null);
     setDate(new Date().toISOString().slice(0, 10));
     setError(null);
   };
 
+  const isPdf = (file: File) => !file.type || file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
   const handleFileSelected = (file: File) => {
+    if (!isPdf(file)) { setError('Upload must be a PDF.'); return; }
     setError(null);
-    if (file.type && file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-      setError('Upload must be a PDF.');
-      return;
-    }
     setPendingFile(file);
+  };
+  const handleInvoiceSelected = (file: File) => {
+    if (!isPdf(file)) { setError('Invoice must be a PDF.'); return; }
+    setError(null);
+    setPendingInvoice(file);
   };
 
   const handleSubmit = async () => {
     setError(null);
-    if (!pendingFile) { setError('Pick a PDF file first.'); return; }
+    if (!pendingFile) { setError('Pick the form PDF first.'); return; }
     if (!date)        { setError('Pick the inspection date first.'); return; }
     setBusy(true);
     const friendly = computeLtaFilename(formType, charger.asset_tag, date, siteName);
     const path = `lta/${charger.id}/${crypto.randomUUID()}/${pathSafe(friendly)}`;
     const up = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(path, pendingFile, { contentType: pendingFile.type || 'application/pdf' });
     if (up.error) { setBusy(false); setError(up.error.message); return; }
+
+    // Optional invoice — uploaded alongside the form.
+    let invoice_path: string | null = null;
+    let invoice_filename: string | null = null;
+    if (pendingInvoice) {
+      const ipath = `lta/${charger.id}/${crypto.randomUUID()}/invoice/${pathSafe(pendingInvoice.name)}`;
+      const iup = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(ipath, pendingInvoice, { contentType: pendingInvoice.type || 'application/pdf' });
+      if (iup.error) { setBusy(false); void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([path]); setError(iup.error.message); return; }
+      invoice_path = ipath;
+      invoice_filename = pendingInvoice.name;
+    }
+
     const ins = await supabase.from('charger_lta_records').insert({
       charger_id: charger.id,
       form_type:  formType,
       performed_at: date,
       storage_path: path,
       filename: computeLtaFilename(formType, charger.asset_tag, date, siteName),
+      invoice_path,
+      invoice_filename,
     });
     setBusy(false);
     if (ins.error) {
-      void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([path]);
+      void supabase.storage.from(CHARGER_FORMS_BUCKET).remove(invoice_path ? [path, invoice_path] : [path]);
       setError(ins.error.message);
       return;
     }
@@ -2166,13 +2573,13 @@ function LtaSection({ formType, title, records, charger, siteName, canEdit, canD
 
       {adding && (
         <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '180px 1fr', gap: 10, alignItems: 'end' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '180px 1fr 1fr', gap: 10, alignItems: 'end' }}>
             <div>
               <FieldLabel>Performed on</FieldLabel>
               <input type="date" value={date} onChange={(e) => setDate(e.target.value)} disabled={busy} style={{ ...inputStyle(), background: C.white }} />
             </div>
             <div>
-              <FieldLabel>PDF file</FieldLabel>
+              <FieldLabel>{`Form ${formType} PDF`}</FieldLabel>
               {pendingFile ? (
                 <div style={{ background: C.seasalt, border: '1px solid #EBEBEB', borderRadius: 10, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 8 }}>
                   <FileText size={16} strokeWidth={1.8} color={C.green} />
@@ -2192,11 +2599,38 @@ function LtaSection({ formType, title, records, charger, siteName, canEdit, canD
                 </button>
               )}
             </div>
+            <div>
+              <FieldLabel>Invoice PDF (optional)</FieldLabel>
+              {pendingInvoice ? (
+                <div style={{ background: C.seasalt, border: '1px solid #EBEBEB', borderRadius: 10, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <FileText size={16} strokeWidth={1.8} color={C.green} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pendingInvoice.name}</div>
+                    <div style={{ fontSize: 10, color: C.slate, marginTop: 1 }}>{fmtSize(pendingInvoice.size)} · ready to upload</div>
+                  </div>
+                  <button type="button" onClick={() => setPendingInvoice(null)} disabled={busy}
+                    style={{ width: 26, height: 26, borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: busy ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                    <X size={12} strokeWidth={2.5} />
+                  </button>
+                </div>
+              ) : (
+                <button type="button" onClick={() => invoiceRef.current?.click()} disabled={busy}
+                  style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '10px 14px', borderRadius: 10, border: '1px dashed #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', width: '100%' }}>
+                  <Upload size={14} strokeWidth={2} /> Choose invoice
+                </button>
+              )}
+            </div>
           </div>
           <input ref={inputRef} type="file" accept="application/pdf" style={{ display: 'none' }}
             onChange={(e) => {
               const file = e.target.files?.[0];
               if (file) handleFileSelected(file);
+              e.target.value = '';
+            }} />
+          <input ref={invoiceRef} type="file" accept="application/pdf" style={{ display: 'none' }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleInvoiceSelected(file);
               e.target.value = '';
             }} />
           {error && (
@@ -2990,79 +3424,24 @@ function ReadOnlyField({ label, value, placeholder }: { label: string; value: st
   );
 }
 
-function ChargerDetailRow({ label, value, muted }: { label: string; value: string; muted?: boolean }) {
-  return (
-    <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '10px 12px' }}>
-      <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
-      <div style={{ fontSize: 14, fontWeight: 700, color: muted ? C.slate : '#1a1a1a', marginTop: 4, letterSpacing: '-0.01em', fontStyle: muted ? 'italic' : 'normal' }}>
-        {value}
-      </div>
-    </div>
-  );
-}
 
-function isInspectedWithin(record: LtaRecord | null, months: number): boolean {
-  if (!record) return false;
+// A form cycle is overdue once the charger is past its first due date and has no
+// inspection within the latest cadence window. `latestPerformedAt` is the most
+// recent inspection of that form type (or null if none).
+function isCycleOverdue(turnOn: string | null, latestPerformedAt: string | null, months: number): boolean {
+  if (!turnOn) return false;
+  const firstDue = new Date(turnOn + 'T00:00:00');
+  if (isNaN(firstDue.getTime())) return false;
+  firstDue.setMonth(firstDue.getMonth() + months);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (firstDue > today) return false;        // first inspection not due yet
+  if (!latestPerformedAt) return true;       // due, never inspected
   const cutoff = new Date();
   cutoff.setHours(0, 0, 0, 0);
   cutoff.setMonth(cutoff.getMonth() - months);
-  const performed = new Date(record.performed_at + 'T00:00:00');
-  return !isNaN(performed.getTime()) && performed >= cutoff;
-}
-
-function FormStatusCard({ formType, period, latest, latestDisplayName, done, nextDate, nextDays, onDownload }: {
-  formType: LtaFormType;
-  period: string;
-  latest: LtaRecord | null;
-  latestDisplayName: string | null;
-  done: boolean;
-  nextDate: string | null;
-  nextDays: number | null;
-  onDownload: () => void;
-}) {
-  if (done && latest) {
-    return (
-      <div style={{ background: C.seasalt, border: '1px solid #EBEBEB', borderRadius: 8, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: '#E4F3E3', color: '#1B512D', letterSpacing: '0.04em', textTransform: 'uppercase' }}>
-            Done
-          </span>
-          <span style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Form {formType} · {period}</span>
-        </div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', letterSpacing: '-0.01em' }}>
-          Inspected on {fmtDate(latest.performed_at)}
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-          <FileText size={12} strokeWidth={1.8} color={C.slate} style={{ flexShrink: 0 }} />
-          <div style={{ fontSize: 11, color: C.slate, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{latestDisplayName ?? latest.filename}</div>
-          <button onClick={onDownload} title="Download PDF"
-            style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '4px 8px', borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-            <DownloadIcon size={12} strokeWidth={2.25} />
-          </button>
-        </div>
-        {nextDate && (
-          <div style={{ borderTop: '1px solid #EBEBEB', marginTop: 4, paddingTop: 6, display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '4px 6px' }}>
-            <span style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Next LTA Form {formType} Due</span>
-            <span style={{ fontSize: 12, fontWeight: 700, color: '#1a1a1a' }}>{fmtDate(nextDate)}</span>
-            {nextDays !== null && <span style={{ fontSize: 11, color: C.slate }}>· {relDays(nextDays)}</span>}
-          </div>
-        )}
-      </div>
-    );
-  }
-  return (
-    <div style={{ background: C.seasalt, border: '1px solid #EBEBEB', borderRadius: 8, padding: '10px 12px' }}>
-      <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-        Next LTA Form {formType} Due
-      </div>
-      <div style={{ fontSize: 13, fontWeight: 700, color: nextDate ? '#1a1a1a' : C.slate, marginTop: 6, fontStyle: nextDate ? 'normal' : 'italic' }}>
-        {fmtDate(nextDate) ?? 'Not scheduled'}
-      </div>
-      {nextDays !== null && (
-        <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>{relDays(nextDays)}</div>
-      )}
-    </div>
-  );
+  const performed = new Date(latestPerformedAt + 'T00:00:00');
+  return isNaN(performed.getTime()) || performed < cutoff;
 }
 
 function fmtDate(s: string | null): string | null {
@@ -3102,20 +3481,29 @@ function pathSafe(name: string): string {
   return name.replace(/[^a-zA-Z0-9 \-_.]/g, '_').replace(/\s+/g, ' ').trim();
 }
 
+// Format a Date as YYYY-MM-DD using LOCAL components (toISOString would shift the
+// day backwards in positive-offset timezones, e.g. UTC+8).
+function toYmd(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// The next upcoming inspection date. The first inspection is due `intervalMonths`
+// after turn-on (not on the turn-on day itself), then it repeats every interval.
 function nextCycleDate(turnOn: string | null, intervalMonths: number): string | null {
   if (!turnOn) return null;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const next = new Date(turnOn + 'T00:00:00');
   if (isNaN(next.getTime())) return null;
+  next.setMonth(next.getMonth() + intervalMonths);
   while (next < today) next.setMonth(next.getMonth() + intervalMonths);
-  return next.toISOString().slice(0, 10);
+  return toYmd(next);
 }
 
 function addYears(dateStr: string, years: number): string {
   const d = new Date(dateStr + 'T00:00:00');
   d.setFullYear(d.getFullYear() + years);
-  return d.toISOString().slice(0, 10);
+  return toYmd(d);
 }
 
 function deriveWarrantyYears(start: string | null, end: string | null): number | null {
@@ -3130,6 +3518,7 @@ function deriveWarrantyYears(start: string | null, end: string | null): number |
 interface ChargerFormData {
   asset_tag: string;
   brand_model: string | null;
+  registration_code: string | null;
   turn_on_date: string | null;
   form_a_next_date: string | null;
   form_d_next_date: string | null;
@@ -3142,7 +3531,7 @@ interface ChargerFormData {
 
 function blankCharger(): ChargerFormData {
   return {
-    asset_tag: '', brand_model: null,
+    asset_tag: '', brand_model: null, registration_code: null,
     turn_on_date: null, form_a_next_date: null, form_d_next_date: null,
     warranty_start_date: null, warranty_end_date: null,
     form_1_path: null, form_1_filename: null,
@@ -3223,15 +3612,16 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
   const handleSave = async () => {
     setSaving(true);
     const turnOn = form.turn_on_date || null;
-    const yrs    = warrantyYears && warrantyYears > 0 ? warrantyYears : null;
     await onSave({
       asset_tag:               form.asset_tag.trim(),
       brand_model:             form.brand_model && form.brand_model.trim() ? form.brand_model.trim() : null,
+      registration_code:       form.registration_code && form.registration_code.trim() ? form.registration_code.trim() : null,
       turn_on_date:            turnOn,
       form_a_next_date:        nextCycleDate(turnOn, isResidential ? 24 : 6),
       form_d_next_date:        isResidential ? null : nextCycleDate(turnOn, 12),
+      // Warranty starts on the registration date; the end is editable (defaults to start + years).
       warranty_start_date:     turnOn ? turnOn : null,
-      warranty_end_date:       turnOn && yrs  ? addYears(turnOn, yrs) : null,
+      warranty_end_date:       form.warranty_end_date || null,
       form_1_path:             form.form_1_path || null,
       form_1_filename:         form.form_1_path ? computeForm1Filename(form.asset_tag, form.turn_on_date, siteName) : null,
       notes:                   form.notes && form.notes.trim() ? form.notes.trim() : null,
@@ -3292,18 +3682,28 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Service Dates</div>
           <div>
-            <FieldLabel>Turn-on Date</FieldLabel>
-            <input type="date" value={form.turn_on_date ?? ''} onChange={(e) => set('turn_on_date', e.target.value || null)} style={{ ...inputStyle(), background: C.white }} />
+            <FieldLabel>Registration Code</FieldLabel>
+            <input value={form.registration_code ?? ''} onChange={(e) => set('registration_code', e.target.value || null)} placeholder="e.g. REG-2026-001" style={{ ...inputStyle(), background: C.white }} />
+          </div>
+          <div>
+            <FieldLabel>Registration Date</FieldLabel>
+            <input type="date" value={form.turn_on_date ?? ''}
+              onChange={(e) => {
+                const v = e.target.value || null;
+                // Refresh the default warranty end (start + years) when the date changes.
+                setForm((f) => ({ ...f, turn_on_date: v, warranty_end_date: v && warrantyYears ? addYears(v, warrantyYears) : f.warranty_end_date }));
+              }}
+              style={{ ...inputStyle(), background: C.white }} />
             <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
               {isResidential
-                ? <>Residential chargers need only <strong>Form A every 24 months</strong> from turn-on — no Form D. The system always shows the <strong>next upcoming</strong> date.</>
-                : <>Form A repeats every <strong>6 months</strong>, Form D every <strong>12 months</strong> from turn-on. The system always shows the <strong>next upcoming</strong> date so cold calls stay on track.</>}
+                ? <>Residential chargers need only <strong>Form A every 24 months</strong> from the registration date — no Form D. The system always shows the <strong>next upcoming</strong> date.</>
+                : <>Form A repeats every <strong>6 months</strong>, Form D every <strong>12 months</strong> from the registration date. The system always shows the <strong>next upcoming</strong> date so cold calls stay on track.</>}
             </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
-            <ReadOnlyField label="Next Form A (auto)" value={fmtDate(nextCycleDate(form.turn_on_date, isResidential ? 24 : 6))}  placeholder="Set turn-on date" />
+            <ReadOnlyField label="Next Form A (auto)" value={fmtDate(nextCycleDate(form.turn_on_date, isResidential ? 24 : 6))}  placeholder="Set registration date" />
             {!isResidential && (
-              <ReadOnlyField label="Next Form D (auto)" value={fmtDate(nextCycleDate(form.turn_on_date, 12))} placeholder="Set turn-on date" />
+              <ReadOnlyField label="Next Form D (auto)" value={fmtDate(nextCycleDate(form.turn_on_date, 12))} placeholder="Set registration date" />
             )}
           </div>
         </div>
@@ -3317,20 +3717,22 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
                 value={warrantyYears ?? ''}
                 onChange={(e) => {
                   const v = e.target.value;
-                  if (v === '') { setWarrantyYears(null); return; }
-                  const n = parseInt(v, 10);
-                  setWarrantyYears(isNaN(n) ? null : Math.max(0, Math.min(20, n)));
+                  const n = v === '' ? null : Math.max(0, Math.min(20, parseInt(v, 10) || 0));
+                  setWarrantyYears(n);
+                  // Default the end date from registration + years (still editable below).
+                  setForm((f) => ({ ...f, warranty_end_date: f.turn_on_date && n ? addYears(f.turn_on_date, n) : f.warranty_end_date }));
                 }}
                 placeholder="e.g. 2"
                 style={{ ...inputStyle(), background: C.white }} />
             </div>
-            <ReadOnlyField
-              label="Ends on (auto)"
-              value={form.turn_on_date && warrantyYears ? fmtDate(addYears(form.turn_on_date, warrantyYears)) : null}
-              placeholder={form.turn_on_date ? 'Enter warranty years' : 'Set turn-on date'} />
+            <div>
+              <FieldLabel>Ends on</FieldLabel>
+              <input type="date" value={form.warranty_end_date ?? ''} onChange={(e) => set('warranty_end_date', e.target.value || null)}
+                style={{ ...inputStyle(), background: C.white }} />
+            </div>
           </div>
           <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5 }}>
-            Warranty starts on the turn-on date. Enter the warranty length in years — the end date is computed automatically.
+            Warranty starts on the registration date. The end date defaults to the registration date plus the warranty years — adjust it directly if needed.
           </div>
         </div>
 
