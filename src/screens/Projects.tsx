@@ -15,6 +15,7 @@ import {
   TYPE_LABEL,
   TYPE_PALETTE,
 } from './Customers';
+import { InvoiceIngestModal } from './RegistryInvoiceImport';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -130,7 +131,7 @@ function SearchSelect({ value, options, onChange, disabled, placeholder }: {
 type StatusFilter = 'all' | ProjectStatus;
 
 export function ScreenProjects() {
-  const { can } = usePermissions();
+  const { can, isAdmin } = usePermissions();
   const canEdit   = can('projects', 'can_edit');
   const canDelete = can('projects', 'can_delete');
 
@@ -143,6 +144,7 @@ export function ScreenProjects() {
   const [search, setSearch]       = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [adding, setAdding]       = useState(false);
+  const [importingInvoices, setImportingInvoices] = useState(false);
   const [viewingId, setViewingId] = useState<string | null>(null);
 
   const fetchAll = async () => {
@@ -229,10 +231,18 @@ export function ScreenProjects() {
           <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, display: 'inline-flex' }}><Search size={14} /></span>
         </div>
         {canEdit && (
-          <button onClick={() => setAdding(true)}
-            style={{ marginLeft: 'auto', padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-            + New Registration
-          </button>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
+            {isAdmin && (
+              <button onClick={() => setImportingInvoices(true)}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 18px', borderRadius: 10, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                <Upload size={14} strokeWidth={2.25} /> Bulk Upload Invoices
+              </button>
+            )}
+            <button onClick={() => setAdding(true)}
+              style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              + New Registration
+            </button>
+          </div>
         )}
       </div>
 
@@ -295,6 +305,9 @@ export function ScreenProjects() {
       {adding && (
         <ProjectModal title="New Registration" initial={blankProject()} customers={customers}
           onSave={addProject} onClose={() => setAdding(false)} />
+      )}
+      {importingInvoices && isAdmin && (
+        <InvoiceIngestModal onClose={() => setImportingInvoices(false)} onDone={fetchAll} />
       )}
     </div>
   );
@@ -489,6 +502,12 @@ interface ProjectFile {
   mime_type: string | null;
   size_bytes: number | null;
   uploaded_at: string;
+  // Populated for AI-ingested invoices (section='invoices'); null for manual uploads.
+  invoice_number: string | null;
+  invoice_date: string | null;
+  total_amount: number | null;
+  bill_to_name: string | null;
+  billing_address: string | null;
 }
 
 const PROJECT_FILES_BUCKET = 'project-files';
@@ -1345,17 +1364,91 @@ function FilesTab({ projectId, files, canEdit, canDelete, onChanged }: {
 }) {
   const invoices = files.filter((f) => f.section === 'invoices');
   const others   = files.filter((f) => f.section === 'others');
+  const [selected, setSelected] = useState<ProjectFile | null>(null);
+  const [signedUrl, setSignedUrl] = useState<string | null>(null);
+  const [viewerErr, setViewerErr] = useState<string | null>(null);
+
+  // Drop the selection if the file disappears (deleted / reload).
+  useEffect(() => {
+    if (selected && !files.find((f) => f.id === selected.id)) setSelected(null);
+  }, [files, selected]);
+
+  // Sign a longer-lived URL for the inline preview when the selection changes.
+  useEffect(() => {
+    if (!selected) { setSignedUrl(null); setViewerErr(null); return; }
+    let cancelled = false;
+    setSignedUrl(null); setViewerErr(null);
+    void (async () => {
+      const { data, error } = await supabase.storage.from(PROJECT_FILES_BUCKET).createSignedUrl(selected.storage_path, 3600);
+      if (cancelled) return;
+      if (error || !data) setViewerErr(error?.message ?? 'Could not load preview');
+      else setSignedUrl(data.signedUrl);
+    })();
+    return () => { cancelled = true; };
+  }, [selected]);
+
+  const isPdf = (f: ProjectFile) => (f.mime_type ?? '').includes('pdf') || f.filename.toLowerCase().endsWith('.pdf');
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-      <FileSection title="Invoices" section="invoices" files={invoices}
-        projectId={projectId} canEdit={canEdit} canDelete={canDelete} onChanged={onChanged} />
-      <FileSection title="Others" section="others" files={others}
-        projectId={projectId} canEdit={canEdit} canDelete={canDelete} onChanged={onChanged} />
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 400px) 1fr', gap: 16, alignItems: 'start' }}>
+      {/* Left — document lists */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 18, minWidth: 0 }}>
+        <FileSection title="Invoices" section="invoices" files={invoices} selectedId={selected?.id ?? null} onSelect={setSelected}
+          projectId={projectId} canEdit={canEdit} canDelete={canDelete} onChanged={onChanged} />
+        <FileSection title="Others" section="others" files={others} selectedId={selected?.id ?? null} onSelect={setSelected}
+          projectId={projectId} canEdit={canEdit} canDelete={canDelete} onChanged={onChanged} />
+      </div>
+
+      {/* Right — inline viewer for cross-checking */}
+      <div style={{ position: 'sticky', top: 0, border: '1px solid #EBEBEB', borderRadius: 12, background: C.seasalt, height: 'calc(100vh - 210px)', minHeight: 460, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {!selected ? (
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: C.slate, padding: 24, textAlign: 'center' }}>
+            <FileText size={32} strokeWidth={1.5} />
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Click a document to preview it here</div>
+            <div style={{ fontSize: 12 }}>Open an invoice on the left to cross-check it without leaving the page.</div>
+          </div>
+        ) : (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: '1px solid #EBEBEB', background: C.white }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div title={selected.filename} style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected.filename}</div>
+                {selected.invoice_number && (
+                  <div style={{ fontSize: 11, color: C.slate, marginTop: 1 }}>
+                    <span style={{ color: C.green, fontWeight: 700 }}>{selected.invoice_number}</span>
+                    {selected.invoice_date && ` · ${fmtDate(selected.invoice_date)}`}
+                    {selected.total_amount != null && ` · $${selected.total_amount.toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                  </div>
+                )}
+              </div>
+              {signedUrl && (
+                <a href={signedUrl} target="_blank" rel="noopener noreferrer"
+                  style={{ fontSize: 11, fontWeight: 700, color: C.green, textDecoration: 'none', whiteSpace: 'nowrap' }}>Open ↗</a>
+              )}
+              <button onClick={() => setSelected(null)} title="Close preview"
+                style={{ width: 26, height: 26, borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}><X size={13} strokeWidth={2.5} /></button>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, background: '#525659' }}>
+              {viewerErr ? (
+                <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.white, fontSize: 13, padding: 24, textAlign: 'center' }}>{viewerErr}</div>
+              ) : !signedUrl ? (
+                <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.white, fontSize: 13 }}>Loading preview…</div>
+              ) : isPdf(selected) ? (
+                <iframe key={selected.id} src={signedUrl} title={selected.filename} style={{ width: '100%', height: '100%', border: 'none', display: 'block' }} />
+              ) : (
+                <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, color: C.white, fontSize: 13, padding: 24, textAlign: 'center' }}>
+                  Preview isn't available for this file type.
+                  <a href={signedUrl} target="_blank" rel="noopener noreferrer" style={{ color: '#A5D6A7', fontWeight: 700 }}>Open in a new tab ↗</a>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
 
-function FileSection({ title, section, files, projectId, canEdit, canDelete, onChanged }: {
+function FileSection({ title, section, files, projectId, canEdit, canDelete, onChanged, selectedId, onSelect }: {
   title: string;
   section: ProjectFileSection;
   files: ProjectFile[];
@@ -1363,6 +1456,8 @@ function FileSection({ title, section, files, projectId, canEdit, canDelete, onC
   canEdit: boolean;
   canDelete: boolean;
   onChanged: () => Promise<void>;
+  selectedId: string | null;
+  onSelect: (f: ProjectFile) => void;
 }) {
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -1469,7 +1564,8 @@ function FileSection({ title, section, files, projectId, canEdit, canDelete, onC
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {files.map((f) => (
-            <FileRow key={f.id} file={f} canDelete={canDelete} onChanged={onChanged} />
+            <FileRow key={f.id} file={f} canDelete={canDelete} onChanged={onChanged}
+              selected={selectedId === f.id} onSelect={() => onSelect(f)} />
           ))}
         </div>
       )}
@@ -1477,7 +1573,7 @@ function FileSection({ title, section, files, projectId, canEdit, canDelete, onC
   );
 }
 
-function FileRow({ file, canDelete, onChanged }: { file: ProjectFile; canDelete: boolean; onChanged: () => Promise<void> }) {
+function FileRow({ file, canDelete, onChanged, selected, onSelect }: { file: ProjectFile; canDelete: boolean; onChanged: () => Promise<void>; selected: boolean; onSelect: () => void }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -1505,12 +1601,19 @@ function FileRow({ file, canDelete, onChanged }: { file: ProjectFile; canDelete:
   };
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', border: '1px solid #EBEBEB', borderRadius: 10, background: C.white }}>
-      <FileText size={18} strokeWidth={1.75} color={C.slate} style={{ flexShrink: 0 }} />
-      <div style={{ flex: 1, minWidth: 0 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', border: `1.5px solid ${selected ? C.green : '#EBEBEB'}`, borderRadius: 10, background: selected ? C.honeydew : C.white }}>
+      <FileText size={18} strokeWidth={1.75} color={selected ? C.green : C.slate} style={{ flexShrink: 0 }} />
+      <div onClick={onSelect} style={{ flex: 1, minWidth: 0, cursor: 'pointer' }}>
         <div title={file.filename} style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {file.filename}
         </div>
+        {file.invoice_number && (
+          <div style={{ fontSize: 11, color: '#1a1a1a', marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontWeight: 700, color: C.green }}>{file.invoice_number}</span>
+            {file.invoice_date && <span style={{ color: C.slate }}>{fmtDate(file.invoice_date)}</span>}
+            {file.total_amount != null && <span style={{ color: C.slate }}>${file.total_amount.toLocaleString('en-SG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>}
+          </div>
+        )}
         <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
           {fmtSize(file.size_bytes)} · uploaded {fmtUploadedAt(file.uploaded_at)}
         </div>
