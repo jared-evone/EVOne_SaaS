@@ -20,6 +20,7 @@ import {
   type WorkOrderStatus,
 } from '../../workOrderStore';
 import { FieldList, FormHeader, FormPaper } from './TechApp';
+import { splitUnit } from '../Projects';
 import { OverlayEditor, OverlayFormRenderer, isOverlay } from './OverlayForm';
 import { PICReviewBoard } from './PICApp';
 
@@ -386,7 +387,7 @@ export function WorkOrdersAdmin() {
 // Work orders can be scoped to a Charger Registry customer (→ pick one of their
 // sites) or to a CPO location (→ pick one of its chargers).
 interface RegistryEntry { id: string; name: string; source: 'registry' | 'cpo'; address: string | null; }
-interface SiteRec { id: string; name: string; address: string | null; }
+interface SiteRec { id: string; name: string; address: string | null; notes: string | null; }
 
 function WorkOrderModal({
   mode,
@@ -472,7 +473,7 @@ function WorkOrderModal({
     setForm((f) => ({ ...f, customerId: p.id, customer: p.name, siteId: null, address: '' }));
     setSites([]);
     setSitesLoading(true);
-    const { data } = await supabase.from('project_sites').select('id, name, address').eq('project_id', p.id).order('position').order('created_at');
+    const { data } = await supabase.from('project_sites').select('id, name, address, notes').eq('project_id', p.id).order('position').order('created_at');
     setSites((data as SiteRec[]) ?? []);
     setSitesLoading(false);
   };
@@ -480,8 +481,12 @@ function WorkOrderModal({
   const selectSite = (siteId: string) => {
     const s = sites.find((x) => x.id === siteId);
     if (!s) return;
-    // Address only — the site/charger name stays in its own dropdown.
-    setForm((f) => ({ ...f, siteId: s.id, address: s.address || s.name }));
+    // Fold the site's unit/shoplot (stored in notes) into the address snapshot so the
+    // technician sees and can navigate to the exact unit — the WO carries no separate field.
+    const { unit } = splitUnit(s.notes);
+    const base = s.address || s.name;
+    const address = unit && !base.includes(unit) ? `${base}, ${unit}` : base;
+    setForm((f) => ({ ...f, siteId: s.id, address }));
   };
 
   // Technicians come from the shared technicians table — managed in the Technicians tab.

@@ -15,7 +15,8 @@ import { OverlayFormRenderer, isOverlay } from './OverlayForm';
 import { usePermissions } from '../../permissions';
 import { supabase } from '../../lib/supabase';
 import { compressImage } from '../../lib/compressImage';
-import { Power, Calendar, User, Camera, Search, ChevronDown } from 'lucide-react';
+import { Power, Calendar, User, Camera, Search, ChevronDown, Navigation } from 'lucide-react';
+import { googleMapsDirections, hasNavTarget } from '../../lib/navLinks';
 
 interface TechAppProps {
   onBack?: () => void;
@@ -372,9 +373,21 @@ function WorkOrderCard({
       <div style={{ fontSize: 15, fontWeight: 700, color: '#1a1a1a', lineHeight: 1.3 }}>{wo.title}</div>
       <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5 }}>
         {wo.customer}{wo.product ? ` · ${wo.product}` : ''}
-        <br />
-        {wo.address}
       </div>
+      {wo.address && (
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, justifyContent: 'space-between' }}>
+          <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5, flex: 1, minWidth: 0 }}>{wo.address}</div>
+          {hasNavTarget({ address: wo.address }) && (
+            <button
+              onClick={() => window.open(googleMapsDirections({ address: wo.address }), '_blank', 'noopener,noreferrer')}
+              title="Navigate with Google Maps"
+              style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}
+            >
+              <Navigation size={12} strokeWidth={2.25} /> Navigate
+            </button>
+          )}
+        </div>
+      )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 11, color: C.slate, display: 'inline-flex', alignItems: 'center', gap: 4 }}><Calendar size={11} strokeWidth={2} /> {wo.scheduledDate}</span>
         {assignee !== undefined && (
@@ -671,6 +684,22 @@ function TechFillFormView({
       subtitle={`${workOrder.id} · ${workOrder.customer} · ${forms.length} form${forms.length === 1 ? '' : 's'}`}
       crumb="Technician"
     >
+      {workOrder.address && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: C.seasalt, border: '1px solid #EBEBEB', borderRadius: 12, padding: '12px 14px', marginBottom: 16 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Location</div>
+            <div style={{ fontSize: 13, color: '#1a1a1a', marginTop: 2, lineHeight: 1.4 }}>{workOrder.address}</div>
+          </div>
+          {hasNavTarget({ address: workOrder.address }) && (
+            <button
+              onClick={() => window.open(googleMapsDirections({ address: workOrder.address }), '_blank', 'noopener,noreferrer')}
+              style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+            >
+              <Navigation size={14} strokeWidth={2.25} /> Navigate
+            </button>
+          )}
+        </div>
+      )}
       {forms.map((inst, i) => {
         const tpl = store.getTemplate(inst.templateId);
         return (

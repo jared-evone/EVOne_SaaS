@@ -3,8 +3,10 @@ import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
-import { Search, Mail, Pencil, FileText, Upload, Download as DownloadIcon, ChevronDown, X } from 'lucide-react';
+import { Search, Mail, Pencil, FileText, Upload, Download as DownloadIcon, ChevronDown, X, MapPin, Navigation } from 'lucide-react';
 import { OneMapAutocomplete } from '../components/OneMapAutocomplete';
+import { searchOneMap } from '../lib/onemap';
+import { googleMapsDirections, hasNavTarget } from '../lib/navLinks';
 import {
   type EmailBrand, DEFAULT_LTA_BRAND, fetchLtaBrand, buildLtaEmailHtml,
   type EmailSender, fetchSenders,
@@ -728,6 +730,9 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
               <FilesTab
                 projectId={project.id}
                 files={files}
+                sites={sites}
+                brandModels={brandModels}
+                customer={customer}
                 canEdit={canEdit}
                 canDelete={canDelete}
                 onChanged={fetchAll}
@@ -753,7 +758,9 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
         {addingSite && (
           <SiteModal
             title="New Site"
-            initial={{ name: '', address: null, latitude: null, longitude: null, notes: null }}
+            initial={customer?.type === 'residential'
+              ? { name: 'Home', address: customer.address ?? null, latitude: null, longitude: null, notes: null }
+              : { name: '', address: null, latitude: null, longitude: null, notes: null }}
             canDelete={false}
             onSave={async (data) => {
               const { data: created } = await supabase.from('project_sites')
@@ -1168,6 +1175,7 @@ function SiteTab({ site, brandModels, canEdit, canDelete, customer, onChanged, o
     await onChanged();
   };
 
+  const { unit: siteUnit, rest: siteNotes } = splitUnit(site.notes);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {/* Site header */}
@@ -1175,11 +1183,20 @@ function SiteTab({ site, brandModels, canEdit, canDelete, customer, onChanged, o
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
           <div>
             <div style={{ fontSize: 16, fontWeight: 700, color: '#1a1a1a' }}>{site.name}</div>
-            {site.address && (
-              <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>{site.address}</div>
+            {(site.address || siteUnit) && (
+              <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
+                {site.address}{siteUnit && <span style={{ fontWeight: 700, color: '#1a1a1a' }}>{site.address ? ' · ' : ''}{siteUnit}</span>}
+              </div>
             )}
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
+            {hasNavTarget({ address: site.address, lat: site.latitude, lng: site.longitude }) && (
+              <button onClick={() => window.open(googleMapsDirections({ address: site.address, unit: siteUnit, lat: site.latitude, lng: site.longitude }), '_blank', 'noopener,noreferrer')}
+                title="Navigate with Google Maps"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                <Navigation size={11} strokeWidth={2.25} /> Navigate
+              </button>
+            )}
             {canEdit && (
               <button onClick={() => setEditingSite(true)}
                 style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
@@ -1194,9 +1211,9 @@ function SiteTab({ site, brandModels, canEdit, canDelete, customer, onChanged, o
             )}
           </div>
         </div>
-        {site.notes && (
+        {siteNotes && (
           <div style={{ background: C.seasalt, borderRadius: 10, padding: '10px 12px', fontSize: 12, color: '#1a1a1a', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
-            {site.notes}
+            {siteNotes}
           </div>
         )}
         {confirmDelete && (
@@ -1285,6 +1302,25 @@ interface SiteFormData {
   notes: string | null;
 }
 
+// The unit / shoplot number can't get its own map pin (OneMap geocodes to the building),
+// so it's recorded manually and stored as a structured first line of the site notes.
+const UNIT_PREFIX = 'Unit/Shoplot: ';
+export function splitUnit(notes: string | null): { unit: string; rest: string } {
+  const text = notes ?? '';
+  if (text.startsWith(UNIT_PREFIX)) {
+    const nl = text.indexOf('\n');
+    if (nl === -1) return { unit: text.slice(UNIT_PREFIX.length).trim(), rest: '' };
+    return { unit: text.slice(UNIT_PREFIX.length, nl).trim(), rest: text.slice(nl + 1).trim() };
+  }
+  return { unit: '', rest: text };
+}
+function joinUnit(unit: string, rest: string): string | null {
+  const u = unit.trim(), r = rest.trim();
+  if (!u && !r) return null;
+  if (!u) return r || null;
+  return UNIT_PREFIX + u + (r ? '\n' + r : '');
+}
+
 function SiteModal({ title, initial, onSave, onClose }: {
   title: string;
   initial: SiteFormData;
@@ -1292,8 +1328,35 @@ function SiteModal({ title, initial, onSave, onClose }: {
   onSave: (data: SiteFormData) => Promise<void>;
   onClose: () => void;
 }) {
-  const [form, setForm] = useState<SiteFormData>(initial);
+  const [form, setForm] = useState<SiteFormData>(() => ({ ...initial, notes: splitUnit(initial.notes).rest || null }));
+  const [unit, setUnit] = useState(() => splitUnit(initial.notes).unit);
   const [saving, setSaving] = useState(false);
+  const [geo, setGeo] = useState<{ status: 'idle' | 'loading' | 'ok' | 'fail'; matched?: string }>({ status: 'idle' });
+  const live = useRef(true);
+  useEffect(() => () => { live.current = false; }, []);
+
+  // Resolve a lat/lng for a free-text address via OneMap, WITHOUT rewriting the address
+  // the user sees — the original text stays put so they can double-check the pin matched.
+  const geocode = async (addr: string) => {
+    const q = (addr ?? '').trim();
+    if (q.length < 3) { setGeo({ status: 'fail' }); return; }
+    setGeo({ status: 'loading' });
+    const results = await searchOneMap(q);
+    if (!live.current) return;
+    if (results.length) {
+      setForm((f) => ({ ...f, latitude: results[0].latitude, longitude: results[0].longitude }));
+      setGeo({ status: 'ok', matched: results[0].address });
+    } else {
+      setGeo({ status: 'fail' });
+    }
+  };
+
+  // Auto-geocode a prefilled address (e.g. a residential registry's billing address) once
+  // on open, when no pin is set yet. Edited sites already carry their coordinates.
+  useEffect(() => {
+    if ((initial.address ?? '').trim() && initial.latitude == null && initial.longitude == null) void geocode(initial.address ?? '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSave = async () => {
     setSaving(true);
@@ -1302,7 +1365,7 @@ function SiteModal({ title, initial, onSave, onClose }: {
       address:   form.address && form.address.trim() ? form.address.trim() : null,
       latitude:  form.latitude,
       longitude: form.longitude,
-      notes:     form.notes && form.notes.trim() ? form.notes.trim() : null,
+      notes:     joinUnit(unit, form.notes ?? ''),
     });
     setSaving(false);
     onClose();
@@ -1326,12 +1389,35 @@ function SiteModal({ title, initial, onSave, onClose }: {
           <FieldLabel>Address</FieldLabel>
           <OneMapAutocomplete
             value={form.address ?? ''}
-            onChange={(t) => setForm((f) => ({ ...f, address: t || null }))}
-            onPick={(r) => setForm((f) => ({ ...f, address: r.address, latitude: r.latitude, longitude: r.longitude }))}
+            onChange={(t) => { setForm((f) => ({ ...f, address: t || null, latitude: null, longitude: null })); setGeo({ status: 'idle' }); }}
+            onPick={(r) => { setForm((f) => ({ ...f, address: r.address, latitude: r.latitude, longitude: r.longitude })); setGeo({ status: 'ok', matched: r.address }); }}
             placeholder="Start typing — pick a Singapore address to auto-fill lat/lng"
           />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 6, flexWrap: 'wrap' }}>
+            <button type="button" onClick={() => void geocode(form.address ?? '')} disabled={geo.status === 'loading' || (form.address ?? '').trim().length < 3}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: (geo.status === 'loading' || (form.address ?? '').trim().length < 3) ? 'default' : 'pointer', opacity: (form.address ?? '').trim().length < 3 ? 0.5 : 1 }}>
+              <MapPin size={12} strokeWidth={2.25} /> {geo.status === 'loading' ? 'Locating…' : 'Locate on map'}
+            </button>
+            {geo.status === 'ok' && (
+              <span style={{ fontSize: 11, fontWeight: 600, color: C.green }}>Pinned to {geo.matched} — check it matches the address above</span>
+            )}
+            {geo.status === 'fail' && (
+              <span style={{ fontSize: 11, fontWeight: 600, color: '#B45309' }}>Couldn't locate — pick a suggestion or save without a map pin</span>
+            )}
+            {geo.status === 'idle' && form.latitude == null && (
+              <span style={{ fontSize: 11, color: C.slate }}>No map pin yet</span>
+            )}
+          </div>
           <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.4 }}>
-            Powered by <a href="https://www.onemap.gov.sg" target="_blank" rel="noreferrer" style={{ color: C.green, textDecoration: 'none', fontWeight: 600 }}>OneMap</a> (data.gov.sg). Picking a suggestion saves latitude &amp; longitude alongside the address.
+            Powered by <a href="https://www.onemap.gov.sg" target="_blank" rel="noreferrer" style={{ color: C.green, textDecoration: 'none', fontWeight: 600 }}>OneMap</a> (data.gov.sg). A prefilled address is located automatically; the text you see is kept as-is for you to verify.
+          </div>
+        </div>
+        <div>
+          <FieldLabel>Unit / Shoplot No. (optional)</FieldLabel>
+          <input value={unit} onChange={(e) => setUnit(e.target.value)}
+            placeholder="#01-18" style={inputStyle()} />
+          <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.4 }}>
+            The map pin is building-level — add the exact unit / shoplot here for industrial buildings and multi-tenant addresses.
           </div>
         </div>
         <div>
@@ -1355,9 +1441,12 @@ function SiteModal({ title, initial, onSave, onClose }: {
 
 // ── Right column: Files tab ───────────────────────────────────────
 
-function FilesTab({ projectId, files, canEdit, canDelete, onChanged }: {
+function FilesTab({ projectId, files, sites, brandModels, customer, canEdit, canDelete, onChanged }: {
   projectId: string;
   files: ProjectFile[];
+  sites: ProjectSite[];
+  brandModels: BrandModel[];
+  customer: Customer | null;
   canEdit: boolean;
   canDelete: boolean;
   onChanged: () => Promise<void>;
@@ -1367,6 +1456,19 @@ function FilesTab({ projectId, files, canEdit, canDelete, onChanged }: {
   const [selected, setSelected] = useState<ProjectFile | null>(null);
   const [signedUrl, setSignedUrl] = useState<string | null>(null);
   const [viewerErr, setViewerErr] = useState<string | null>(null);
+  // Add-charger-from-document flow: resolve the site (create one if none, pick if several),
+  // then open the charger form with the invoice PDF shown alongside for reference.
+  const [addChargerSiteId, setAddChargerSiteId] = useState<string | null>(null);
+  const [pickSiteOpen, setPickSiteOpen] = useState(false);
+  const [newSiteOpen, setNewSiteOpen] = useState(false);
+  const isResidential = customer?.type === 'residential';
+
+  const startAddCharger = () => {
+    if (sites.length === 0) setNewSiteOpen(true);
+    else if (sites.length === 1) setAddChargerSiteId(sites[0].id);
+    else setPickSiteOpen(true);
+  };
+  const targetSite = addChargerSiteId ? sites.find((s) => s.id === addChargerSiteId) ?? null : null;
 
   // Drop the selection if the file disappears (deleted / reload).
   useEffect(() => {
@@ -1420,6 +1522,12 @@ function FilesTab({ projectId, files, canEdit, canDelete, onChanged }: {
                   </div>
                 )}
               </div>
+              {canEdit && (
+                <button onClick={startAddCharger} title="Create a charger with this invoice open"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 12px', borderRadius: 8, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                  + Add charger
+                </button>
+              )}
               {signedUrl && (
                 <a href={signedUrl} target="_blank" rel="noopener noreferrer"
                   style={{ fontSize: 11, fontWeight: 700, color: C.green, textDecoration: 'none', whiteSpace: 'nowrap' }}>Open ↗</a>
@@ -1444,6 +1552,65 @@ function FilesTab({ projectId, files, canEdit, canDelete, onChanged }: {
           </>
         )}
       </div>
+
+      {/* Pick which site to add the charger to (only when the registry has several). */}
+      {pickSiteOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: C.white, borderRadius: 20, padding: 24, width: 420, maxWidth: 'calc(100vw - 24px)', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: C.green }}>Add charger to which site?</div>
+              <button onClick={() => setPickSiteOpen(false)} style={{ width: 30, height: 30, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 17, fontFamily: 'Figtree' }}>×</button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {sites.map((s) => (
+                <button key={s.id} onClick={() => { setAddChargerSiteId(s.id); setPickSiteOpen(false); }}
+                  style={{ textAlign: 'left', padding: '10px 14px', borderRadius: 10, border: '1px solid #EBEBEB', background: C.white, color: '#1a1a1a', fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = C.honeydew)} onMouseLeave={(e) => (e.currentTarget.style.background = C.white)}>
+                  {s.name}{s.address ? <span style={{ color: C.slate, fontWeight: 400 }}> · {s.address}</span> : ''}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* No site yet → create one first (residential registries default to Home + billing address). */}
+      {newSiteOpen && (
+        <SiteModal
+          title="New Site"
+          initial={isResidential
+            ? { name: 'Home', address: customer?.address ?? null, latitude: null, longitude: null, notes: null }
+            : { name: '', address: null, latitude: null, longitude: null, notes: null }}
+          canDelete={false}
+          onSave={async (data) => {
+            const { data: created } = await supabase.from('project_sites').insert({ ...data, project_id: projectId }).select('id').single();
+            await onChanged();
+            if (created) setAddChargerSiteId((created as { id: string }).id);
+          }}
+          onClose={() => setNewSiteOpen(false)}
+        />
+      )}
+
+      {/* Charger form with the invoice PDF alongside for reference. */}
+      {targetSite && (
+        <ChargerModal
+          title="New Registration"
+          initial={blankCharger()}
+          siteName={targetSite.name}
+          isResidential={isResidential}
+          brandModels={brandModels}
+          canDelete={false}
+          canManageBrandModels={canDelete}
+          pdfUrl={selected && isPdf(selected) ? (signedUrl ?? undefined) : undefined}
+          pdfName={selected?.filename}
+          onSave={async (data) => {
+            await supabase.from('site_chargers').insert({ ...data, site_id: targetSite.id });
+            await onChanged();
+          }}
+          onBrandModelsChanged={onChanged}
+          onClose={() => setAddChargerSiteId(null)}
+        />
+      )}
     </div>
   );
 }
@@ -3959,7 +4126,7 @@ function blankCharger(): ChargerFormData {
   };
 }
 
-function ChargerModal({ title, initial, siteName, isResidential, brandModels, canDelete, canManageBrandModels, onSave, onDelete, onBrandModelsChanged, onClose }: {
+function ChargerModal({ title, initial, siteName, isResidential, brandModels, canDelete, canManageBrandModels, onSave, onDelete, onBrandModelsChanged, onClose, pdfUrl, pdfName }: {
   title: string;
   initial: ChargerFormData;
   siteName: string;
@@ -3971,6 +4138,10 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
   onDelete?: () => Promise<void>;
   onBrandModelsChanged: () => Promise<void>;
   onClose: () => void;
+  // When set, the modal shows the PDF (e.g. the source invoice) in a split pane on the
+  // left so the user can read line items while filling the charger form on the right.
+  pdfUrl?: string;
+  pdfName?: string;
 }) {
   const [form, setForm] = useState<ChargerFormData>(initial);
   const [warrantyYears, setWarrantyYears] = useState<number | null>(
@@ -4061,8 +4232,19 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
   const canSave = form.asset_tag.trim().length > 0 && !saving;
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 580, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 12 }}>
+      <div style={{ display: 'flex', gap: pdfUrl ? 16 : 0, alignItems: 'stretch', justifyContent: 'center', width: pdfUrl ? 'min(1180px, 100%)' : 'auto', maxWidth: '100%', height: pdfUrl ? '90vh' : 'auto' }}>
+      {pdfUrl && (
+        <div style={{ flex: 1, minWidth: 0, background: '#525659', borderRadius: 16, overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: '0 24px 64px rgba(0,0,0,.18)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: C.white, borderBottom: '1px solid #EBEBEB' }}>
+            <FileText size={14} strokeWidth={1.8} color={C.green} style={{ flexShrink: 0 }} />
+            <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pdfName ?? 'Invoice'}</span>
+            <a href={pdfUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, fontWeight: 700, color: C.green, textDecoration: 'none', whiteSpace: 'nowrap' }}>Open ↗</a>
+          </div>
+          <iframe src={pdfUrl} title={pdfName ?? 'Invoice'} style={{ flex: 1, width: '100%', border: 'none', display: 'block' }} />
+        </div>
+      )}
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: pdfUrl ? 560 : 580, flexShrink: 0, maxWidth: '100%', maxHeight: pdfUrl ? '100%' : '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{title}</div>
           <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
@@ -4247,6 +4429,7 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
             </button>
           </div>
         </div>
+      </div>
       </div>
       {manageOpen && (
         <BrandModelsModal

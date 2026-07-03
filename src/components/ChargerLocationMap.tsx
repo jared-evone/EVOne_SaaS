@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { C } from '../theme';
+import { googleMapsDirections } from '../lib/navLinks';
 import evoneLogo    from '../assets/evone-logo.png';
 import eveLogo      from '../assets/eve-logo.png';
 import goparkinLogo from '../assets/goparkin-logo.png';
@@ -65,6 +66,7 @@ function popupHtml(l: ChargerMapLocation): string {
       <div style="flex:1;min-width:0">
         <div style="font-family:Figtree;font-weight:700;color:#1a1a1a;font-size:13px;line-height:1.3">${escapeHtml(l.name)}</div>
         ${l.address ? `<div style="font-family:Figtree;font-size:11px;color:#5B6B7A;margin-top:4px;line-height:1.45">${escapeHtml(l.address)}</div>` : ''}
+        <a href="${googleMapsDirections({ address: l.address, lat: l.latitude, lng: l.longitude })}" target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;gap:4px;margin-top:8px;font-family:Figtree;font-size:11px;font-weight:700;color:${C.green};text-decoration:none">Directions &#8599;</a>
       </div>
       ${logos}
     </div>
