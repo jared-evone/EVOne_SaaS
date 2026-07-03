@@ -685,6 +685,26 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
   const avgBase = priced.length ? priced.reduce((s, c) => s + Number(c.base_rate), 0) / priced.length : 0;
   const withDiscount = priced.filter((c) => Number(c.discounted_rate) < Number(c.base_rate)).length;
   const visible = companies.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()));
+
+  // Export the pricing table (respecting the current search) as CSV.
+  const exportCsv = () => {
+    const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
+    const rows = [
+      ['Company Name', 'Base Rate', 'Threshold (kWh)', 'Discounted Rate'],
+      ...[...visible].sort((a, b) => a.name.localeCompare(b.name)).map((c) => [
+        c.name, Number(c.base_rate), Number(c.threshold_kwh), Number(c.discounted_rate),
+      ]),
+    ];
+    const csv = rows.map((r) => r.map(esc).join(',')).join('\r\n');
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `corporate-companies-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  };
+
   const totalPages = Math.max(1, Math.ceil(visible.length / PER_PAGE));
   const safePage = Math.min(page, totalPages);
   const paged = visible.slice((safePage - 1) * PER_PAGE, safePage * PER_PAGE);
@@ -762,6 +782,11 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
               </button>
             </>
           )}
+          <button onClick={exportCsv} disabled={visible.length === 0}
+            title="Export company name, base rate, threshold & discounted rate as CSV"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 16px', borderRadius: 10, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: visible.length === 0 ? 'default' : 'pointer', opacity: visible.length === 0 ? 0.5 : 1 }}>
+            <DownloadIcon size={14} strokeWidth={2.25} /> Export
+          </button>
           {canEdit && (
             <button onClick={() => setAdding(true)}
               style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
