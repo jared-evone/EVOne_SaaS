@@ -86,9 +86,13 @@ export function InvoiceIngestModal({ onClose, onDone }: { onClose: () => void; o
   };
 
   const handleFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []);
+    // Folder picks (webkitdirectory) recurse into subfolders and include every file type,
+    // so keep only PDFs.
+    const picked = Array.from(e.target.files ?? []);
+    const files = picked.filter((f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
     e.target.value = '';
-    if (!files.length) return;
+    if (!picked.length) return;
+    if (!files.length) { setError('No PDF files found in that selection.'); return; }
     setError(null); setResult(null);
     setParsing({ done: 0, total: files.length });
     const names = customers.map((c) => c.name);
@@ -272,17 +276,27 @@ export function InvoiceIngestModal({ onClose, onDone }: { onClose: () => void; o
           <div>
             <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>Bulk Upload Invoices</div>
             <div style={{ fontSize: 12, color: C.slate, marginTop: 2, maxWidth: 760, lineHeight: 1.5 }}>
-              Drop a batch of NetSuite invoice PDFs — Claude reads each, matches it to a customer & registry, and attaches the PDF to that registry's invoice documents. No match → create a customer + registry, prefilled for your approval. Review every row before importing.
+              Select many invoice PDFs or import a whole folder (subfolders included — non-PDFs are ignored). Claude reads each, matches it to a customer & registry, and attaches the PDF to that registry's invoice documents. No match → create a customer + registry, prefilled for your approval. Review every row before importing.
             </div>
           </div>
           <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
         </div>
 
-        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '16px', borderRadius: 12, border: `1.5px dashed ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: busy ? 'default' : 'pointer', flexShrink: 0, opacity: busy ? 0.6 : 1 }}>
-          <UploadIcon size={16} strokeWidth={2.25} />
-          {rows.length ? 'Add more invoice PDFs' : 'Select invoice PDFs (you can pick many)'}
-          <input type="file" accept="application/pdf,.pdf" multiple disabled={busy} style={{ display: 'none' }} onChange={handleFiles} />
-        </label>
+        <div style={{ display: 'flex', gap: 10, flexShrink: 0, opacity: busy ? 0.6 : 1 }}>
+          <label style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '16px', borderRadius: 12, border: `1.5px dashed ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: busy ? 'default' : 'pointer' }}>
+            <UploadIcon size={16} strokeWidth={2.25} />
+            {rows.length ? 'Add more invoice PDFs' : 'Select invoice PDFs (pick many)'}
+            <input type="file" accept="application/pdf,.pdf" multiple disabled={busy} style={{ display: 'none' }} onChange={handleFiles} />
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '16px 20px', borderRadius: 12, border: '1.5px dashed #EBEBEB', background: C.seasalt, color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: busy ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>
+            <UploadIcon size={16} strokeWidth={2.25} />
+            Import a folder
+            {/* webkitdirectory recurses into subfolders; PDFs are filtered in handleFiles */}
+            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+            <input type="file" disabled={busy} style={{ display: 'none' }} onChange={handleFiles}
+              {...({ webkitdirectory: '', directory: '' } as any)} />
+          </label>
+        </div>
 
         {parsing && <div style={{ background: C.seasalt, borderRadius: 10, padding: '10px 14px', fontSize: 13, color: C.slate, fontWeight: 600, flexShrink: 0 }}>Reading PDFs with Claude… {parsing.done} / {parsing.total}</div>}
         {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 13, fontWeight: 600, flexShrink: 0 }}>{error}</div>}
