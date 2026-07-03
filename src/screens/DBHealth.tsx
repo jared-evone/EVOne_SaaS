@@ -24,8 +24,10 @@ interface StorageStatsRow {
   total_bytes: number;
 }
 
-const FREE_TIER_DB_BYTES      = 500 * 1024 * 1024;       // 500 MB
-const FREE_TIER_STORAGE_BYTES = 1 * 1024 * 1024 * 1024;  // 1 GB
+// Supabase Pro plan included quotas (org confirmed on the "pro" plan).
+const PLAN_NAME          = 'Pro plan';
+const PLAN_DB_BYTES      = 8 * 1024 * 1024 * 1024;     // 8 GB database (Pro)
+const PLAN_STORAGE_BYTES = 100 * 1024 * 1024 * 1024;   // 100 GB storage (Pro)
 
 function fmtBytes(n: number): string {
   if (n === 0) return '0 B';
@@ -85,8 +87,8 @@ export function ScreenDBHealth() {
   const totalRows = stats?.reduce((s, r) => s + Number(r.row_count ?? 0), 0) ?? 0;
   const totalStorageBytes = buckets.reduce((s, b) => s + b.totalBytes, 0);
   const totalFiles = buckets.reduce((s, b) => s + b.fileCount, 0);
-  const dbPct      = Math.min(100, Math.round((dbSize / FREE_TIER_DB_BYTES) * 100));
-  const storagePct = Math.min(100, Math.round((totalStorageBytes / FREE_TIER_STORAGE_BYTES) * 100));
+  const dbPct      = Math.min(100, Math.round((dbSize / PLAN_DB_BYTES) * 100));
+  const storagePct = Math.min(100, Math.round((totalStorageBytes / PLAN_STORAGE_BYTES) * 100));
 
   const connOk = !error && stats !== null;
 
@@ -120,16 +122,16 @@ export function ScreenDBHealth() {
 
       {/* KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
-        <KPICard label="Database Size"   value={fmtBytes(dbSize)} sub={`${dbPct}% of free tier (500 MB)`} accent />
+        <KPICard label="Database Size"   value={fmtBytes(dbSize)} sub={`${dbPct}% of ${PLAN_NAME} (${fmtBytes(PLAN_DB_BYTES)})`} accent />
         <KPICard label="Total Rows"      value={fmtCount(totalRows)} sub={`across ${stats?.length ?? 0} tables`} />
-        <KPICard label="Storage Used"    value={fmtBytes(totalStorageBytes)} sub={`${storagePct}% of free tier (1 GB)`} />
+        <KPICard label="Storage Used"    value={fmtBytes(totalStorageBytes)} sub={`${storagePct}% of ${PLAN_NAME} (${fmtBytes(PLAN_STORAGE_BYTES)})`} />
         <KPICard label="Total Files"     value={fmtCount(totalFiles)} sub={`in ${buckets.length} bucket${buckets.length === 1 ? '' : 's'}`} />
       </div>
 
       {/* Usage bars */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 14 }}>
-        <UsageBar label="Database" pct={dbPct} used={dbSize} total={FREE_TIER_DB_BYTES} />
-        <UsageBar label="Storage"  pct={storagePct} used={totalStorageBytes} total={FREE_TIER_STORAGE_BYTES} />
+        <UsageBar label="Database" pct={dbPct} used={dbSize} total={PLAN_DB_BYTES} />
+        <UsageBar label="Storage"  pct={storagePct} used={totalStorageBytes} total={PLAN_STORAGE_BYTES} />
       </div>
 
       {/* Tables */}
@@ -240,7 +242,7 @@ function UsageBar({ label, pct, used, total }: { label: string; pct: number; use
       </div>
       <div style={{ fontSize: 11, color: C.slate, display: 'flex', justifyContent: 'space-between' }}>
         <span>{fmtBytes(used)} used</span>
-        <span>of {fmtBytes(total)} free-tier ceiling</span>
+        <span>of {fmtBytes(total)} {PLAN_NAME} ceiling</span>
       </div>
     </div>
   );
