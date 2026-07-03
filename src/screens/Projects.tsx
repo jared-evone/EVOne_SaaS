@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
@@ -44,6 +44,13 @@ interface Project {
   position: number;
   created_at: string;
   updated_at: string;
+  // One-way "taken up for charger entry" claim — only meaningful while the registry has 0 chargers.
+  charger_entry_claimed_by: string | null;
+  charger_entry_claimed_at: string | null;
+  // Flagged (by an editor) as a mistaken registry for an admin to review & delete. Toggleable.
+  deletion_flagged_by: string | null;
+  deletion_flagged_at: string | null;
+  deletion_flag_reason: string | null;
 }
 
 interface CustomerLite {
@@ -132,8 +139,17 @@ function SearchSelect({ value, options, onChange, disabled, placeholder }: {
 
 type StatusFilter = 'all' | ProjectStatus;
 
+// Registries are evenly split across these three for charger keying-in (deterministic
+// round-robin over a stable created-at order — see assigneeOf).
+const ASSIGNEES = ['Nay', 'Vivian', 'Yi Lin'] as const;
+const ASSIGNEE_COLORS: Record<string, { bg: string; color: string }> = {
+  'Nay':    { bg: '#E3F0FF', color: '#1A62C0' },
+  'Vivian': { bg: '#F0E8FF', color: '#6B21A8' },
+  'Yi Lin': { bg: '#FFF0E0', color: '#B45309' },
+};
+
 export function ScreenProjects() {
-  const { can, isAdmin } = usePermissions();
+  const { can, isAdmin, user } = usePermissions();
   const canEdit   = can('projects', 'can_edit');
   const canDelete = can('projects', 'can_delete');
 
@@ -145,6 +161,7 @@ export function ScreenProjects() {
   const [error, setError]         = useState<string | null>(null);
   const [search, setSearch]       = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [assigneeFilter, setAssigneeFilter] = useState<string>('all');
   const [adding, setAdding]       = useState(false);
   const [importingInvoices, setImportingInvoices] = useState(false);
   const [viewingId, setViewingId] = useState<string | null>(null);
@@ -178,8 +195,19 @@ export function ScreenProjects() {
 
   const customerById = (id: string | null) => id ? customers.find((c) => c.id === id) ?? null : null;
 
+  // Evenly split registries across the assignees, round-robin over a stable created-at order
+  // so each person owns ~1/3 and the assignment is the same on every load.
+  const assigneeOf = useMemo(() => {
+    const ordered = [...projects].sort((a, b) =>
+      a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.id.localeCompare(b.id));
+    const m = new Map<string, string>();
+    ordered.forEach((p, i) => m.set(p.id, ASSIGNEES[i % ASSIGNEES.length]));
+    return m;
+  }, [projects]);
+
   const visible = projects.filter((p) => {
     if (statusFilter !== 'all' && p.status !== statusFilter) return false;
+    if (assigneeFilter !== 'all' && assigneeOf.get(p.id) !== assigneeFilter) return false;
     if (!search) return true;
     const q = search.toLowerCase();
     const customerName = customerById(p.customer_id)?.name ?? '';
@@ -190,6 +218,31 @@ export function ScreenProjects() {
     const { data: created } = await supabase.from('projects').insert(data).select().single();
     await fetchAll();
     if (created) setViewingId(created.id);
+  };
+
+  // Mark an empty registry as taken up for charger entry. One-way: once claimed it can't be undone.
+  const claimChargerEntry = async (p: Project) => {
+    if (p.charger_entry_claimed_at) return;
+    if (!window.confirm(`Take up "${p.name}" to key in its charger? This locks it to you and can’t be undone.`)) return;
+    await supabase.from('projects')
+      .update({ charger_entry_claimed_by: user.full_name || user.email, charger_entry_claimed_at: new Date().toISOString() })
+      .eq('id', p.id);
+    await fetchAll();
+  };
+
+  // Flag a mistaken registry for an admin to delete (e.g. an invoice that wasn't a charger
+  // procurement), or clear the flag. Editors can toggle; admins act on it via delete.
+  const toggleDeletionFlag = async (p: Project) => {
+    if (p.deletion_flagged_at) {
+      await supabase.from('projects').update({ deletion_flagged_by: null, deletion_flagged_at: null, deletion_flag_reason: null }).eq('id', p.id);
+    } else {
+      const reason = window.prompt('Flag this registry for an admin to delete. Reason (optional):');
+      if (reason === null) return; // cancelled
+      await supabase.from('projects')
+        .update({ deletion_flagged_by: user.full_name || user.email, deletion_flagged_at: new Date().toISOString(), deletion_flag_reason: reason.trim() || null })
+        .eq('id', p.id);
+    }
+    await fetchAll();
   };
 
   if (viewingId) {
@@ -227,6 +280,22 @@ export function ScreenProjects() {
             </button>
           ))}
         </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {(['all', ...ASSIGNEES] as const).map((a) => {
+            const active = assigneeFilter === a;
+            const col = a !== 'all' ? ASSIGNEE_COLORS[a] : null;
+            return (
+              <button key={a} onClick={() => setAssigneeFilter(a)}
+                style={{ padding: '7px 14px', borderRadius: 99,
+                  border: `1px solid ${active ? (col?.color ?? C.green) : '#EBEBEB'}`,
+                  background: active ? (col?.bg ?? C.green) : C.white,
+                  color: active ? (col?.color ?? C.white) : C.slate,
+                  fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                {a === 'all' ? 'All assignees' : a}
+              </button>
+            );
+          })}
+        </div>
         <div style={{ position: 'relative', width: 260 }}>
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search chargers…"
             style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
@@ -253,26 +322,30 @@ export function ScreenProjects() {
           <table style={{ width: '100%', minWidth: 600, borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
-                {['Customer', 'Status', 'Sites', 'Chargers', 'Updated'].map((h) => (
+                {['Customer', 'Status', 'Sites', 'Chargers', 'Assigned', 'Take-up', 'Flag', 'Updated'].map((h) => (
                   <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={5} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</td></tr>
+                <tr><td colSpan={8} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</td></tr>
               ) : visible.length === 0 ? (
-                <tr><td colSpan={5} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
+                <tr><td colSpan={8} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
                   {projects.length === 0 ? 'No customers yet. Click "+ New Registration" to add one.' : 'No customers match your filters.'}
                 </td></tr>
               ) : visible.map((p) => {
                 const palette = PROJECT_STATUS_PALETTE[p.status];
                 const cust = customerById(p.customer_id);
                 const open = () => setViewingId(p.id);
+                const chargerCount = chargerCounts[p.id] ?? 0;
+                const claimed = !!p.charger_entry_claimed_at;
+                const flagged = !!p.deletion_flagged_at;
+                const baseBg = flagged ? '#FDF2F2' : 'transparent';
                 return (
-                  <tr key={p.id} style={{ borderBottom: '1px solid #F3F3F3' }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = '#FAFAFA')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
+                  <tr key={p.id} style={{ borderBottom: '1px solid #F3F3F3', background: baseBg }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = flagged ? '#FBE9E9' : '#FAFAFA')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = baseBg)}>
                     <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <span style={{ fontWeight: 700, color: '#1a1a1a', fontSize: 13 }}>{p.name}</span>
@@ -292,7 +365,40 @@ export function ScreenProjects() {
                       </span>
                     </td>
                     <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer', fontSize: 13, color: '#1a1a1a' }}>{siteCounts[p.id] ?? 0}</td>
-                    <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.green }}>{chargerCounts[p.id] ?? 0}</td>
+                    <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.green }}>{chargerCount}</td>
+                    <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer' }}>
+                      {(() => {
+                        const a = assigneeOf.get(p.id);
+                        const col = a ? ASSIGNEE_COLORS[a] : null;
+                        return a
+                          ? <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, background: col?.bg, color: col?.color, whiteSpace: 'nowrap' }}>{a}</span>
+                          : <span style={{ color: C.slate, fontSize: 13 }}>—</span>;
+                      })()}
+                    </td>
+                    <td style={{ padding: '13px 16px' }}>
+                      {chargerCount > 0 ? (
+                        <span style={{ color: C.slate, fontSize: 13 }}>—</span>
+                      ) : (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                          title={claimed ? `Taken up by ${p.charger_entry_claimed_by ?? '—'} · ${new Date(p.charger_entry_claimed_at as string).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}` : 'Check to take up keying in this charger (can’t be undone)'}>
+                          <input type="checkbox" checked={claimed} disabled={claimed || !canEdit}
+                            onChange={() => void claimChargerEntry(p)}
+                            style={{ width: 16, height: 16, cursor: (claimed || !canEdit) ? 'default' : 'pointer', accentColor: C.green }} />
+                          {claimed && <span style={{ fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 130 }}>{p.charger_entry_claimed_by}</span>}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ padding: '13px 16px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                        title={flagged
+                          ? `Flagged for deletion by ${p.deletion_flagged_by ?? '—'} · ${new Date(p.deletion_flagged_at as string).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}${p.deletion_flag_reason ? ` · ${p.deletion_flag_reason}` : ''}`
+                          : 'Flag this registry for an admin to review & delete'}>
+                        <input type="checkbox" checked={flagged} disabled={!canEdit}
+                          onChange={() => void toggleDeletionFlag(p)}
+                          style={{ width: 16, height: 16, cursor: canEdit ? 'pointer' : 'default', accentColor: '#C0321A' }} />
+                        {flagged && <span style={{ fontSize: 10, fontWeight: 700, color: '#C0321A', background: '#FDEAEA', padding: '2px 8px', borderRadius: 99, whiteSpace: 'nowrap' }}>To delete</span>}
+                      </div>
+                    </td>
                     <td onClick={open} style={{ padding: '13px 16px', color: C.slate, fontSize: 12, whiteSpace: 'nowrap', cursor: 'pointer' }}>
                       {new Date(p.updated_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
                     </td>
@@ -669,7 +775,7 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
         {canDelete && (
           <button onClick={() => setConfirmDelete(true)}
             style={{ marginLeft: 'auto', padding: '7px 14px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-            Delete charger
+            Delete registry
           </button>
         )}
       </div>
@@ -1028,8 +1134,8 @@ function OverviewTab({ project, customers, customer, contacts, sites, lta, onPic
       const e = byCharger.get(c.id) ?? { A: [], D: [] };
       const performedA = e.A.map((r) => r.performed_at);
       const performedD = e.D.map((r) => r.performed_at);
-      if (ltaSchedule(c.turn_on_date, formAMonths, performedA).overdueCount > 0) formADue++;
-      if (!isResidential && ltaSchedule(c.turn_on_date, 12, performedD).overdueCount > 0) formADue++;
+      if (ltaSchedule(ltaAnchor(c), formAMonths, performedA).overdueCount > 0) formADue++;
+      if (!isResidential && ltaSchedule(ltaAnchor(c), 12, performedD).overdueCount > 0) formADue++;
       // Newest record (rows arrive newest-first) drives the "invoice missing" flag.
       if (e.A[0] && !e.A[0].invoice_path) invoiceMissing++;
       if (!isResidential && e.D[0] && !e.D[0].invoice_path) invoiceMissing++;
@@ -1595,7 +1701,7 @@ function FilesTab({ projectId, files, sites, brandModels, customer, canEdit, can
       {targetSite && (
         <ChargerModal
           title="New Registration"
-          initial={blankCharger()}
+          initial={{ ...blankCharger(), asset_tag: isResidential ? 'Home Charger' : '' }}
           siteName={targetSite.name}
           isResidential={isResidential}
           brandModels={brandModels}
@@ -1948,8 +2054,8 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
                 charger={ch}
                 selected={selectedId === ch.id}
                 flags={{
-                  formADue: ltaSchedule(ch.turn_on_date, formAMonths, l.A).overdueCount > 0,
-                  formDDue: !isResidential && ltaSchedule(ch.turn_on_date, 12, l.D).overdueCount > 0,
+                  formADue: ltaSchedule(ltaAnchor(ch), formAMonths, l.A).overdueCount > 0,
+                  formDDue: !isResidential && ltaSchedule(ltaAnchor(ch), 12, l.D).overdueCount > 0,
                   form1Missing: !ch.form_1_path,
                 }}
                 onClick={() => setSelectedId(selectedId === ch.id ? null : ch.id)}
@@ -2169,8 +2275,8 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
   const performedD = ltaRecords.filter((r) => r.form_type === 'D').map((r) => r.performed_at);
   const overrideA = resolveDueOverride(charger.form_a_override_date, charger.form_a_override_count, performedA.length);
   const overrideD = resolveDueOverride(charger.form_d_override_date, charger.form_d_override_count, performedD.length);
-  const schedA = ltaSchedule(charger.turn_on_date, formAMonths, performedA);
-  const schedD = ltaSchedule(charger.turn_on_date, 12, performedD);
+  const schedA = ltaSchedule(ltaAnchor(charger), formAMonths, performedA);
+  const schedD = ltaSchedule(ltaAnchor(charger), 12, performedD);
   const formADate = overrideA ?? schedA.nextDue;
   const formDDate = overrideD ?? schedD.nextDue;
   const formA = daysFromToday(formADate);
@@ -2205,7 +2311,7 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
     return a;
   };
   const dueSubtitle = (date: string | null, days: number | null): React.ReactNode => {
-    if (!date) return 'Set registration date';
+    if (!date) return 'Set a registration or procurement date';
     const due = <>Next due {fmtDate(date)}{days != null && <> · {relDays(days)}</>}</>;
     return underContract ? due : <><span style={{ color: PURPLE, fontWeight: 700 }}>No contract</span> · {due}</>;
   };
@@ -3984,6 +4090,12 @@ interface LtaScheduleResult {
   overdueCount: number;    // past periods (due < today) with no inspection performed
 }
 
+// LTA schedule anchor: the registration date, falling back to the procurement date when
+// registration hasn't been recorded yet — so the first Form A/D due still computes.
+function ltaAnchor(c: { turn_on_date: string | null; procurement_date: string | null }): string | null {
+  return c.turn_on_date ?? c.procurement_date;
+}
+
 // Build the LTA schedule for one form type. The schedule is fixed at registration +
 // n × interval. An inspection performed within a period's window (D_{n-1}, D_n] marks
 // that period performed (window match — so a late inspection lands in the period it
@@ -4203,14 +4315,17 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
   const handleSave = async () => {
     setSaving(true);
     const turnOn = form.turn_on_date || null;
+    // The LTA schedule anchors on the registration date, or the procurement date when
+    // registration isn't set yet, so the first Form A/D still computes.
+    const anchor = turnOn || form.procurement_date || null;
     await onSave({
       asset_tag:               form.asset_tag.trim(),
       brand_model:             form.brand_model && form.brand_model.trim() ? form.brand_model.trim() : null,
       registration_code:       form.registration_code && form.registration_code.trim() ? form.registration_code.trim() : null,
       procurement_date:        form.procurement_date || null,
       turn_on_date:            turnOn,
-      form_a_next_date:        nextCycleDate(turnOn, isResidential ? 24 : 6),
-      form_d_next_date:        isResidential ? null : nextCycleDate(turnOn, 12),
+      form_a_next_date:        nextCycleDate(anchor, isResidential ? 24 : 6),
+      form_d_next_date:        isResidential ? null : nextCycleDate(anchor, 12),
       // Warranty starts on the registration date; the end is editable (defaults to start + years).
       warranty_start_date:     turnOn ? turnOn : null,
       warranty_end_date:       form.warranty_end_date || null,
@@ -4309,9 +4424,9 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
             </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
-            <ReadOnlyField label="Next Form A (auto)" value={fmtDate(nextCycleDate(form.turn_on_date, isResidential ? 24 : 6))}  placeholder="Set registration date" />
+            <ReadOnlyField label="Next Form A (auto)" value={fmtDate(nextCycleDate(form.turn_on_date || form.procurement_date, isResidential ? 24 : 6))}  placeholder="Set registration or procurement date" />
             {!isResidential && (
-              <ReadOnlyField label="Next Form D (auto)" value={fmtDate(nextCycleDate(form.turn_on_date, 12))} placeholder="Set registration date" />
+              <ReadOnlyField label="Next Form D (auto)" value={fmtDate(nextCycleDate(form.turn_on_date || form.procurement_date, 12))} placeholder="Set registration or procurement date" />
             )}
           </div>
         </div>
