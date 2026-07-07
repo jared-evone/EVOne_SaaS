@@ -2,17 +2,14 @@ import { useState } from 'react';
 import { C } from '../theme';
 import { Logo } from '../components/Logo';
 import { Power, Users, Database } from 'lucide-react';
-import { DEPARTMENT_LABELS, type Department } from '../permissions';
 import { ScreenSettings } from './Settings';
 import { ScreenDBHealth } from './DBHealth';
 
-const DEPARTMENTS: Department[] = ['cpo', 'sales', 'tech', 'pm'];
-
 // Hidden cross-department console reached via superadmin_login (the 1234 entry).
-// Centralizes Users & Permissions (per department) and DB Health for everyone.
+// The single "main manager": one account per email, access toggled per screen
+// across every department, plus DB Health.
 export function SuperAdminConsole({ onSignOut }: { onSignOut: () => void }) {
   const [view, setView] = useState<'users' | 'dbhealth'>('users');
-  const [dept, setDept] = useState<Department>('cpo');
 
   const tabBtn = (active: boolean): React.CSSProperties => ({
     display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 18px', borderRadius: 10,
@@ -36,7 +33,7 @@ export function SuperAdminConsole({ onSignOut }: { onSignOut: () => void }) {
       <div style={{ padding: 28, display: 'flex', flexDirection: 'column', gap: 20 }}>
         <div>
           <div style={{ fontSize: 18, fontWeight: 700, color: C.green, letterSpacing: '-0.02em' }}>Superadmin Console</div>
-          <div style={{ fontSize: 13, color: C.slate, marginTop: 2 }}>Manage users, roles &amp; permissions across every department, and database health.</div>
+          <div style={{ fontSize: 13, color: C.slate, marginTop: 2 }}>One account per email — toggle each user's access across every department, and monitor database health.</div>
         </div>
 
         {/* View switch */}
@@ -49,24 +46,7 @@ export function SuperAdminConsole({ onSignOut }: { onSignOut: () => void }) {
           </button>
         </div>
 
-        {view === 'users' && (
-          <>
-            {/* Department selector */}
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {DEPARTMENTS.map((d) => (
-                <button key={d} onClick={() => setDept(d)}
-                  style={{
-                    padding: '8px 16px', borderRadius: 99, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer',
-                    border: `1px solid ${dept === d ? C.green : '#EBEBEB'}`,
-                    background: dept === d ? C.green : C.white, color: dept === d ? C.white : C.slate,
-                  }}>
-                  {DEPARTMENT_LABELS[d]}
-                </button>
-              ))}
-            </div>
-            <ScreenSettings key={dept} departmentOverride={dept} />
-          </>
-        )}
+        {view === 'users' && <ScreenSettings />}
 
         {view === 'dbhealth' && <ScreenDBHealth />}
       </div>

@@ -147,12 +147,6 @@ export function ChargingOverview() {
     [filteredRows, granularity, rangeMonths],
   );
 
-  const carparks = useMemo(() => {
-    const s = new Set<string>();
-    for (const r of filteredRows) if (r.carpark_code) s.add(r.carpark_code);
-    return s.size;
-  }, [filteredRows]);
-
   // Selected month's daily average sessions per carpark:
   //   sessions that month ÷ #carparks ÷ days in the month (days elapsed so far if it's
   //   the current, unfinished month).
@@ -276,7 +270,6 @@ export function ChargingOverview() {
       {/* Summary line */}
       <div style={{ fontSize: 13, color: C.slate, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
         <span><strong style={{ color: '#1a1a1a' }}>{rangeLabel}</strong> · {granLabel} totals across {carparkActive ? 'selected' : 'all'} carparks · <strong style={{ color: '#1a1a1a' }}>successful sessions only</strong></span>
-        <span>{carparks} carpark{carparks === 1 ? '' : 's'}</span>
         <span>{filteredRows.length.toLocaleString()} session{filteredRows.length === 1 ? '' : 's'}</span>
         {!loading && (
           <button onClick={refresh}

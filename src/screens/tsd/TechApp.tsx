@@ -27,9 +27,10 @@ type TabKey = 'available' | 'mine' | 'all' | 'unassigned';
 
 export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
   const store = useWorkOrderStore();
-  const { user } = usePermissions();
+  const { user, can } = usePermissions();
   const isMobileAdmin = useIsMobile();
-  const isAdmin = user.role_name === 'admin';
+  // Admin view = can manage work orders (grants are per-user; roles are retired).
+  const isAdmin = can('tsd_workorders', 'can_edit');
   const me = user.full_name || DEMO_TECHNICIAN;
   const [activeId, setActiveId] = useState<string | null>(null);
   const [tab, setTab] = useState<TabKey>('mine');

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { C } from '../../theme';
 import { supabase } from '../../lib/supabase';
-import { usePermissions } from '../../permissions';
+import { usePermissions, DEPARTMENT_SCREENS } from '../../permissions';
 import { useWorkOrderStore } from '../../workOrderStore';
 import { AvatarCropper } from '../../components/AvatarCropper';
 import { Search, UserPlus } from 'lucide-react';
@@ -14,12 +14,26 @@ interface Technician {
   photo_path: string | null;
   email: string | null;
   app_user_id: string | null;
-  app_users?: { email: string; app_roles: { label: string } | null } | null;
+  app_users?: { email: string } | null;
   created_at: string;
 }
 
 function fmtDate(s: string): string {
   return new Date(s).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+// Accounts are one-per-email and span departments now. Only remove a login when
+// it has no viewable screens outside the Technical Service set — otherwise the
+// person keeps signing in for their other departments and we just unlink here.
+async function removeLoginIfTechOnly(appUserId: string): Promise<void> {
+  const { data } = await supabase
+    .from('app_user_permissions')
+    .select('screen_key, can_view')
+    .eq('user_id', appUserId);
+  const techKeys = new Set<string>(DEPARTMENT_SCREENS.tech);
+  const usedElsewhere = ((data ?? []) as { screen_key: string; can_view: boolean }[])
+    .some((g) => g.can_view && !techKeys.has(g.screen_key));
+  if (!usedElsewhere) await supabase.from('app_users').delete().eq('id', appUserId);
 }
 
 function photoUrl(path: string): string {
@@ -62,7 +76,7 @@ export function TechniciansAdmin() {
   const load = async () => {
     const { data, error: err } = await supabase
       .from('technicians')
-      .select('*, app_users(email, app_roles(label))')
+      .select('*, app_users(email)')
       .order('name');
     if (err) setError(err.message);
     setTechs((data as Technician[]) ?? []);
@@ -92,7 +106,7 @@ export function TechniciansAdmin() {
     setBusy(true);
     setError(null);
     const tech = techs.find((t) => t.id === id);
-    if (tech?.app_user_id) await supabase.from('app_users').delete().eq('id', tech.app_user_id);
+    if (tech?.app_user_id) await removeLoginIfTechOnly(tech.app_user_id);
     const { error: err } = await supabase.from('technicians').delete().eq('id', id);
     if (err) setError(err.message);
     else { setConfirmDeleteId(null); await load(); }
@@ -161,12 +175,7 @@ export function TechniciansAdmin() {
                   </td>
                   <td style={td}>
                     {t.app_users?.email ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                        <span style={{ color: '#1a1a1a', fontFamily: 'monospace', fontSize: 12 }}>{t.app_users.email}</span>
-                        {t.app_users.app_roles?.label && (
-                          <span style={{ alignSelf: 'flex-start', background: C.honeydew, color: C.green, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99 }}>{t.app_users.app_roles.label}</span>
-                        )}
-                      </div>
+                      <span style={{ color: '#1a1a1a', fontFamily: 'monospace', fontSize: 12 }}>{t.app_users.email}</span>
                     ) : (
                       <span style={{ color: C.slate, fontStyle: 'italic', fontSize: 12 }}>No login</span>
                     )}
@@ -240,24 +249,18 @@ function TechnicianModal({ initial, existingNames, onClose, onSaved }: Technicia
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // Login & permission (an app_users account in the 'tech' department).
+  // Login (an app_users account; access is granted per user, seeded with the
+  // Technician screen — the superadmin console can extend it later).
   const [loginEmail, setLoginEmail] = useState(initial?.email ?? '');
   const [password, setPassword] = useState('');
-  const [roleId, setRoleId] = useState('');
-  const [roles, setRoles] = useState<{ id: string; label: string }[]>([]);
-
-  useEffect(() => {
-    supabase.from('app_roles').select('id, label').eq('department', 'tech').order('label')
-      .then(({ data }) => setRoles((data as { id: string; label: string }[]) ?? []));
-  }, []);
 
   useEffect(() => {
     if (!initial?.app_user_id) return;
-    // Passwords are hashed server-side and not readable — prefill email/role only.
-    supabase.from('app_users').select('email, role_id').eq('id', initial.app_user_id).maybeSingle()
+    // Passwords are hashed server-side and not readable — prefill the email only.
+    supabase.from('app_users').select('email').eq('id', initial.app_user_id).maybeSingle()
       .then(({ data }) => {
-        const u = data as { email: string; role_id: string } | null;
-        if (u) { setLoginEmail(u.email); setRoleId(u.role_id); }
+        const u = data as { email: string } | null;
+        if (u) setLoginEmail(u.email);
       });
   }, [initial?.app_user_id]);
 
@@ -275,7 +278,7 @@ function TechnicianModal({ initial, existingNames, onClose, onSaved }: Technicia
     const wantsLogin = !!loginEmail.trim();
     const editingLogin = !!initial?.app_user_id;
     // Password required only when creating a new login; on an existing one, blank keeps the current password.
-    if (wantsLogin && (!roleId || (!editingLogin && !password.trim()))) { setErr('A new login needs an email, password and role.'); return; }
+    if (wantsLogin && !editingLogin && !password.trim()) { setErr('A new login needs an email and a password.'); return; }
     setSaving(true);
     setErr(null);
     try {
@@ -287,23 +290,42 @@ function TechnicianModal({ initial, existingNames, onClose, onSaved }: Technicia
       let appUserId = initial?.app_user_id ?? null;
       if (wantsLogin) {
         const userPayload = {
-          department: 'tech', email: loginEmail.trim().toLowerCase(), full_name: n,
-          role_id: roleId, is_active: true,
+          department: 'tech', email: loginEmail.trim().toLowerCase(), full_name: n, is_active: true,
         };
         if (appUserId) {
           const { error } = await supabase.from('app_users').update({ ...userPayload, updated_at: new Date().toISOString() }).eq('id', appUserId);
           if (error) throw error;
         } else {
-          const { data: created, error } = await supabase.from('app_users').insert(userPayload).select('id').single();
-          if (error) throw error;
-          appUserId = (created as { id: string }).id;
+          // Emails are globally unique — if this person already has an account
+          // (possibly from another department), link it instead of inserting.
+          const { data: existing } = await supabase.from('app_users')
+            .select('id').eq('email', userPayload.email).maybeSingle();
+          if (existing) {
+            appUserId = (existing as { id: string }).id;
+            const { error } = await supabase.from('app_users').update({ is_active: true, updated_at: new Date().toISOString() }).eq('id', appUserId);
+            if (error) throw error;
+          } else {
+            const { data: created, error } = await supabase.from('app_users').insert(userPayload).select('id').single();
+            if (error) throw error;
+            appUserId = (created as { id: string }).id;
+          }
+        }
+        // Access is per-user (app_user_permissions). Make sure the account can at
+        // least open the Technician app; anything more is granted in the
+        // superadmin console. Never removes access the person already has.
+        const { data: grants } = await supabase.from('app_user_permissions')
+          .select('screen_key').eq('user_id', appUserId).eq('screen_key', 'tsd_technician');
+        if (!(grants ?? []).length) {
+          const { error: permErr } = await supabase.from('app_user_permissions')
+            .insert({ user_id: appUserId, screen_key: 'tsd_technician', can_view: true, can_edit: false, can_delete: false });
+          if (permErr) throw permErr;
         }
         if (password.trim()) {
           const { error: pwErr } = await supabase.rpc('app_set_password', { p_user_id: appUserId, p_password: password.trim() });
           if (pwErr) throw pwErr;
         }
       } else if (appUserId) {
-        await supabase.from('app_users').delete().eq('id', appUserId);
+        await removeLoginIfTechOnly(appUserId);
         appUserId = null;
       }
 
@@ -379,30 +401,21 @@ function TechnicianModal({ initial, existingNames, onClose, onSaved }: Technicia
           </div>
         </div>
 
-        {/* Login & Permission */}
+        {/* Login */}
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div>
-            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Login & Permission</div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Login</div>
             <div style={{ fontSize: 12, color: C.slate, marginTop: 4 }}>
-              Optional. Give this technician a login — they sign in under <strong>Technical Service</strong> with this email & password, and the role sets what they can access. Leave the email blank for no login.
+              Optional. Give this technician a login — they sign in under <strong>Technical Service</strong> with this email & password and get the Technician app. Any further access is granted by the superadmin. Leave the email blank for no login.
             </div>
           </div>
           <div>
             <label style={label}>Login Email</label>
             <input type="email" value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} placeholder="tech@evone.com.sg" style={{ ...field, background: C.white }} />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-            <div>
-              <label style={label}>{initial?.app_user_id ? 'Reset Password' : 'Password'}</label>
-              <input type="text" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={initial?.app_user_id ? 'Leave blank to keep current' : 'set a password'} style={{ ...field, background: C.white }} />
-            </div>
-            <div>
-              <label style={label}>Role / Permission</label>
-              <select value={roleId} onChange={(e) => setRoleId(e.target.value)} style={{ ...field, background: C.white, cursor: 'pointer', fontFamily: 'Figtree' }}>
-                <option value="">— Select role —</option>
-                {roles.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
-              </select>
-            </div>
+          <div>
+            <label style={label}>{initial?.app_user_id ? 'Reset Password' : 'Password'}</label>
+            <input type="text" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={initial?.app_user_id ? 'Leave blank to keep current' : 'set a password'} style={{ ...field, background: C.white }} />
           </div>
         </div>
 

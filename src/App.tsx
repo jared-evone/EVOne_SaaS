@@ -152,6 +152,8 @@ interface DashboardProps {
 
 function Dashboard({ onSignOut }: DashboardProps) {
   const { can, user } = usePermissions();
+  // The session is scoped to the department picked at sign-in; within it, each
+  // screen shows only if the centrally-managed per-user grants allow viewing.
   const departmentScreens = DEPARTMENT_SCREENS[user.department];
   const isLeafVisible = (id: ScreenId) => departmentScreens.includes(id) && can(id, 'can_view');
 
@@ -162,9 +164,9 @@ function Dashboard({ onSignOut }: DashboardProps) {
   });
 
   const allVisibleLeafIds: ScreenId[] = NAV.flatMap((n) => n.kind === 'leaf' ? [n.id] : n.children.map((c) => c.id));
-  const fallbackScreen: ScreenId = allVisibleLeafIds[0] ?? 'settings';
-  const [screen, setScreen] = useState<ScreenId>(fallbackScreen);
-  const activeScreen = allVisibleLeafIds.includes(screen) ? screen : fallbackScreen;
+  const fallbackScreen: ScreenId | null = allVisibleLeafIds[0] ?? null;
+  const [screen, setScreen] = useState<ScreenId | null>(fallbackScreen);
+  const activeScreen = screen && allVisibleLeafIds.includes(screen) ? screen : fallbackScreen;
 
   // Settings group expands automatically when one of its children is active
   const initialOpen: Record<string, boolean> = {};
@@ -302,7 +304,7 @@ function Dashboard({ onSignOut }: DashboardProps) {
               {user.full_name}
             </div>
             <div style={{ fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {user.role_label}
+              {user.role_label || user.email}
             </div>
           </div>
           <button
@@ -374,7 +376,7 @@ function Dashboard({ onSignOut }: DashboardProps) {
           )}
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: isMobile ? 16 : 18, fontWeight: 700, color: C.green, letterSpacing: '-0.02em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {SCREEN_TITLES[activeScreen]}
+              {activeScreen ? SCREEN_TITLES[activeScreen] : 'EVOne'}
             </div>
             {!isMobile && <div style={{ fontSize: 11, color: C.slate }}>May 4, 2026 · Kuala Lumpur</div>}
           </div>
@@ -394,12 +396,22 @@ function Dashboard({ onSignOut }: DashboardProps) {
                 whiteSpace: 'nowrap',
               }}
             >
-              {DEPARTMENT_LABELS[user.department]} · {user.role_label}
+              {DEPARTMENT_LABELS[user.department]}{user.role_label ? ` · ${user.role_label}` : ''}
             </span>
           </div>
         </header>
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: contentPad }}>{screens[activeScreen]}</div>
+        <div style={{ flex: 1, overflowY: 'auto', padding: contentPad }}>
+          {activeScreen ? screens[activeScreen] : (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '60vh', gap: 10, textAlign: 'center' }}>
+              <ShieldCheck size={32} strokeWidth={1.5} color={C.slate} />
+              <div style={{ fontSize: 14, fontWeight: 700, color: '#1a1a1a' }}>No access yet</div>
+              <div style={{ fontSize: 13, color: C.slate, maxWidth: 320, lineHeight: 1.5 }}>
+                Your account has no screens enabled. Ask an administrator to grant you access.
+              </div>
+            </div>
+          )}
+        </div>
       </main>
     </div>
   );

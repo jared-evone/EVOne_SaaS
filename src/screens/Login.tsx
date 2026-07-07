@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { C } from '../theme';
 import { Logo } from '../components/Logo';
 import { supabase, setAppToken } from '../lib/supabase';
-import { type Department, DEPARTMENT_LABELS, type SignedInUser } from '../permissions';
+import { type Department, DEPARTMENT_LABELS, PERMISSION_SECTIONS, type SignedInUser } from '../permissions';
 import { Wrench, Handshake, Zap, FolderKanban, type LucideIcon } from 'lucide-react';
 
 interface DepartmentCard {
@@ -59,32 +59,51 @@ export function Login({ onLogin }: LoginProps) {
       return;
     }
 
-    // Verification happens server-side (passwords are bcrypt-hashed and never sent
-    // to the browser). The RPC returns the safe user fields only on a correct match.
+    // One account per email — verification happens server-side (passwords are
+    // bcrypt-hashed and never sent to the browser). The chosen department only
+    // scopes this session; whether the account may enter it is decided by the
+    // centrally-managed per-user permissions.
     const { data, error: err } = await supabase.rpc('app_login', {
-      p_department: department,
       p_email: email.trim().toLowerCase(),
       p_password: password,
     });
 
+    if (err) { setBusy(false); setError(err.message); return; }
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row) { setBusy(false); setError('Incorrect email or password.'); return; }
+
+    // Attach the signed token so the department-access check (and everything
+    // after) runs authenticated rather than anonymous.
+    setAppToken(row.token ?? null);
+
+    // Superadmin grants decide which departments this email can enter: the
+    // account needs at least one viewable screen OWNED by the chosen department
+    // (same attribution as the Access chips in the manager console).
+    const { data: grants } = await supabase
+      .from('app_user_permissions')
+      .select('screen_key')
+      .eq('user_id', row.id)
+      .eq('can_view', true);
+    const viewable = new Set(((grants ?? []) as { screen_key: string }[]).map((g) => g.screen_key));
+    const sectionKeys = PERMISSION_SECTIONS.find((s) => s.department === department)?.keys ?? [];
+    const hasDepartmentAccess = sectionKeys.some((k) => viewable.has(k));
+
     setBusy(false);
 
-    if (err) { setError(err.message); return; }
-    const row = Array.isArray(data) ? data[0] : data;
-    if (!row) { setError('Incorrect email or password.'); return; }
-
-    // Attach the signed token (if the server has a JWT secret configured) so all
-    // subsequent requests are authenticated rather than anonymous.
-    setAppToken(row.token ?? null);
+    if (!hasDepartmentAccess) {
+      setAppToken(null);
+      setError(`This account has no access to ${DEPARTMENT_LABELS[department]}. Ask your administrator to grant it.`);
+      return;
+    }
 
     onLogin({
       id:        row.id,
       email:     row.email,
       full_name: row.full_name,
-      department: row.department as Department,
-      role_id:   row.role_id,
-      role_name: row.role_name,
-      role_label: row.role_label,
+      department,
+      role_id:   row.role_id ?? '',
+      role_name: row.role_name ?? '',
+      role_label: row.role_label ?? '',
     });
   };
 
@@ -156,7 +175,7 @@ export function Login({ onLogin }: LoginProps) {
         </form>
 
         <div style={{ fontSize: 11, color: C.slate, textAlign: 'center', background: C.seasalt, border: '1px dashed #EBEBEB', borderRadius: 10, padding: '10px 14px', lineHeight: 1.5 }}>
-          Contact your department admin for access.
+          One password for all your departments. Contact your administrator for access.
         </div>
       </div>
     </div>

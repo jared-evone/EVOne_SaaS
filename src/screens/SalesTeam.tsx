@@ -53,7 +53,8 @@ export function ScreenSalesTeam() {
   const fetchAll = async () => {
     const [p, u] = await Promise.all([
       supabase.from('sales_people').select('id, name, email, is_active, user_id, target_amount, photo_path').order('name'),
-      supabase.from('app_users').select('id, full_name, email, is_active').eq('department', 'sales').order('full_name'),
+      // One account per email now — a salesperson's login may have any home department.
+      supabase.from('app_users').select('id, full_name, email, is_active').order('full_name'),
     ]);
     const err = p.error ?? u.error;
     if (err) { setError(err.message); setLoading(false); return; }

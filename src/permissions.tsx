@@ -78,6 +78,9 @@ export interface SignedInUser {
   id: string;
   email: string;
   full_name: string;
+  /** The department picked at sign-in — scopes this session's sidebar/screens.
+   *  Whether the account may enter a department is decided by its per-user
+   *  grants in app_user_permissions (managed centrally per email). */
   department: Department;
   role_id: string;
   role_name: string;
@@ -85,6 +88,22 @@ export interface SignedInUser {
   /** Hidden cross-department superadmin (signed in via superadmin_login). */
   is_superadmin?: boolean;
 }
+
+/** All departments, in nav/matrix order. */
+export const DEPARTMENTS: Department[] = ['cpo', 'sales', 'tech', 'pm'];
+
+/** Screens grouped by their OWNING department — the grouping used by the
+ *  per-user permission matrix, the Access chips and the login department gate.
+ *  A screen shared by several departments (customers, projects) belongs to the
+ *  first department that lists it, so a Sales-only grant of `customers` doesn't
+ *  read as access to Technical Service or Charger Registry. */
+export const PERMISSION_SECTIONS: { department: Department; keys: ScreenKey[] }[] = (() => {
+  const seen = new Set<ScreenKey>();
+  return DEPARTMENTS.map((d) => ({
+    department: d,
+    keys: DEPARTMENT_SCREENS[d].filter((k) => !seen.has(k) && (seen.add(k), true)),
+  }));
+})();
 
 interface PermissionsContextValue {
   user: SignedInUser;
@@ -101,11 +120,11 @@ const PermissionsContext = createContext<PermissionsContextValue | null>(null);
 
 const DENY: ScreenCap = { can_view: false, can_edit: false, can_delete: false };
 
-export async function loadPermissionsForRole(roleId: string): Promise<PermissionMap> {
+export async function loadPermissionsForUser(userId: string): Promise<PermissionMap> {
   const { data: rows } = await supabase
-    .from('app_role_permissions')
+    .from('app_user_permissions')
     .select('screen_key, can_view, can_edit, can_delete')
-    .eq('role_id', roleId);
+    .eq('user_id', userId);
   const map: PermissionMap = {};
   for (const r of (rows ?? []) as Array<{ screen_key: string; can_view: boolean; can_edit: boolean; can_delete: boolean }>) {
     map[r.screen_key as ScreenKey] = { can_view: r.can_view, can_edit: r.can_edit, can_delete: r.can_delete };
@@ -124,18 +143,21 @@ export function PermissionsProvider({ user, children }: PermissionsProviderProps
 
   const refresh = async () => {
     setLoading(true);
-    // Superadmin has no department role — it bypasses the permission matrix.
-    const m = user.is_superadmin ? {} : await loadPermissionsForRole(user.role_id);
+    // Superadmin has no permission rows — it bypasses the matrix entirely.
+    const m = user.is_superadmin ? {} : await loadPermissionsForUser(user.id);
     setPerms(m);
     setLoading(false);
   };
 
-  useEffect(() => { refresh(); }, [user.role_id]);
+  useEffect(() => { refresh(); }, [user.id]);
 
   // Superadmin sees and can do everything, in any department.
   const can = (screen: ScreenKey, cap: keyof ScreenCap) =>
     user.is_superadmin ? true : (perms[screen] ?? DENY)[cap];
 
+  // Admin = full view+edit+delete on every screen of the department this
+  // session was signed into. Grants are per-user (cross-department), so the
+  // same email can be an admin in one department and a member in another.
   const isAdmin = user.is_superadmin || DEPARTMENT_SCREENS[user.department].every((k) => {
     const c = perms[k] ?? DENY;
     return c.can_view && c.can_edit && c.can_delete;
