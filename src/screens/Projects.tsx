@@ -864,9 +864,11 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
         {addingSite && (
           <SiteModal
             title="New Site"
-            initial={customer?.type === 'residential'
-              ? { name: 'Home', address: customer.address ?? null, latitude: null, longitude: null, notes: null }
-              : { name: '', address: null, latitude: null, longitude: null, notes: null }}
+            initial={{
+              name: customer?.type === 'residential' ? 'Home' : (customer?.name ?? ''),
+              address: customer?.address ?? null,
+              latitude: null, longitude: null, notes: null,
+            }}
             canDelete={false}
             onSave={async (data) => {
               const { data: created } = await supabase.from('project_sites')
@@ -1680,13 +1682,16 @@ function FilesTab({ projectId, files, sites, brandModels, customer, canEdit, can
         </div>
       )}
 
-      {/* No site yet → create one first (residential registries default to Home + billing address). */}
+      {/* No site yet → create one first. Residential defaults to Home; commercial/dealer to
+          the company name — both prefill the billing address. */}
       {newSiteOpen && (
         <SiteModal
           title="New Site"
-          initial={isResidential
-            ? { name: 'Home', address: customer?.address ?? null, latitude: null, longitude: null, notes: null }
-            : { name: '', address: null, latitude: null, longitude: null, notes: null }}
+          initial={{
+            name: isResidential ? 'Home' : (customer?.name ?? ''),
+            address: customer?.address ?? null,
+            latitude: null, longitude: null, notes: null,
+          }}
           canDelete={false}
           onSave={async (data) => {
             const { data: created } = await supabase.from('project_sites').insert({ ...data, project_id: projectId }).select('id').single();
@@ -1701,7 +1706,7 @@ function FilesTab({ projectId, files, sites, brandModels, customer, canEdit, can
       {targetSite && (
         <ChargerModal
           title="New Registration"
-          initial={{ ...blankCharger(), asset_tag: isResidential ? 'Home Charger' : '' }}
+          initial={{ ...blankCharger(), asset_tag: isResidential ? 'Home Charger' : `Commercial ${(targetSite.site_chargers?.length ?? 0) + 1}` }}
           siteName={targetSite.name}
           isResidential={isResidential}
           brandModels={brandModels}
