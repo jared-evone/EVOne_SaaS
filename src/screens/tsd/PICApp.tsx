@@ -101,11 +101,18 @@ export function PICApp({ onBack, onSignOut }: PICAppProps) {
 
 export function PICReviewBoard() {
   const store = useWorkOrderStore();
-  const visible = store.workOrders.filter((w) =>
-    (VISIBLE_STATUSES as readonly string[]).includes(w.status),
-  );
-  const [selectedId, setSelectedId] = useState<string | null>(visible[0]?.id ?? null);
-  const selected = visible.find((w) => w.id === selectedId) ?? null;
+  const all = store.workOrders.filter((w) => (VISIBLE_STATUSES as readonly string[]).includes(w.status));
+  const pending = all.filter((w) => w.status !== 'completed');
+  const done = all.filter((w) => w.status === 'completed');
+  const [tab, setTab] = useState<'pending' | 'completed'>('pending');
+  const visible = tab === 'pending' ? pending : done;
+  const [selectedId, setSelectedId] = useState<string | null>(pending[0]?.id ?? null);
+  const selected = all.find((w) => w.id === selectedId) ?? null;
+  const switchTab = (t: 'pending' | 'completed') => {
+    setTab(t);
+    const list = t === 'pending' ? pending : done;
+    if (!list.some((w) => w.id === selectedId)) setSelectedId(list[0]?.id ?? null);
+  };
   const isMobile = useIsMobile();
 
   // A work order is for a CPO charger when its customerId is a cpo_locations id — flag it
@@ -129,8 +136,13 @@ export function PICReviewBoard() {
     >
       {/* List pane */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: C.slate, padding: '0 4px' }}>
-          Review Queue · {visible.length}
+        <div style={{ display: 'flex', gap: 6 }}>
+          {([['pending', 'Pending Review', pending.length], ['completed', 'Completed', done.length]] as const).map(([id, label, n]) => (
+            <button key={id} onClick={() => switchTab(id)}
+              style={{ flex: 1, padding: '8px 10px', borderRadius: 10, border: `1px solid ${tab === id ? C.green : '#EBEBEB'}`, background: tab === id ? C.green : C.white, color: tab === id ? C.white : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+              {label} · {n}
+            </button>
+          ))}
         </div>
         {visible.length === 0 && (
           <div
@@ -144,7 +156,7 @@ export function PICReviewBoard() {
               border: '1px dashed #EBEBEB',
             }}
           >
-            No reports waiting for review.
+            {tab === 'pending' ? 'No reports waiting for review.' : 'No completed reports yet.'}
           </div>
         )}
         {visible.map((w) => {

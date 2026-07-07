@@ -373,13 +373,34 @@ function StructuredField({
   }
 
   if (field.type === 'group' && field.children) {
+    // Two columns: the non-photo fields (numbers / text) on the left, and up to 4 photos
+    // in a 2x2 grid on the right.
+    const photoChildren = field.children.filter((c) => c.type === 'photo');
+    const otherChildren = field.children.filter((c) => c.type !== 'photo');
+    const photos = photoChildren
+      .map((c) => ({ child: c, src: stringValue(values, c.id) }))
+      .filter((p) => !!p.src)
+      .slice(0, 4);
+    const hasPhotos = photos.length > 0;
     return (
-      <View style={styles.field}>
+      <View style={styles.field} wrap={false}>
         <Text style={[styles.fieldLabel, { fontSize: 9, marginBottom: 2 }]}>{field.label}</Text>
-        <View style={{ paddingLeft: 8, borderLeftWidth: 1.5, borderLeftColor: '#E4F3E3' }}>
-          {field.children.map((c) => (
-            <StructuredField key={c.id} field={c} values={values} />
-          ))}
+        <View style={{ flexDirection: 'row', paddingLeft: 8, borderLeftWidth: 1.5, borderLeftColor: '#E4F3E3' }}>
+          <View style={{ flex: 1, marginRight: hasPhotos ? 10 : 0 }}>
+            {otherChildren.map((c) => (
+              <StructuredField key={c.id} field={c} values={values} />
+            ))}
+          </View>
+          {hasPhotos && (
+            <View style={{ width: 232, flexDirection: 'row', flexWrap: 'wrap' }}>
+              {photos.map((p) => (
+                <View key={p.child.id} style={{ width: '50%', padding: 2 }}>
+                  <Text style={[styles.fieldLabel, { fontSize: 7, marginBottom: 2 }]}>{p.child.label}</Text>
+                  <PDFImage src={p.src} style={{ width: '100%', height: 96, borderRadius: 4, objectFit: 'cover' }} />
+                </View>
+              ))}
+            </View>
+          )}
         </View>
       </View>
     );

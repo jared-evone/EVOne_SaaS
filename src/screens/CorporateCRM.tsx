@@ -20,6 +20,7 @@ interface CRMCompany {
   invoice_cc_emails: string[];
   contract_path: string | null;
   contract_filename: string | null;
+  is_managed_cpo?: boolean;
 }
 
 const CONTRACT_BUCKET = 'crm-contracts';
@@ -31,7 +32,7 @@ interface CRMVehicle {
   crm_companies: { name: string } | null;
 }
 
-type CRMTab = 'companies' | 'vehicles' | 'sp' | 'opening' | 'email' | 'email_design' | 'email_audit';
+type CRMTab = 'companies' | 'managed' | 'vehicles' | 'sp' | 'opening' | 'email' | 'email_design' | 'email_audit';
 
 interface CRMDriver {
   id: string;
@@ -681,10 +682,12 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
   const [batchConfirm, setBatchConfirm] = useState(false);
   const [batchDeleting, setBatchDeleting] = useState(false);
 
-  const priced = companies.filter((c) => c.base_rate > 0);
+  // Billable companies only — managed-CPO accounts live in their own tab and aren't invoiced.
+  const billable = companies.filter((c) => !c.is_managed_cpo);
+  const priced = billable.filter((c) => c.base_rate > 0);
   const avgBase = priced.length ? priced.reduce((s, c) => s + Number(c.base_rate), 0) / priced.length : 0;
   const withDiscount = priced.filter((c) => Number(c.discounted_rate) < Number(c.base_rate)).length;
-  const visible = companies.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()));
+  const visible = billable.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()));
 
   // Export the pricing table (respecting the current search) as CSV.
   const exportCsv = () => {
@@ -756,7 +759,7 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
       {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 16px', fontSize: 13, fontWeight: 600 }}>{error}</div>}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
-        <KPICard label="Total Companies"   value={String(companies.length)} sub="registered accounts" accent />
+        <KPICard label="Total Companies"   value={String(billable.length)} sub="registered accounts" accent />
         <KPICard label="Avg Base Rate"     value={`$${avgBase.toFixed(3)}`} sub="SGD per kWh" />
         <KPICard label="Volume Discounts"  value={String(withDiscount)} sub="companies with tiered pricing" />
         <KPICard label="Unpriced Accounts" value={String(companies.length - priced.length)} sub="pending rate setup" />
@@ -1599,6 +1602,138 @@ function EmailAuditTab({ companies }: { companies: CRMCompany[] }) {
   );
 }
 
+// ── Managed CPO Tab ───────────────────────────────────────────────
+// Companies EVOne manages but does NOT invoice. Their tagged vehicle plates flow through
+// the same crm_vehicles matching, so their corporate charging records are MATCHED (leaving
+// the Unmatched Records count) — but CorporateInvoicing skips them when generating statements.
+
+function ManagedCpoTab({ companies, onRefresh }: { companies: CRMCompany[]; onRefresh: () => Promise<void> }) {
+  const { can } = usePermissions();
+  const canEdit = can('corporatecrm', 'can_edit');
+  const managed = companies.filter((c) => c.is_managed_cpo).sort((a, b) => a.name.localeCompare(b.name));
+
+  const [vehicles, setVehicles] = useState<{ id: string; vehicle_plate: string; company_id: string | null }[]>([]);
+  const [newName, setNewName] = useState('');
+  const [plateDraft, setPlateDraft] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const managedKey = managed.map((c) => c.id).join(',');
+  const reloadVehicles = async () => {
+    const ids = managed.map((c) => c.id);
+    if (!ids.length) { setVehicles([]); return; }
+    const { data } = await supabase.from('crm_vehicles').select('id, vehicle_plate, company_id').in('company_id', ids).order('vehicle_plate');
+    setVehicles((data ?? []) as { id: string; vehicle_plate: string; company_id: string | null }[]);
+  };
+  useEffect(() => { void reloadVehicles(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [managedKey]);
+
+  const addCompany = async () => {
+    const name = newName.trim(); if (!name || busy) return;
+    setBusy(true); setError(null);
+    try {
+      const { error: e } = await supabase.from('crm_companies').insert({ name, is_managed_cpo: true, base_rate: 0, threshold_kwh: 0, discounted_rate: 0, invoice_cc_emails: [] });
+      if (e) { setError(e.message); return; }
+      setNewName('');
+      await onRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not add the company.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const addPlate = async (companyId: string) => {
+    const plate = (plateDraft[companyId] ?? '').trim().toUpperCase(); if (!plate) return;
+    setError(null);
+    const { error: e } = await supabase.from('crm_vehicles').insert({ vehicle_plate: plate, company_id: companyId });
+    if (e) { setError(e.message); return; }
+    setPlateDraft((d) => ({ ...d, [companyId]: '' })); await reloadVehicles();
+  };
+  const removePlate = async (id: string) => { await supabase.from('crm_vehicles').delete().eq('id', id); await reloadVehicles(); };
+  const removeCompany = async (id: string) => {
+    if (!window.confirm('Remove this managed CPO company and its tagged vehicles?')) return;
+    await supabase.from('crm_vehicles').delete().eq('company_id', id);
+    await supabase.from('crm_companies').delete().eq('id', id);
+    await onRefresh();
+  };
+
+  const platesByCompany = new Map<string, { id: string; vehicle_plate: string }[]>();
+  for (const v of vehicles) { if (!v.company_id) continue; const arr = platesByCompany.get(v.company_id) ?? []; arr.push(v); platesByCompany.set(v.company_id, arr); }
+
+  const pillInput: React.CSSProperties = { padding: '8px 12px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 16px', fontSize: 13, fontWeight: 600 }}>{error}</div>}
+
+      <div style={{ background: C.honeydew, borderRadius: 12, padding: '12px 16px', fontSize: 13, color: '#1B512D', lineHeight: 1.55 }}>
+        Managed CPO accounts are companies we operate but <strong>do not invoice</strong>. Tag their vehicle plates here — their corporate charging records get <strong>matched</strong> (so they leave the Unmatched Records count), but no statement is generated for them.
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
+        <KPICard label="Managed Companies" value={String(managed.length)} sub="not invoiced" accent />
+        <KPICard label="Tagged Vehicles"   value={String(vehicles.length)} sub="matched, not billed" />
+      </div>
+
+      {canEdit && (
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Managed company name…"
+            onKeyDown={(e) => { if (e.key === 'Enter') void addCompany(); }}
+            style={{ ...pillInput, width: 300 }} />
+          <button onClick={() => void addCompany()} disabled={busy || !newName.trim()}
+            style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: (busy || !newName.trim()) ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: (busy || !newName.trim()) ? 'default' : 'pointer' }}>
+            + Add Managed Company
+          </button>
+        </div>
+      )}
+
+      {managed.length === 0 ? (
+        <div style={{ background: C.white, border: '1px dashed #EBEBEB', borderRadius: 12, padding: '32px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
+          No managed CPO companies yet.{canEdit && ' Add one above, then tag its vehicle plates.'}
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {managed.map((c) => {
+            const plates = platesByCompany.get(c.id) ?? [];
+            return (
+              <div key={c.id} style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: '#1a1a1a' }}>{c.name}</div>
+                  <span style={{ fontSize: 11, color: C.slate }}>{plates.length} vehicle{plates.length === 1 ? '' : 's'}</span>
+                  {canEdit && (
+                    <button onClick={() => void removeCompany(c.id)}
+                      style={{ marginLeft: 'auto', padding: '5px 12px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Remove</button>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                  {plates.length === 0 && <span style={{ fontSize: 12, color: C.slate, fontStyle: 'italic' }}>No vehicle plates tagged yet.</span>}
+                  {plates.map((p) => (
+                    <span key={p.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: C.seasalt, border: '1px solid #EBEBEB', borderRadius: 99, padding: '4px 6px 4px 12px', fontSize: 12, fontWeight: 700, color: '#1a1a1a' }}>
+                      {p.vehicle_plate}
+                      {canEdit && (
+                        <button onClick={() => void removePlate(p.id)} title="Remove plate"
+                          style={{ width: 20, height: 20, borderRadius: 99, border: 'none', background: '#F3F3F3', color: C.slate, cursor: 'pointer', fontSize: 13, lineHeight: 1, fontFamily: 'Figtree' }}>×</button>
+                      )}
+                    </span>
+                  ))}
+                  {canEdit && (
+                    <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                      <input value={plateDraft[c.id] ?? ''} onChange={(e) => setPlateDraft((d) => ({ ...d, [c.id]: e.target.value }))}
+                        onKeyDown={(e) => { if (e.key === 'Enter') void addPlate(c.id); }}
+                        placeholder="Vehicle no." style={{ ...pillInput, width: 130, padding: '6px 10px', borderRadius: 99 }} />
+                      <button onClick={() => void addPlate(c.id)} disabled={!(plateDraft[c.id] ?? '').trim()}
+                        style={{ padding: '6px 12px', borderRadius: 99, border: `1px solid ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: (plateDraft[c.id] ?? '').trim() ? 'pointer' : 'default' }}>+ Tag</button>
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Root ──────────────────────────────────────────────────────────
 
 export function ScreenCorporateCRM() {
@@ -1618,6 +1753,7 @@ export function ScreenCorporateCRM() {
 
   const TABS: { id: CRMTab; label: string }[] = [
     { id: 'companies', label: 'Companies' },
+    { id: 'managed',   label: 'Managed CPO' },
     { id: 'vehicles',  label: 'GoParkin Vehicles' },
     { id: 'sp',        label: 'SP Vehicles' },
     { id: 'opening',   label: 'Account Opening' },
@@ -1645,6 +1781,7 @@ export function ScreenCorporateCRM() {
       </div>
 
       {tab === 'companies' && <CompaniesTab companies={companies} onRefresh={fetchCompanies} error={error} />}
+      {tab === 'managed'   && <ManagedCpoTab companies={companies} onRefresh={fetchCompanies} />}
       {tab === 'vehicles'  && <VehiclesTab  companies={companies} error={error} />}
       {tab === 'sp'        && <SPDriversTab companies={companies} error={error} />}
       {tab === 'opening'   && <AccountOpening />}

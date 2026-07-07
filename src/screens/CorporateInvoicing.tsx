@@ -28,6 +28,7 @@ export interface CRMCompany {
   invoice_cc_emails: string[];
   contract_path: string | null;
   contract_filename: string | null;
+  is_managed_cpo?: boolean;
 }
 
 interface CRMVehicle {
@@ -1419,7 +1420,10 @@ export function ScreenCorporateInvoicing() {
   const unmatchedSp = unmatchedSpRows.length;
   const unmatchedOverstay = unmatchedOverstayRows.length;
 
+  // Managed-CPO companies still MATCH their records (so they leave the unmatched count),
+  // but we don't invoice them — EVOne only manages these accounts, doesn't bill them.
   const statements: CompanyStatement[] = companies
+    .filter((c) => !c.is_managed_cpo)
     .map((c) => buildStatement(c, companyGp[c.id] ?? [], companySp[c.id] ?? [], companyOverstay[c.id] ?? []))
     .filter((s) => s.totalKwh > 0 || (s.overstayAmount ?? 0) > 0)
     .sort((a, b) => b.totalAmount - a.totalAmount);
