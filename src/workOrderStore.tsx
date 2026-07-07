@@ -14,6 +14,7 @@ export type WorkOrderStatus =
 export type FieldType =
   | 'section'
   | 'text'
+  | 'number'
   | 'textarea'
   | 'checkbox'
   | 'photo'

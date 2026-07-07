@@ -409,7 +409,8 @@ function WorkOrderModal({
     customer: workOrder?.customer ?? '',
     siteId: null as string | null,
     address: workOrder?.address ?? '',
-    scheduledDate: workOrder?.scheduledDate ?? '2026-05-08',
+    // New work orders default to today (local date) for quicker entry.
+    scheduledDate: workOrder?.scheduledDate ?? new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10),
     priority: workOrder?.priority ?? ('normal' as 'low' | 'normal' | 'high'),
     assignedTo: workOrder?.assignedTo ?? null,
   });
@@ -1649,6 +1650,7 @@ export function FormBuilder() {
 const FIELD_TYPE_LABELS: Record<FieldType, string> = {
   section: 'Section',
   text: 'Text',
+  number: 'Number',
   textarea: 'Long Text',
   checkbox: 'Checkbox',
   photo: 'Photo',
@@ -1702,6 +1704,8 @@ function TemplateEditor({
     const label =
       type === 'section'
         ? 'New Section'
+        : type === 'number'
+          ? 'Number'
         : type === 'checkbox'
           ? 'Confirm step'
           : type === 'textarea'
@@ -1812,7 +1816,7 @@ function TemplateEditor({
             {isOverlay(draft) ? 'Overlay mode' : 'Structured mode'}
           </span>
           {!isOverlay(draft) &&
-            (['section', 'text', 'textarea', 'checkbox', 'photo', 'group', 'date', 'signature', 'select', 'charger'] as FieldType[]).map((t) => (
+            (['section', 'text', 'number', 'textarea', 'checkbox', 'photo', 'group', 'date', 'signature', 'select', 'charger'] as FieldType[]).map((t) => (
               <button
                 key={t}
                 onClick={() => addField(t)}
@@ -2531,7 +2535,7 @@ function FieldEditor({
           ))}
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
             <span style={{ fontSize: 10, fontWeight: 700, color: C.slate, letterSpacing: '0.04em', textTransform: 'uppercase' }}>Add to group:</span>
-            {(['text', 'textarea', 'checkbox', 'photo', 'date', 'signature', 'select', 'charger'] as FieldType[]).map((t) => (
+            {(['text', 'number', 'textarea', 'checkbox', 'photo', 'date', 'signature', 'select', 'charger'] as FieldType[]).map((t) => (
               <button
                 key={t}
                 onClick={() => addChild(t)}

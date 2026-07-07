@@ -1461,6 +1461,8 @@ function FieldRow({
         <input
           value={strVal}
           disabled={disabled}
+          type={field.type === 'number' ? 'number' : 'text'}
+          {...(field.type === 'number' ? { step: 'any', inputMode: 'decimal' as const } : {})}
           onChange={(e) => onChange(field.id, e.target.value)}
           style={{
             width: '100%',
