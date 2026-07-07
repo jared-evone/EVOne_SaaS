@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { C } from '../theme';
-import { LocationTrends, ensureChargingTrendsCache } from './charging/LocationTrends';
+import { ensureChargingTrendsCache } from './charging/LocationTrends';
 import { Sessions } from './charging/Sessions';
 import { ChargingOverview } from './charging/ChargingOverview';
 import { ExcludedCompanies } from './charging/ExcludedCompanies';
 
-type DashboardTab = 'overview' | 'trends' | 'sessions' | 'excluded';
+type DashboardTab = 'overview' | 'sessions' | 'excluded';
 
 export function ScreenChargingDashboard() {
   const [tab, setTab] = useState<DashboardTab>('overview');
@@ -22,7 +22,6 @@ export function ScreenChargingDashboard() {
       <div style={{ display: 'flex', gap: 4, background: C.white, borderRadius: 12, padding: 4, border: '1px solid #EBEBEB', alignSelf: 'flex-start' }}>
         {([
           ['overview', 'Overview'],
-          ['trends', 'Energy (kWh)'],
           ['sessions', 'Sessions'],
           ['excluded', 'Excluded Companies'],
         ] as [DashboardTab, string][]).map(([id, label]) => (
@@ -35,7 +34,6 @@ export function ScreenChargingDashboard() {
       </div>
 
       {tab === 'overview' && <ChargingOverview />}
-      {tab === 'trends' && <LocationTrends />}
       {tab === 'sessions' && <Sessions />}
       {tab === 'excluded' && <ExcludedCompanies />}
     </div>

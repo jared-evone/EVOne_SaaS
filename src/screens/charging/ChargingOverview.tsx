@@ -95,13 +95,13 @@ export function ChargingOverview() {
   useEffect(() => {
     let cancelled = false;
     const cached = getCachedChargingRows();
-    if (cached) { setRows(cached); setLoading(false); return; }
-    setLoading(true);
+    if (cached) { setRows(cached); setLoading(false); } else { setLoading(true); setLoadedCount(0); }
     setError(null);
-    setLoadedCount(0);
-    ensureChargingTrendsCache((n) => { if (!cancelled) setLoadedCount(n); })
+    // Always revalidate against the live row count; refetch only if the data changed, so
+    // every login converges to the latest data instead of a stale first-load snapshot.
+    ensureChargingTrendsCache((n) => { if (!cancelled) setLoadedCount(n); }, true)
       .then((r) => { if (!cancelled) { setRows(r); setLoading(false); } })
-      .catch((e) => { if (!cancelled) { setError((e as Error).message); setLoading(false); } });
+      .catch((e) => { if (!cancelled) { setLoading(false); if (!getCachedChargingRows()) setError((e as Error).message); } });
     return () => { cancelled = true; };
   }, [refreshKey]);
 

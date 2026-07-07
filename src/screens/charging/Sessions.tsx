@@ -33,6 +33,7 @@ export function Sessions() {
   const [cpoSet, setCpoSet] = useState<Set<string>>(new Set());
   const [excludeOn, setExcludeOn] = useState(false);
   const [excludedSet, setExcludedSet] = useState<Set<string>>(new Set());
+  const [showEnergy, setShowEnergy] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,13 +51,13 @@ export function Sessions() {
   useEffect(() => {
     let cancelled = false;
     const cached = getCachedChargingRows();
-    if (cached) { setRows(cached); setLoading(false); return; }
-    setLoading(true);
+    if (cached) { setRows(cached); setLoading(false); } else { setLoading(true); setLoadedCount(0); }
     setError(null);
-    setLoadedCount(0);
-    ensureChargingTrendsCache((n) => { if (!cancelled) setLoadedCount(n); })
+    // Always revalidate against the live row count; refetch only if the data changed, so
+    // every login converges to the latest data instead of a stale first-load snapshot.
+    ensureChargingTrendsCache((n) => { if (!cancelled) setLoadedCount(n); }, true)
       .then((r) => { if (!cancelled) { setRows(r); setLoading(false); } })
-      .catch((e) => { if (!cancelled) { setError((e as Error).message); setLoading(false); } });
+      .catch((e) => { if (!cancelled) { setLoading(false); if (!getCachedChargingRows()) setError((e as Error).message); } });
     return () => { cancelled = true; };
   }, [refreshKey]);
 
@@ -130,6 +131,10 @@ export function Sessions() {
         <button onClick={() => setDcOnly((v) => !v)} style={toggleBtn(dcOnly)}>{dcOnly ? '✓ ' : ''}DC Only</button>
         <button onClick={() => setCpoOnly((v) => !v)} style={toggleBtn(cpoOnly)}>{cpoOnly ? '✓ ' : ''}CPO Only (EVE + EVOne)</button>
         <button onClick={() => setExcludeOn((v) => !v)} style={toggleBtn(excludeOn)}>{excludeOn ? '✓ ' : ''}Exclude Vehicles{excludedSet.size > 0 ? ` (${excludedSet.size})` : ''}</button>
+        <button onClick={() => setShowEnergy((v) => !v)}
+          style={{ padding: '7px 14px', borderRadius: 99, border: `1px solid ${showEnergy ? C.opal : '#EBEBEB'}`, background: showEnergy ? '#E3F0FF' : C.white, color: showEnergy ? '#1A62C0' : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+          {showEnergy ? '✓ ' : ''}Energy (kWh)
+        </button>
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
           {(['all', 'goparkin', 'sp'] as const).map((s) => (
@@ -142,7 +147,7 @@ export function Sessions() {
 
       {/* Summary line */}
       <div style={{ fontSize: 13, color: C.slate, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-        <span><strong style={{ color: '#1a1a1a' }}>{rangeLabel}</strong> · {granularity === 'day' ? 'daily' : granularity === 'week' ? 'weekly' : 'monthly'} session count · <strong style={{ color: '#1a1a1a' }}>successful sessions only</strong></span>
+        <span><strong style={{ color: '#1a1a1a' }}>{rangeLabel}</strong> · {granularity === 'day' ? 'daily' : granularity === 'week' ? 'weekly' : 'monthly'} · <strong style={{ color: C.green }}>sessions</strong>{showEnergy && <> + <strong style={{ color: C.opal }}>energy kWh</strong></>} · <strong style={{ color: '#1a1a1a' }}>successful sessions only</strong></span>
         <span>{trends.length} carpark{trends.length === 1 ? '' : 's'} with data</span>
         <span>{filteredRows.length.toLocaleString()} session{filteredRows.length === 1 ? '' : 's'}</span>
         {!loading && (
@@ -164,7 +169,7 @@ export function Sessions() {
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(440px, 1fr))', gap: 16 }}>
-          {trends.map((t) => <CarparkCard key={t.carpark_code} t={t} granularity={granularity} metric="count" />)}
+          {trends.map((t) => <CarparkCard key={t.carpark_code} t={t} granularity={granularity} metric="count" dual={showEnergy} />)}
         </div>
       )}
     </div>

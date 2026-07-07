@@ -278,8 +278,30 @@ export function clearChargingTrendsCache(): void {
   cachePromise = null;
 }
 
-export function ensureChargingTrendsCache(onProgress?: (n: number) => void): Promise<RawRow[]> {
-  if (cachedRows) return Promise.resolve(cachedRows);
+async function liveChargingRowCount(): Promise<number | null> {
+  const { count, error } = await supabase
+    .from('crm_charging_records')
+    .select('*', { count: 'exact', head: true });
+  if (error) throw new Error(error.message);
+  return count ?? null;
+}
+
+export async function ensureChargingTrendsCache(onProgress?: (n: number) => void, revalidate = false): Promise<RawRow[]> {
+  // Serve the in-memory snapshot, but when asked to revalidate, first do a cheap live
+  // row-count check and drop the snapshot if the table changed (e.g. a new CSV import).
+  // This makes every login converge to the latest data instead of holding a stale copy
+  // from whenever the tab first loaded — the cause of two logins showing different totals.
+  if (cachedRows) {
+    if (!revalidate) return cachedRows;
+    try {
+      const live = await liveChargingRowCount();
+      if (live == null || live === cachedRows.length) return cachedRows;
+    } catch {
+      return cachedRows; // transient error — keep serving what we have
+    }
+    cachedRows = null;
+    cachePromise = null;
+  }
   if (!cachePromise) {
     cachePromise = loadAllChargingRows(onProgress)
       .then((r) => { cachedRows = r; return r; })
@@ -424,13 +446,13 @@ export function LocationTrends() {
   useEffect(() => {
     let cancelled = false;
     const cached = getCachedChargingRows();
-    if (cached) { setRows(cached); setLoading(false); return; }
-    setLoading(true);
+    if (cached) { setRows(cached); setLoading(false); } else { setLoading(true); setLoadedCount(0); }
     setError(null);
-    setLoadedCount(0);
-    ensureChargingTrendsCache((n) => { if (!cancelled) setLoadedCount(n); })
+    // Always revalidate against the live row count; refetch only if the data changed, so
+    // every login converges to the latest data instead of a stale first-load snapshot.
+    ensureChargingTrendsCache((n) => { if (!cancelled) setLoadedCount(n); }, true)
       .then((r) => { if (!cancelled) { setRows(r); setLoading(false); } })
-      .catch((e) => { if (!cancelled) { setError((e as Error).message); setLoading(false); } });
+      .catch((e) => { if (!cancelled) { setLoading(false); if (!getCachedChargingRows()) setError((e as Error).message); } });
     return () => { cancelled = true; };
   }, [refreshKey]);
 
@@ -545,9 +567,10 @@ export function LocationTrends() {
 
 // ── Card ──────────────────────────────────────────────────────────
 
-export function CarparkCard({ t, granularity, metric = 'kwh' }: { t: CarparkTrend; granularity: Granularity; metric?: 'kwh' | 'count' }) {
+export function CarparkCard({ t, granularity, metric = 'kwh', dual = false }: { t: CarparkTrend; granularity: Granularity; metric?: 'kwh' | 'count'; dual?: boolean }) {
   const isCount = metric === 'count';
   const data = t.buckets.map((b) => (isCount ? b.count : b.kwh));
+  const data2 = dual ? t.buckets.map((b) => b.kwh) : undefined; // blue energy line on the right axis
   const labels = t.buckets.map((b) => b.label);
 
   const total  = isCount ? t.totalCount  : t.totalKwh;
@@ -575,7 +598,7 @@ export function CarparkCard({ t, granularity, metric = 'kwh' }: { t: CarparkTren
   // Hover tooltips for weekly / monthly only (daily excluded — too dense).
   const tooltips = granularity === 'day'
     ? undefined
-    : t.buckets.map((b) => ({ title: fmtTooltipDate(b.key, granularity), value: fmtVal(isCount ? b.count : b.kwh) }));
+    : t.buckets.map((b) => ({ title: fmtTooltipDate(b.key, granularity), value: fmtVal(isCount ? b.count : b.kwh), value2: dual ? fmtKwh(b.kwh) : undefined }));
 
   return (
     <div style={{ background: C.white, borderRadius: 16, padding: '18px 20px', border: '1px solid #EBEBEB', display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -593,10 +616,12 @@ export function CarparkCard({ t, granularity, metric = 'kwh' }: { t: CarparkTren
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontSize: 11, color: C.slate, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Total</div>
           <div style={{ fontSize: 18, fontWeight: 700, color: '#1a1a1a' }}>{fmtVal(total)}</div>
+          {dual && <div style={{ fontSize: 13, fontWeight: 700, color: C.opal, marginTop: 2 }}>{fmtKwh(t.totalKwh)}</div>}
         </div>
       </div>
 
-      <LineChart data={data} labels={labels} color={C.green} height={200} formatY={fmtAxis} tooltips={tooltips} />
+      <LineChart data={data} labels={labels} color={C.green} height={200} formatY={fmtAxis} tooltips={tooltips}
+        data2={data2} color2={C.opal} formatY2={fmtKwhShort} />
 
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', borderTop: '1px solid #F3F3F3', paddingTop: 10, fontSize: 12 }}>
         <div>
