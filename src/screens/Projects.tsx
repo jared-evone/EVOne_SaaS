@@ -51,6 +51,10 @@ interface Project {
   deletion_flagged_by: string | null;
   deletion_flagged_at: string | null;
   deletion_flag_reason: string | null;
+  // Marked as a special case with a free-text remark (awaiting docs, non-standard, etc.). Toggleable.
+  special_case_at: string | null;
+  special_case_by: string | null;
+  special_case_remark: string | null;
 }
 
 interface CustomerLite {
@@ -162,6 +166,7 @@ export function ScreenProjects() {
   const [search, setSearch]       = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [assigneeFilter, setAssigneeFilter] = useState<string>('all');
+  const [pendingTakeupOnly, setPendingTakeupOnly] = useState(false);
   const [adding, setAdding]       = useState(false);
   const [importingInvoices, setImportingInvoices] = useState(false);
   const [viewingId, setViewingId] = useState<string | null>(null);
@@ -205,9 +210,27 @@ export function ScreenProjects() {
     return m;
   }, [projects]);
 
+  // A registry is "pending take-up" (undone) when it has no chargers yet and
+  // nobody has claimed keying them in.
+  const isPendingTakeup = (p: Project) => (chargerCounts[p.id] ?? 0) === 0 && !p.charger_entry_claimed_at;
+
+  // How many pending take-ups each assignee still owns, so each person sees
+  // their own remaining workload on their filter chip.
+  const pendingByAssignee = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of projects) {
+      if (!isPendingTakeup(p)) continue;
+      const a = assigneeOf.get(p.id);
+      if (a) m.set(a, (m.get(a) ?? 0) + 1);
+    }
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects, chargerCounts, assigneeOf]);
+
   const visible = projects.filter((p) => {
     if (statusFilter !== 'all' && p.status !== statusFilter) return false;
     if (assigneeFilter !== 'all' && assigneeOf.get(p.id) !== assigneeFilter) return false;
+    if (pendingTakeupOnly && !isPendingTakeup(p)) return false;
     if (!search) return true;
     const q = search.toLowerCase();
     const customerName = customerById(p.customer_id)?.name ?? '';
@@ -242,6 +265,26 @@ export function ScreenProjects() {
         .update({ deletion_flagged_by: user.full_name || user.email, deletion_flagged_at: new Date().toISOString(), deletion_flag_reason: reason.trim() || null })
         .eq('id', p.id);
     }
+    await fetchAll();
+  };
+
+  // Mark a registry as a special case with a remark, edit the remark, or clear it.
+  const toggleSpecialCase = async (p: Project) => {
+    if (p.special_case_at) {
+      await supabase.from('projects').update({ special_case_at: null, special_case_by: null, special_case_remark: null }).eq('id', p.id);
+    } else {
+      const remark = window.prompt('Mark as a special case. Remark:');
+      if (remark === null) return; // cancelled
+      await supabase.from('projects')
+        .update({ special_case_at: new Date().toISOString(), special_case_by: user.full_name || user.email, special_case_remark: remark.trim() || null })
+        .eq('id', p.id);
+    }
+    await fetchAll();
+  };
+  const editSpecialRemark = async (p: Project) => {
+    const remark = window.prompt('Edit special-case remark:', p.special_case_remark ?? '');
+    if (remark === null) return;
+    await supabase.from('projects').update({ special_case_remark: remark.trim() || null }).eq('id', p.id);
     await fetchAll();
   };
 
@@ -284,18 +327,41 @@ export function ScreenProjects() {
           {(['all', ...ASSIGNEES] as const).map((a) => {
             const active = assigneeFilter === a;
             const col = a !== 'all' ? ASSIGNEE_COLORS[a] : null;
+            // When filtering by pending take-up, surface each person's remaining count.
+            const remaining = a !== 'all' && pendingTakeupOnly ? (pendingByAssignee.get(a) ?? 0) : null;
             return (
               <button key={a} onClick={() => setAssigneeFilter(a)}
-                style={{ padding: '7px 14px', borderRadius: 99,
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 99,
                   border: `1px solid ${active ? (col?.color ?? C.green) : '#EBEBEB'}`,
                   background: active ? (col?.bg ?? C.green) : C.white,
                   color: active ? (col?.color ?? C.white) : C.slate,
                   fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
                 {a === 'all' ? 'All assignees' : a}
+                {remaining !== null && (
+                  <span style={{ fontSize: 11, fontWeight: 700, padding: '1px 7px', borderRadius: 99,
+                    background: active ? 'rgba(255,255,255,0.5)' : (col?.bg ?? C.seasalt),
+                    color: col?.color ?? C.slate }}>
+                    {remaining}
+                  </span>
+                )}
               </button>
             );
           })}
         </div>
+        <button onClick={() => setPendingTakeupOnly((v) => !v)}
+          title="Show only registries still waiting to be taken up for charger entry"
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 99,
+            border: `1px solid ${pendingTakeupOnly ? C.yellow : '#EBEBEB'}`,
+            background: pendingTakeupOnly ? C.yellow : C.white,
+            color: pendingTakeupOnly ? C.white : C.slate,
+            fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+          Pending take-up
+          <span style={{ fontSize: 11, fontWeight: 700, padding: '1px 7px', borderRadius: 99,
+            background: pendingTakeupOnly ? 'rgba(255,255,255,0.28)' : C.seasalt,
+            color: pendingTakeupOnly ? C.white : C.slate }}>
+            {projects.filter(isPendingTakeup).length}
+          </span>
+        </button>
         <div style={{ position: 'relative', width: 260 }}>
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search chargers…"
             style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
@@ -322,16 +388,16 @@ export function ScreenProjects() {
           <table style={{ width: '100%', minWidth: 600, borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
-                {['Customer', 'Status', 'Sites', 'Chargers', 'Assigned', 'Take-up', 'Flag', 'Updated'].map((h) => (
+                {['Customer', 'Status', 'Sites', 'Chargers', 'Assigned', 'Take-up', 'Special', 'Flag', 'Updated'].map((h) => (
                   <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={8} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</td></tr>
+                <tr><td colSpan={9} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</td></tr>
               ) : visible.length === 0 ? (
-                <tr><td colSpan={8} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
+                <tr><td colSpan={9} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
                   {projects.length === 0 ? 'No customers yet. Click "+ New Registration" to add one.' : 'No customers match your filters.'}
                 </td></tr>
               ) : visible.map((p) => {
@@ -387,6 +453,30 @@ export function ScreenProjects() {
                           {claimed && <span style={{ fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 130 }}>{p.charger_entry_claimed_by}</span>}
                         </div>
                       )}
+                    </td>
+                    <td style={{ padding: '13px 16px' }}>
+                      {(() => {
+                        const special = !!p.special_case_at;
+                        return (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                            title={special
+                              ? `Special case by ${p.special_case_by ?? '—'} · ${new Date(p.special_case_at as string).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}${p.special_case_remark ? ` · ${p.special_case_remark}` : ''}`
+                              : 'Mark as a special case and add a remark'}>
+                            <input type="checkbox" checked={special} disabled={!canEdit}
+                              onChange={() => void toggleSpecialCase(p)}
+                              style={{ width: 16, height: 16, cursor: canEdit ? 'pointer' : 'default', accentColor: C.yellow }} />
+                            {special && (
+                              <span onClick={canEdit ? () => void editSpecialRemark(p) : undefined}
+                                title={canEdit ? 'Click to edit remark' : undefined}
+                                style={{ fontSize: 11, fontWeight: 600, color: '#B45309', background: '#FFF0E0', padding: '2px 8px', borderRadius: 99,
+                                  maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                  cursor: canEdit ? 'pointer' : 'default' }}>
+                                {p.special_case_remark || 'Special'}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td style={{ padding: '13px 16px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}
