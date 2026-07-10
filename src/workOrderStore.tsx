@@ -45,6 +45,9 @@ export interface FormField {
   width?: number;
   height?: number;
   page?: number;              // overlay page index (0-based); defaults to 0
+  // Overlay text size, as a percentage of the page height (resolution-independent
+  // so the on-screen input and the exported PDF match). Unset = auto-fit the box.
+  fontSize?: number;
 }
 
 export interface OverlayPage {

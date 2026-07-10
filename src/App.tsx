@@ -6,7 +6,7 @@ import {
   LayoutDashboard, Home, Receipt, Wrench, Users, FolderKanban, CalendarDays,
   Handshake, ClipboardList, Boxes, Truck, Building2, Plug, Zap, FileText,
   Hammer, Settings as SettingsIcon, ShieldCheck, Database, ChevronRight, ChevronDown,
-  Power, Menu, TrendingUp, UserCog, Mail,
+  Power, Menu, TrendingUp, UserCog, Mail, Calculator, ClipboardCheck,
   type LucideIcon,
 } from 'lucide-react';
 import { useIsMobile } from './lib/useIsMobile';
@@ -31,6 +31,8 @@ import { ScreenCPOChargers } from './screens/CPOChargers';
 import { ScreenSettings } from './screens/Settings';
 import { ScreenDBHealth } from './screens/DBHealth';
 import { ScreenEmailDesigner } from './screens/EmailDesigner';
+import { ScreenQuoteMachine } from './screens/QuoteMachine';
+import { ScreenRaisePO } from './screens/RaisePO';
 import { SuperAdminConsole } from './screens/SuperAdmin';
 import { ScreenChargingDashboard } from './screens/ChargingDashboard';
 import { ScreenDashboard } from './screens/Dashboard';
@@ -73,6 +75,8 @@ const NAV_ALL: NavEntry[] = [
   { kind: 'leaf', id: 'cpochargers',       icon: Plug,            label: 'CPO Chargers' },
   { kind: 'leaf', id: 'charging',          icon: Zap,             label: 'Charging Records' },
   { kind: 'leaf', id: 'corporateinvoicing',icon: FileText,        label: 'Corporate Invoicing' },
+  { kind: 'leaf', id: 'quote_machine',     icon: Calculator,      label: 'Quote Machine' },
+  { kind: 'leaf', id: 'raise_po',          icon: ClipboardCheck,  label: 'Raise PO' },
   { kind: 'leaf', id: 'tsd_technician',    icon: Hammer,          label: 'Technician' },
   { kind: 'group', key: 'tsd_admin_group', icon: ClipboardList,   label: 'TSD Admin', children: [
     { kind: 'leaf', id: 'tsd_workorders',  icon: ClipboardList,   label: 'Work Orders' },
@@ -107,6 +111,8 @@ const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
   charging:            'Charging Records',
   corporateinvoicing:  'Corporate Invoicing',
   charging_dashboard:  'Charging Dashboard',
+  quote_machine:       'Quote Machine',
+  raise_po:            'Raise PO',
   tsd_technician:      'Technician',
   tsd_workorders:      'Work Orders',
   tsd_forms:           'Form Templates',
@@ -136,6 +142,8 @@ const screens: Partial<Record<ScreenId, JSX.Element>> = {
   charging:            <ScreenChargingRecords />,
   corporateinvoicing:  <ScreenCorporateInvoicing />,
   charging_dashboard:  <ScreenChargingDashboard />,
+  quote_machine:       <ScreenQuoteMachine />,
+  raise_po:            <ScreenRaisePO />,
   tsd_technician:      <TechApp />,
   tsd_workorders:      <WorkOrdersAdmin />,
   tsd_forms:           <FormBuilder />,

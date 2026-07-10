@@ -4,7 +4,6 @@ import { supabase } from '../../lib/supabase';
 import { useIsMobile } from '../../lib/useIsMobile';
 import { Logo } from '../../components/Logo';
 import { Download as DownloadIcon, Power } from 'lucide-react';
-import { pdf } from '@react-pdf/renderer';
 import {
   DEMO_PIC,
   STATUS_COLORS,
@@ -16,7 +15,7 @@ import {
 } from '../../workOrderStore';
 import { FieldList, FormHeader, FormPaper, openBase64Pdf } from './TechApp';
 import { OverlayFormRenderer, isOverlay } from './OverlayForm';
-import { PDFPreviewModal, WorkOrderDocument } from './PDFExport';
+import { PDFPreviewModal, generateWorkOrderPdf } from './PDFExport';
 
 const CPO_BUCKET = 'cpo-maintenance-pdfs';
 
@@ -443,8 +442,9 @@ function PushToCpoModal({ workOrder, forms, getTemplate, chargerCode, locationId
       if (!ch) { setBusy(false); setError(`Couldn't find charger "${chargerCode}" in CPO Chargers.`); return; }
       const chargerId = ch.id;
 
-      // 2. Render the work-order form to a PDF blob.
-      const blob = await pdf(<WorkOrderDocument workOrder={workOrder} forms={forms} getTemplate={getTemplate} />).toBlob();
+      // 2. Render the work-order form to a PDF blob (overlay forms are assembled
+      //    from flattened page images so they don't freeze the tab).
+      const blob = await generateWorkOrderPdf(workOrder, forms, getTemplate);
 
       // 3. Upload it to the CPO reading storage, then 4. insert the reading (roll back on failure).
       const pdf_path = `chargers/${chargerId}/readings/${crypto.randomUUID()}.pdf`;

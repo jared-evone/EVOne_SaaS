@@ -18,7 +18,7 @@ export type ScreenKey =
   | 'cpochargers' | 'charging' | 'corporateinvoicing' | 'charging_dashboard'
   | 'charging_cpo_carparks' | 'charging_sp_price'
   | 'tsd_technician' | 'tsd_workorders' | 'tsd_forms' | 'tsd_pic' | 'tsd_technicians'
-  | 'email_designer'
+  | 'email_designer' | 'quote_machine' | 'raise_po'
   | 'settings' | 'dbhealth';
 
 export const SCREEN_LABELS: Record<ScreenKey, string> = {
@@ -49,6 +49,8 @@ export const SCREEN_LABELS: Record<ScreenKey, string> = {
   tsd_pic:               'PIC Review',
   tsd_technicians:       'Technicians',
   email_designer:        'Email',
+  quote_machine:         'Quote Machine',
+  raise_po:              'Raise PO',
   settings:              'Users & Permissions',
   dbhealth:              'DB Health',
 };
@@ -61,9 +63,9 @@ export const DEPARTMENT_SCREENS: Record<Department, ScreenKey[]> = {
   cpo:   ['charging_dashboard', 'corporatecrm', 'corporatecrm_invoicing', 'cpochargers', 'charging',
           'charging_cpo_carparks', 'charging_sp_price',
           'corporateinvoicing'],
-  sales: ['customers', 'sales', 'sales_manager', 'sales_team'],
-  tech:  ['tsd_technician', 'tsd_workorders', 'tsd_forms', 'tsd_pic', 'tsd_technicians', 'customers', 'projects'],
-  pm:    ['dashboard', 'customers', 'projects', 'email_designer'],
+  sales: ['customers', 'sales', 'sales_manager', 'sales_team', 'quote_machine', 'raise_po'],
+  tech:  ['tsd_technician', 'tsd_workorders', 'tsd_forms', 'tsd_pic', 'tsd_technicians', 'customers', 'projects', 'quote_machine', 'raise_po'],
+  pm:    ['dashboard', 'customers', 'projects', 'email_designer', 'quote_machine', 'raise_po'],
 };
 
 export interface ScreenCap {

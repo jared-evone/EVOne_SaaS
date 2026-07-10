@@ -15,8 +15,12 @@ interface Technician {
   email: string | null;
   app_user_id: string | null;
   app_users?: { email: string } | null;
+  is_active?: boolean;
   created_at: string;
 }
+
+// A missing column (pre-migration) reads as active — only an explicit false deactivates.
+const isTechActive = (t: Technician) => t.is_active !== false;
 
 function fmtDate(s: string): string {
   return new Date(s).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
@@ -113,6 +117,22 @@ export function TechniciansAdmin() {
     setBusy(false);
   };
 
+  // Deactivate (fired / on leave) or reactivate. Keeps the record & all history;
+  // also flips the linked login so a deactivated tech can't sign in.
+  const setActive = async (t: Technician, active: boolean) => {
+    setBusy(true);
+    setError(null);
+    const { error: e1 } = await supabase.from('technicians').update({ is_active: active }).eq('id', t.id);
+    let e2: { message: string } | null = null;
+    if (t.app_user_id) {
+      const { error } = await supabase.from('app_users').update({ is_active: active, updated_at: new Date().toISOString() }).eq('id', t.app_user_id);
+      e2 = error;
+    }
+    if (e1 || e2) setError((e1 ?? e2)!.message);
+    else await load();
+    setBusy(false);
+  };
+
   const th: React.CSSProperties = {
     padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate,
     letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap',
@@ -151,23 +171,26 @@ export function TechniciansAdmin() {
               <th style={th}>FIN Number</th>
               <th style={th}>Contact</th>
               <th style={th}>Active Jobs</th>
+              <th style={th}>Status</th>
               <th style={th}>Added</th>
               <th style={{ ...th, textAlign: 'right' }}></th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={7} style={{ ...td, textAlign: 'center', color: C.slate, padding: '40px 16px' }}>Loading…</td></tr>
+              <tr><td colSpan={8} style={{ ...td, textAlign: 'center', color: C.slate, padding: '40px 16px' }}>Loading…</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={7} style={{ ...td, textAlign: 'center', color: C.slate, padding: '40px 16px' }}>
+              <tr><td colSpan={8} style={{ ...td, textAlign: 'center', color: C.slate, padding: '40px 16px' }}>
                 {techs.length === 0 ? 'No technicians yet. Add one above.' : 'No matches.'}
               </td></tr>
             ) : (
-              filtered.map((t) => (
+              filtered.map((t) => {
+                const active = isTechActive(t);
+                return (
                 <tr key={t.id}
                   onMouseEnter={(e) => { e.currentTarget.style.background = '#FAFAFA'; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
-                  <td style={td}>
+                  <td style={{ ...td, opacity: active ? 1 : 0.55 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                       <Avatar path={t.photo_path} name={t.name} />
                       <span style={{ fontWeight: 700, color: C.green }}>{t.name}</span>
@@ -180,10 +203,16 @@ export function TechniciansAdmin() {
                       <span style={{ color: C.slate, fontStyle: 'italic', fontSize: 12 }}>No login</span>
                     )}
                   </td>
-                  <td style={{ ...td, color: t.fin_number ? '#1a1a1a' : C.slate, fontFamily: t.fin_number ? 'monospace' : 'Figtree' }}>{t.fin_number || '—'}</td>
-                  <td style={{ ...td, color: t.contact_number ? '#1a1a1a' : C.slate }}>{t.contact_number || '—'}</td>
-                  <td style={{ ...td, color: '#1a1a1a' }}>{jobsByTech.get(t.name) ?? 0}</td>
-                  <td style={{ ...td, color: C.slate, whiteSpace: 'nowrap' }}>{fmtDate(t.created_at)}</td>
+                  <td style={{ ...td, color: t.fin_number ? '#1a1a1a' : C.slate, fontFamily: t.fin_number ? 'monospace' : 'Figtree', opacity: active ? 1 : 0.55 }}>{t.fin_number || '—'}</td>
+                  <td style={{ ...td, color: t.contact_number ? '#1a1a1a' : C.slate, opacity: active ? 1 : 0.55 }}>{t.contact_number || '—'}</td>
+                  <td style={{ ...td, color: '#1a1a1a', opacity: active ? 1 : 0.55 }}>{jobsByTech.get(t.name) ?? 0}</td>
+                  <td style={td}>
+                    <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99,
+                      background: active ? '#E4F3E3' : '#F3F3F3', color: active ? '#1B512D' : '#767B77' }}>
+                      {active ? 'Active' : 'Inactive'}
+                    </span>
+                  </td>
+                  <td style={{ ...td, color: C.slate, whiteSpace: 'nowrap', opacity: active ? 1 : 0.55 }}>{fmtDate(t.created_at)}</td>
                   <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
                     {confirmDeleteId === t.id ? (
                       <span style={{ display: 'inline-flex', gap: 6 }}>
@@ -200,6 +229,13 @@ export function TechniciansAdmin() {
                             Edit
                           </button>
                         )}
+                        {canEdit && (
+                          <button onClick={() => setActive(t, !active)} disabled={busy}
+                            title={active ? 'Deactivate — keeps the record but blocks sign-in and new jobs' : 'Reactivate this technician'}
+                            style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${active ? '#EBEBEB' : C.green}`, background: active ? C.white : C.honeydew, color: active ? C.slate : C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: busy ? 'default' : 'pointer' }}>
+                            {active ? 'Deactivate' : 'Activate'}
+                          </button>
+                        )}
                         {canDelete && (
                           <button onClick={() => setConfirmDeleteId(t.id)}
                             style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #FDEAEA', background: C.white, color: '#C0321A', fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
@@ -210,7 +246,8 @@ export function TechniciansAdmin() {
                     )}
                   </td>
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>

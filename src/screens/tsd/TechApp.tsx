@@ -41,8 +41,8 @@ export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
   useEffect(() => {
     if (!isAdmin) return;
     let cancelled = false;
-    supabase.from('technicians').select('name').order('name').then(({ data }) => {
-      if (!cancelled) setDbTechs(((data as { name: string }[]) ?? []).map((t) => t.name));
+    supabase.from('technicians').select('name, is_active').order('name').then(({ data }) => {
+      if (!cancelled) setDbTechs(((data as { name: string; is_active?: boolean }[]) ?? []).filter((t) => t.is_active !== false).map((t) => t.name));
     });
     return () => { cancelled = true; };
   }, [isAdmin]);

@@ -494,7 +494,7 @@ function WorkOrderModal({
   const [techs, setTechs] = useState<TechRec[]>([]);
   useEffect(() => {
     let cancelled = false;
-    supabase.from('technicians').select('name, fin_number, contact_number, photo_path').order('name').then(({ data }) => {
+    supabase.from('technicians').select('name, fin_number, contact_number, photo_path, is_active').order('name').then(({ data }) => {
       if (!cancelled) setTechs((data as TechRec[]) ?? []);
     });
     return () => { cancelled = true; };
@@ -932,7 +932,7 @@ function SearchSelect({ value, options, onChange, disabled, placeholder, emptyTe
 
 // ── Technician picker (avatar + name + FIN + contact) ─────────────
 
-interface TechRec { name: string; fin_number: string | null; contact_number: string | null; photo_path: string | null; }
+interface TechRec { name: string; fin_number: string | null; contact_number: string | null; photo_path: string | null; is_active?: boolean; }
 
 function techPhotoUrl(path: string): string {
   return supabase.storage.from('technician-photos').getPublicUrl(path).data.publicUrl;
@@ -964,6 +964,9 @@ function TechnicianSelect({ value, technicians, onChange }: {
   }, [open]);
 
   const selected = value ? technicians.find((t) => t.name === value) : undefined;
+  // Only active technicians are assignable; an already-assigned (now-inactive)
+  // one still shows as selected above, it just can't be picked afresh.
+  const options = technicians.filter((t) => t.is_active !== false);
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
@@ -994,7 +997,7 @@ function TechnicianSelect({ value, technicians, onChange }: {
             style={{ flexShrink: 0, width: '100%', textAlign: 'left', padding: '9px 12px', borderRadius: 8, border: 'none', background: !value ? C.honeydew : 'transparent', color: !value ? C.green : '#1a1a1a', fontFamily: 'Figtree', fontSize: 13, fontWeight: !value ? 700 : 500, cursor: 'pointer' }}>
             — Unassigned —
           </button>
-          {technicians.map((t) => {
+          {options.map((t) => {
             const active = t.name === value;
             return (
               <button key={t.name} type="button" onClick={() => { onChange(t.name); setOpen(false); }}
@@ -1011,8 +1014,8 @@ function TechnicianSelect({ value, technicians, onChange }: {
               </button>
             );
           })}
-          {technicians.length === 0 && (
-            <div style={{ padding: '12px', textAlign: 'center', color: C.slate, fontSize: 12 }}>No technicians yet — add them in the Technicians tab.</div>
+          {options.length === 0 && (
+            <div style={{ padding: '12px', textAlign: 'center', color: C.slate, fontSize: 12 }}>No active technicians — add or reactivate them in the Technicians tab.</div>
           )}
         </div>
       )}

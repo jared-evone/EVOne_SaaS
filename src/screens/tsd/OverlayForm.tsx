@@ -95,8 +95,9 @@ export function OverlayEditor({
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(0);
+  const [clipboard, setClipboard] = useState<FormField | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; fieldId: string | null; nx: number; ny: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const selected = template.fields.find((f) => f.id === selectedId) ?? null;
   const pages = pagesOf(template);
   const pageFields = template.fields.filter((f) => (f.page ?? 0) === currentPage);
   const activePage = pages[currentPage] ?? pages[0];
@@ -188,6 +189,34 @@ export function OverlayEditor({
     if (selectedId === id) setSelectedId(null);
   };
 
+  // Drop a copy of `src` centred on a normalized (%) point of the current page.
+  const placeAt = (src: FormField, nx: number, ny: number) => {
+    const id = `f-${Date.now()}`;
+    const w = src.width ?? 10;
+    const h = src.height ?? 5;
+    const x = clamp(nx - w / 2, 0, 100 - w);
+    const y = clamp(ny - h / 2, 0, 100 - h);
+    onChange({ ...template, fields: [...template.fields, { ...src, id, page: currentPage, x, y }] });
+    setSelectedId(id);
+  };
+  // Same-page copy dropped just below the source so it doesn't overlap.
+  const duplicateField = (f: FormField) => {
+    const w = f.width ?? 10;
+    const h = f.height ?? 5;
+    placeAt(f, clamp((f.x ?? 0) + w / 2 + 2, 0, 100), clamp((f.y ?? 0) + h + 1 + h / 2, 0, 100));
+  };
+  // Open the right-click menu, clamped so it stays on screen; select the field under it.
+  const openMenu = (clientX: number, clientY: number, fieldId: string | null, nx: number, ny: number) => {
+    setSelectedId(fieldId);
+    setMenu({
+      x: Math.min(clientX, window.innerWidth - 260),
+      y: Math.min(clientY, window.innerHeight - 360),
+      fieldId, nx, ny,
+    });
+  };
+
+  const menuField = menu?.fieldId ? template.fields.find((f) => f.id === menu.fieldId) ?? null : null;
+
   if (!template.imageSrc) {
     return (
       <UploadPrompt fileInputRef={fileInputRef} onFileSelect={onFileSelect} onUpload={uploadFile} />
@@ -203,18 +232,25 @@ export function OverlayEditor({
         style={{ display: 'none' }}
         onChange={onFileSelect}
       />
-      <Toolbar onAdd={addField} onReplace={() => fileInputRef.current?.click()} />
-      {pages.length > 1 && (
-        <PageTabs
-          count={pages.length}
-          current={currentPage}
-          counts={pages.map((_, i) => template.fields.filter((f) => (f.page ?? 0) === i).length)}
-          onSelect={(i) => {
-            setCurrentPage(i);
-            setSelectedId(null);
-          }}
-        />
-      )}
+      {/* Editing controls stay pinned at the top so Place field / page tabs stay
+          reachable however far down the form you scroll. */}
+      <div style={{ position: 'sticky', top: 0, zIndex: 30, background: C.seasalt, display: 'flex', flexDirection: 'column', gap: 12, paddingBottom: 8 }}>
+        <Toolbar onAdd={addField} onReplace={() => fileInputRef.current?.click()} />
+        {pages.length > 1 && (
+          <PageTabs
+            count={pages.length}
+            current={currentPage}
+            counts={pages.map((_, i) => template.fields.filter((f) => (f.page ?? 0) === i).length)}
+            onSelect={(i) => {
+              setCurrentPage(i);
+              setSelectedId(null);
+            }}
+          />
+        )}
+        <div style={{ fontSize: 11, color: C.slate, padding: '0 2px' }}>
+          Drag to move, drag the corner to resize. <strong style={{ color: '#1a1a1a' }}>Right-click a field</strong> to copy, duplicate, rename or delete{clipboard ? ' — or right-click the form to paste' : ''}.
+        </div>
+      </div>
       {activePage && (
         <OverlayCanvas
           page={activePage}
@@ -222,28 +258,21 @@ export function OverlayEditor({
           selectedId={selectedId}
           onSelect={setSelectedId}
           onUpdate={updateField}
+          onContextMenu={openMenu}
         />
       )}
-      {selected ? (
-        <FieldInspector
-          field={selected}
-          onChange={(patch) => updateField(selected.id, patch)}
-          onRemove={() => removeField(selected.id)}
+      {menu && (
+        <FieldContextMenu
+          x={menu.x} y={menu.y} field={menuField} hasClipboard={!!clipboard}
+          onCopy={() => menuField && setClipboard(menuField)}
+          onDuplicate={() => menuField && duplicateField(menuField)}
+          onPaste={() => clipboard && placeAt(clipboard, menu.nx, menu.ny)}
+          onRename={(label) => menuField && updateField(menuField.id, { label })}
+          onFontSize={(size) => menuField && updateField(menuField.id, { fontSize: size })}
+          onToggleRequired={() => menuField && updateField(menuField.id, { required: !menuField.required })}
+          onDelete={() => menuField && removeField(menuField.id)}
+          onClose={() => setMenu(null)}
         />
-      ) : (
-        <div
-          style={{
-            background: C.white,
-            borderRadius: 12,
-            border: '1px dashed #EBEBEB',
-            padding: '14px 16px',
-            fontSize: 12,
-            color: C.slate,
-            textAlign: 'center',
-          }}
-        >
-          Click a field on the form to edit its properties, or add a new one above.
-        </div>
       )}
     </div>
   );
@@ -455,12 +484,14 @@ function OverlayCanvas({
   selectedId,
   onSelect,
   onUpdate,
+  onContextMenu,
 }: {
   page: OverlayPage;
   fields: FormField[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onUpdate: (id: string, patch: Partial<FormField>) => void;
+  onContextMenu: (clientX: number, clientY: number, fieldId: string | null, nx: number, ny: number) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -499,6 +530,7 @@ function OverlayCanvas({
   }, []);
 
   const startDrag = (mode: 'move' | 'resize', e: React.MouseEvent, field: FormField) => {
+    if (e.button !== 0) return; // let right-click open the context menu, not drag
     e.preventDefault();
     e.stopPropagation();
     dragRef.current = {
@@ -521,12 +553,24 @@ function OverlayCanvas({
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onSelect(null);
       }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        const rect = containerRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        const nx = ((e.clientX - rect.left) / rect.width) * 100;
+        const ny = ((e.clientY - rect.top) / rect.height) * 100;
+        const hit = [...fields].reverse().find(
+          (f) => nx >= (f.x ?? 0) && nx <= (f.x ?? 0) + (f.width ?? 10) && ny >= (f.y ?? 0) && ny <= (f.y ?? 0) + (f.height ?? 5),
+        );
+        onContextMenu(e.clientX, e.clientY, hit?.id ?? null, nx, ny);
+      }}
       style={{
         position: 'relative',
         background: C.white,
         border: '1px solid #EBEBEB',
         borderRadius: 10,
         overflow: 'hidden',
+        containerType: 'size', // so field labels can preview their text size (cqh)
         ...pageAspect(page),
         userSelect: 'none',
       }}
@@ -602,7 +646,8 @@ function FieldBox({
         lineHeight: 1.1,
       }}
     >
-      <span style={{ pointerEvents: 'none', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', maxWidth: '100%' }}>
+      <span style={{ pointerEvents: 'none', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', maxWidth: '100%',
+        ...(['text', 'textarea', 'date'].includes(field.type) && field.fontSize ? { fontSize: `${field.fontSize}cqh`, textTransform: 'none' as const } : {}) }}>
         {field.type === 'checkbox' ? '☐' : field.label}
       </span>
       {selected && (
@@ -625,146 +670,126 @@ function FieldBox({
   );
 }
 
-// ── Field inspector (selected field properties) ───────────────────
+// ── Right-click context menu (inline controls, no browser prompts) ────
 
-function FieldInspector({
-  field,
-  onChange,
-  onRemove,
-}: {
-  field: FormField;
-  onChange: (patch: Partial<FormField>) => void;
-  onRemove: () => void;
-}) {
+function MenuAction({ label, danger, onClick }: { label: string; danger?: boolean; onClick: () => void }) {
   return (
-    <div
+    <button
+      onClick={onClick}
+      onMouseEnter={(e) => { e.currentTarget.style.background = C.seasalt; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
       style={{
-        background: C.white,
-        borderRadius: 12,
-        border: `1.5px solid ${fieldColor(field.type)}`,
-        padding: '14px 16px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 12,
+        textAlign: 'left', padding: '8px 12px', borderRadius: 7, border: 'none', background: 'transparent',
+        color: danger ? '#C0321A' : '#1a1a1a', fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer', width: '100%',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span
-          style={{
-            fontSize: 10,
-            fontWeight: 700,
-            padding: '2px 8px',
-            borderRadius: 6,
-            background: `${fieldColor(field.type)}22`,
-            color: fieldColor(field.type),
-            textTransform: 'uppercase',
-            letterSpacing: '0.04em',
-          }}
-        >
-          {field.type}
-        </span>
-        <span style={{ fontSize: 11, color: C.slate }}>Selected field</span>
-        <button
-          onClick={onRemove}
-          style={{
-            marginLeft: 'auto',
-            padding: '4px 10px',
-            borderRadius: 6,
-            border: '1px solid #FDEAEA',
-            background: 'transparent',
-            color: '#C0321A',
-            fontFamily: 'Figtree',
-            fontSize: 11,
-            fontWeight: 700,
-            cursor: 'pointer',
-          }}
-        >
-          Delete
-        </button>
-      </div>
+      {label}
+    </button>
+  );
+}
 
-      <div>
-        <label style={inspectorLabel}>Label</label>
-        <input
-          value={field.label}
-          onChange={(e) => onChange({ label: e.target.value })}
-          style={inspectorInput}
-        />
-      </div>
+const menuRowLabel: React.CSSProperties = {
+  fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 5,
+};
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
-        <NumberCell label="X %" value={field.x ?? 0} onChange={(v) => onChange({ x: clamp(v, 0, 100) })} />
-        <NumberCell label="Y %" value={field.y ?? 0} onChange={(v) => onChange({ y: clamp(v, 0, 100) })} />
-        <NumberCell label="W %" value={field.width ?? 0} onChange={(v) => onChange({ width: clamp(v, 1, 100) })} />
-        <NumberCell label="H %" value={field.height ?? 0} onChange={(v) => onChange({ height: clamp(v, 1, 100) })} />
-      </div>
-
-      {field.type !== 'checkbox' && (
-        <label
-          style={{
-            fontSize: 12,
-            color: C.slate,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            cursor: 'pointer',
-          }}
-        >
-          <input
-            type="checkbox"
-            checked={field.required ?? false}
-            onChange={(e) => onChange({ required: e.target.checked })}
-            style={{ accentColor: C.green }}
-          />
-          Required when filling
-        </label>
-      )}
+function RenameRow({ value, onChange, onClose }: { value: string; onChange: (v: string) => void; onClose: () => void }) {
+  const [v, setV] = useState(value);
+  return (
+    <div style={{ padding: '6px 12px' }}>
+      <div style={menuRowLabel}>Label</div>
+      <input
+        value={v}
+        onChange={(e) => { setV(e.target.value); onChange(e.target.value); }}
+        onKeyDown={(e) => { if (e.key === 'Enter') { onChange(v.trim() ? v : v); onClose(); } }}
+        placeholder="Field label"
+        style={{ width: '100%', padding: '7px 10px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: '#FAFAFA', boxSizing: 'border-box' }}
+      />
     </div>
   );
 }
 
-const inspectorLabel: React.CSSProperties = {
-  fontSize: 10,
-  fontWeight: 700,
-  color: C.slate,
-  textTransform: 'uppercase',
-  letterSpacing: '0.05em',
-  display: 'block',
-  marginBottom: 5,
-};
+// A4 page height in PDF points — the export renders text at (fontSize% × this),
+// so we show the exact resulting point size while the user adjusts.
+const A4_HEIGHT_PT = 841.89;
+const pctToPt = (pct: number) => (pct / 100) * A4_HEIGHT_PT;
+const ptToPct = (pt: number) => (pt / A4_HEIGHT_PT) * 100;
 
-const inspectorInput: React.CSSProperties = {
-  width: '100%',
-  padding: '7px 10px',
-  borderRadius: 8,
-  border: '1px solid #EBEBEB',
-  fontFamily: 'Figtree',
-  fontSize: 12,
-  outline: 'none',
-  background: '#FAFAFA',
-};
-
-function NumberCell({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  onChange: (v: number) => void;
-}) {
+function FontSizeRow({ value, onChange }: { value: number | undefined; onChange: (v: number | undefined) => void }) {
+  const pt = value ? pctToPt(value) : null;
+  const setPt = (p: number) => onChange(ptToPct(clamp(p, 5, 100)));
+  const stepBtn: React.CSSProperties = {
+    width: 26, height: 26, borderRadius: 7, border: '1px solid #EBEBEB', background: C.white, color: '#1a1a1a',
+    fontFamily: 'Figtree', fontSize: 15, fontWeight: 700, cursor: 'pointer', lineHeight: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+  };
   return (
-    <div>
-      <label style={inspectorLabel}>{label}</label>
-      <input
-        type="number"
-        value={Number(value.toFixed(1))}
-        min={0}
-        max={100}
-        step={0.5}
-        onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
-        style={{ ...inspectorInput, textAlign: 'center' }}
-      />
+    <div style={{ padding: '6px 12px' }}>
+      <div style={menuRowLabel}>Text size {pt ? `· ${Math.round(pt)} pt in PDF` : '· auto-fit box'}</div>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <button
+          onClick={() => onChange(undefined)}
+          style={{ padding: '4px 12px', borderRadius: 99, border: `1px solid ${!value ? C.green : '#EBEBEB'}`, background: !value ? C.honeydew : C.white, color: !value ? C.green : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}
+        >
+          Auto
+        </button>
+        <button style={stepBtn} onClick={() => setPt((pt ?? 12) - 1)}>−</button>
+        <span style={{ minWidth: 48, textAlign: 'center', fontSize: 13, fontWeight: 700, color: value ? '#1a1a1a' : C.slate }}>
+          {pt ? `${Math.round(pt)} pt` : 'auto'}
+        </span>
+        <button style={stepBtn} onClick={() => setPt((pt ?? 12) + 1)}>+</button>
+      </div>
+    </div>
+  );
+}
+
+function FieldContextMenu({
+  x, y, field, hasClipboard,
+  onCopy, onDuplicate, onPaste, onRename, onFontSize, onToggleRequired, onDelete, onClose,
+}: {
+  x: number; y: number; field: FormField | null; hasClipboard: boolean;
+  onCopy: () => void; onDuplicate: () => void; onPaste: () => void;
+  onRename: (label: string) => void; onFontSize: (size: number | undefined) => void;
+  onToggleRequired: () => void; onDelete: () => void; onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [onClose]);
+
+  const box: React.CSSProperties = {
+    position: 'fixed', left: x, top: y, zIndex: 2000, background: C.white, border: '1px solid #EBEBEB',
+    borderRadius: 10, boxShadow: '0 12px 32px rgba(0,0,0,.16)', padding: 4, width: 240,
+    display: 'flex', flexDirection: 'column', gap: 1,
+  };
+  const divider = <div style={{ height: 1, background: '#F3F3F3', margin: '4px 6px' }} />;
+
+  if (!field) {
+    return (
+      <div ref={ref} style={box}>
+        {hasClipboard
+          ? <MenuAction label="Paste here" onClick={() => { onPaste(); onClose(); }} />
+          : <div style={{ padding: '10px 12px', fontSize: 12, color: C.slate }}>Right-click a field to copy it.</div>}
+      </div>
+    );
+  }
+
+  const isText = ['text', 'textarea', 'date'].includes(field.type);
+  return (
+    <div ref={ref} style={box}>
+      <MenuAction label="Copy" onClick={() => { onCopy(); onClose(); }} />
+      <MenuAction label="Duplicate" onClick={() => { onDuplicate(); onClose(); }} />
+      {hasClipboard && <MenuAction label="Paste here" onClick={() => { onPaste(); onClose(); }} />}
+      {divider}
+      <RenameRow value={field.label} onChange={onRename} onClose={onClose} />
+      {isText && <FontSizeRow value={field.fontSize} onChange={onFontSize} />}
+      {field.type !== 'checkbox' && (
+        <MenuAction label={`${field.required ? '✓ ' : ''}Required when filling`} onClick={onToggleRequired} />
+      )}
+      {divider}
+      <MenuAction label="Delete" danger onClick={() => { onDelete(); onClose(); }} />
     </div>
   );
 }
@@ -828,6 +853,7 @@ export function OverlayFormRenderer({
               borderRadius: 10,
               overflow: 'hidden',
               boxShadow: '0 4px 20px rgba(0,0,0,0.04)',
+              containerType: 'size', // lets fields size text as % of page height (cqh)
               ...pageAspect(page),
             }}
           >
@@ -913,6 +939,8 @@ function OverlayInput({
   }
 
   const strVal = typeof value === 'string' ? value : '';
+  // Explicit text size (as % of page height via container-query units) or default.
+  const textFont = field.fontSize ? `${field.fontSize}cqh` : undefined;
 
   if (field.type === 'date') {
     return (
@@ -927,7 +955,7 @@ function OverlayInput({
           border: `1px solid ${disabled ? 'transparent' : '#DADADA'}`,
           borderRadius: 4,
           fontFamily: 'Figtree',
-          fontSize: 11,
+          fontSize: textFont ?? 11,
           padding: '2px 4px',
           outline: 'none',
           color: '#1a1a1a',
@@ -993,7 +1021,7 @@ function OverlayInput({
           border: `1px solid ${disabled ? 'transparent' : '#DADADA'}`,
           borderRadius: 4,
           fontFamily: 'Figtree',
-          fontSize: 11,
+          fontSize: textFont ?? 11,
           padding: '4px 6px',
           resize: 'none',
           outline: 'none',
@@ -1017,7 +1045,7 @@ function OverlayInput({
         border: `1px solid ${disabled ? 'transparent' : '#DADADA'}`,
         borderRadius: 4,
         fontFamily: 'Figtree',
-        fontSize: 12,
+        fontSize: textFont ?? 12,
         padding: '2px 6px',
         outline: 'none',
         color: '#1a1a1a',
