@@ -32,7 +32,7 @@ import { ScreenSettings } from './screens/Settings';
 import { ScreenDBHealth } from './screens/DBHealth';
 import { ScreenEmailDesigner } from './screens/EmailDesigner';
 import { ScreenQuoteMachine } from './screens/QuoteMachine';
-import { ScreenRaisePO } from './screens/RaisePO';
+import { ScreenRaisePO, PODecisionPage } from './screens/RaisePO';
 import { SuperAdminConsole } from './screens/SuperAdmin';
 import { ScreenChargingDashboard } from './screens/ChargingDashboard';
 import { ScreenDashboard } from './screens/Dashboard';
@@ -493,6 +493,12 @@ export default function App() {
   const formPreviewId = new URLSearchParams(window.location.search).get('formPreview');
   if (formPreviewId) {
     return <FormTestPage templateId={formPreviewId} />;
+  }
+
+  // PO approve/reject from the approval email: bypass login, render the decision page.
+  const poToken = new URLSearchParams(window.location.search).get('po');
+  if (poToken) {
+    return <PODecisionPage token={poToken} decision={new URLSearchParams(window.location.search).get('decision')} />;
   }
 
   if (!user) {
