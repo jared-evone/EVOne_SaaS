@@ -21,6 +21,9 @@ interface CRMCompany {
   contract_path: string | null;
   contract_filename: string | null;
   is_managed_cpo?: boolean;
+  is_active?: boolean;
+  /** When set on an inactive account, charging on or after this date isn't invoiced. */
+  inactive_date?: string | null;
 }
 
 const CONTRACT_BUCKET = 'crm-contracts';
@@ -49,6 +52,9 @@ function fmt(n: number) {
 }
 function fmtKwh(n: number) {
   return n > 0 ? `${n.toLocaleString()} kWh` : '—';
+}
+function fmtDate(d: string) {
+  return new Date(`${d}T00:00:00`).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
 
@@ -406,6 +412,32 @@ function CompanyModal({ initial, title, canDelete, invoicingOnly = false, onSave
             </div>
           </div>
         </div>
+        {!invoicingOnly && (
+        <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Account Status</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {([['active', 'Active'], ['inactive', 'Inactive']] as const).map(([key, label]) => {
+              const on = key === 'active' ? form.is_active !== false : form.is_active === false;
+              return (
+                <button key={key} type="button"
+                  onClick={() => setForm((f) => ({ ...f, is_active: key === 'active', inactive_date: key === 'active' ? null : (f.inactive_date ?? '') }))}
+                  style={{ flex: 1, padding: '9px 14px', borderRadius: 10, border: on ? 'none' : '1px solid #EBEBEB', background: on ? (key === 'active' ? C.green : '#C0321A') : C.white, color: on ? C.white : C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          {form.is_active === false && (
+            <div>
+              <FieldLabel>Inactive From</FieldLabel>
+              <input type="date" value={form.inactive_date ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, inactive_date: e.target.value || null }))}
+                style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box', background: C.white, color: '#1a1a1a' }} />
+              <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>Charging on or after this date won't be included in invoices. Sessions before it are still billed.</div>
+            </div>
+          )}
+        </div>
+        )}
         {!invoicingOnly && (
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Contract</div>
@@ -815,7 +847,7 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
                       style={{ cursor: 'pointer', width: 15, height: 15, accentColor: C.green }} />
                   </th>
                 )}
-                {['#', 'Company Name', 'Base Rate', 'Threshold', 'Discounted Rate', 'Saving', 'Contract'].map((h) => (
+                {['#', 'Company Name', 'Status', 'Base Rate', 'Threshold', 'Discounted Rate', 'Saving', 'Contract'].map((h) => (
                   <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
@@ -839,6 +871,11 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
                     )}
                     <td style={{ padding: '12px 16px', fontSize: 12, color: C.slate, cursor: cellCursor }} onClick={openEdit}>{(safePage - 1) * PER_PAGE + i + 1}</td>
                     <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 600, color: '#1a1a1a', cursor: cellCursor }} onClick={openEdit}>{c.name}</td>
+                    <td style={{ padding: '12px 16px', whiteSpace: 'nowrap', cursor: cellCursor }} onClick={openEdit}>
+                      {c.is_active === false
+                        ? <span style={{ background: '#FDEAEA', color: '#C0321A', fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99 }}>Inactive{c.inactive_date ? ` · ${fmtDate(c.inactive_date)}` : ''}</span>
+                        : <span style={{ background: '#E4F3E3', color: '#1B512D', fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99 }}>Active</span>}
+                    </td>
                     <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 700, color: base > 0 ? C.green : C.slate, whiteSpace: 'nowrap', cursor: cellCursor }} onClick={openEdit}>{fmt(base)}</td>
                     <td style={{ padding: '12px 16px', fontSize: 13, color: c.threshold_kwh > 0 ? '#1a1a1a' : C.slate, whiteSpace: 'nowrap', cursor: cellCursor }} onClick={openEdit}>{fmtKwh(c.threshold_kwh)}</td>
                     <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 700, color: disc > 0 ? C.green : C.slate, whiteSpace: 'nowrap', cursor: cellCursor }} onClick={openEdit}>{fmt(disc)}</td>
@@ -862,7 +899,7 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
                 );
               })}
               {visible.length === 0 && (
-                <tr><td colSpan={canDelete ? 8 : 7} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No companies match your search.</td></tr>
+                <tr><td colSpan={canDelete ? 9 : 8} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No companies match your search.</td></tr>
               )}
             </tbody>
           </table>
@@ -874,7 +911,7 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
 
       {adding && (
         <CompanyModal title="Add Company" canDelete={canDelete}
-          initial={{ name: '', base_rate: 0, threshold_kwh: 1000, discounted_rate: 0, invoice_email: null, invoice_cc_emails: [], contract_path: null, contract_filename: null }}
+          initial={{ name: '', base_rate: 0, threshold_kwh: 1000, discounted_rate: 0, invoice_email: null, invoice_cc_emails: [], contract_path: null, contract_filename: null, is_active: true, inactive_date: null }}
           onSave={addCompany} onClose={() => setAdding(false)} />
       )}
       {editing && (
@@ -890,6 +927,8 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
             invoice_cc_emails: editing.invoice_cc_emails ?? [],
             contract_path: editing.contract_path,
             contract_filename: editing.contract_filename,
+            is_active: editing.is_active ?? true,
+            inactive_date: editing.inactive_date ?? null,
           }}
           onSave={async (data) => {
             // Invoicing-only role can ONLY patch the two invoicing fields. Everything else stays unchanged

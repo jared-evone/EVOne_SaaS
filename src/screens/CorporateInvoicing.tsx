@@ -29,6 +29,9 @@ export interface CRMCompany {
   contract_path: string | null;
   contract_filename: string | null;
   is_managed_cpo?: boolean;
+  is_active?: boolean;
+  /** When set on an inactive account, charging on or after this date isn't invoiced. */
+  inactive_date?: string | null;
 }
 
 interface CRMVehicle {
@@ -173,6 +176,16 @@ function parseSpCorpDate(raw: unknown): string {
 }
 
 // Normalise a corporate name for matching the overstay sheet's "Corporate" column to a
+// Extract the calendar day (YYYY-MM-DD) from a session timestamp string, tolerant
+// of both ISO ("2026-05-04T…") and the normalized "2026-05-04 HH:MM:SS" form.
+function sessionDay(s: string): string | null {
+  const str = String(s ?? '');
+  const m = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  const d = new Date(str);
+  return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+}
+
 // CRM company name: lowercase, drop parentheticals like "(Managed CPO)", collapse spaces.
 function normCorpName(s: string): string {
   return String(s ?? '').toLowerCase().replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
@@ -1393,27 +1406,41 @@ export function ScreenCorporateInvoicing() {
   const corpNameToId = new Map(companies.map((c) => [normCorpName(c.name), c.id]));
   const corpToCompany = new Map(companies.map((c) => [normCorpName(c.name), c.name]));
 
+  // Inactive accounts stop billing on their inactive date: any session dated on or
+  // after that day is dropped, while earlier sessions are still invoiced.
+  const inactiveCutoff = new Map<string, string>();
+  for (const c of companies) {
+    if (c.is_active === false && c.inactive_date) inactiveCutoff.set(c.id, c.inactive_date);
+  }
+  const afterCutoff = (cid: string, day: string | null) => {
+    const cut = inactiveCutoff.get(cid);
+    return cut != null && day != null && day >= cut;
+  };
+
   const companyGp: Record<string, GoParkinRow[]> = {};
   const unmatchedGpRows: GoParkinRow[] = [];
   for (const r of goparkinRecords) {
     const cid = plateToCompany.get(r.plate);
-    if (cid) { (companyGp[cid] = companyGp[cid] ?? []).push(r); }
-    else { unmatchedGpRows.push(r); }
+    if (!cid) { unmatchedGpRows.push(r); continue; }
+    if (afterCutoff(cid, sessionDay(r.start))) continue;
+    (companyGp[cid] = companyGp[cid] ?? []).push(r);
   }
 
   const companySp: Record<string, SpCorpRecord[]> = {};
   const unmatchedSpRows: SpCorpRecord[] = [];
   for (const r of spCorpRecords) {
     const cid = emailToCompany.get(r.driverEmail);
-    if (cid) { (companySp[cid] = companySp[cid] ?? []).push(r); }
-    else { unmatchedSpRows.push(r); }
+    if (!cid) { unmatchedSpRows.push(r); continue; }
+    if (afterCutoff(cid, sessionDay(r.startDateTime))) continue;
+    (companySp[cid] = companySp[cid] ?? []).push(r);
   }
   const companyOverstay: Record<string, OverstayRecord[]> = {};
   const unmatchedOverstayRows: OverstayRecord[] = [];
   for (const r of overstayRecords) {
     const cid = corpNameToId.get(normCorpName(r.corporate));
-    if (cid) { (companyOverstay[cid] = companyOverstay[cid] ?? []).push(r); }
-    else { unmatchedOverstayRows.push(r); }
+    if (!cid) { unmatchedOverstayRows.push(r); continue; }
+    if (afterCutoff(cid, sessionDay(r.start))) continue;
+    (companyOverstay[cid] = companyOverstay[cid] ?? []).push(r);
   }
 
   const unmatchedGp = unmatchedGpRows.length;
