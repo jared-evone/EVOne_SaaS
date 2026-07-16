@@ -107,6 +107,22 @@ export const PERMISSION_SECTIONS: { department: Department; keys: ScreenKey[] }[
   }));
 })();
 
+/** Sections for the superadmin permission matrix. Unlike PERMISSION_SECTIONS
+ *  these are NOT deduped: a shared screen (customers, projects) is listed under
+ *  every department that exposes it, so you can find and switch off e.g.
+ *  "Customers" while setting up a technician. There is still only ONE grant per
+ *  (user, screen) — see SHARED_SCREENS: toggling it in one section changes it in
+ *  the others too, which the UI calls out. */
+export const MATRIX_SECTIONS: { department: Department; keys: ScreenKey[] }[] =
+  DEPARTMENTS.map((d) => ({ department: d, keys: DEPARTMENT_SCREENS[d] }));
+
+/** Screens exposed by more than one department — their grant is shared. */
+export const SHARED_SCREENS: Set<ScreenKey> = (() => {
+  const count = new Map<ScreenKey, number>();
+  for (const d of DEPARTMENTS) for (const k of DEPARTMENT_SCREENS[d]) count.set(k, (count.get(k) ?? 0) + 1);
+  return new Set([...count].filter(([, n]) => n > 1).map(([k]) => k));
+})();
+
 interface PermissionsContextValue {
   user: SignedInUser;
   perms: PermissionMap;
@@ -122,11 +138,15 @@ const PermissionsContext = createContext<PermissionsContextValue | null>(null);
 
 const DENY: ScreenCap = { can_view: false, can_edit: false, can_delete: false };
 
-export async function loadPermissionsForUser(userId: string): Promise<PermissionMap> {
+// Grants are per-department: a screen shared by several departments (customers,
+// projects) can be granted in one and denied in another. A session is scoped to
+// the department picked at sign-in, so we only load that department's rows.
+export async function loadPermissionsForUser(userId: string, department: Department): Promise<PermissionMap> {
   const { data: rows } = await supabase
     .from('app_user_permissions')
     .select('screen_key, can_view, can_edit, can_delete')
-    .eq('user_id', userId);
+    .eq('user_id', userId)
+    .eq('department', department);
   const map: PermissionMap = {};
   for (const r of (rows ?? []) as Array<{ screen_key: string; can_view: boolean; can_edit: boolean; can_delete: boolean }>) {
     map[r.screen_key as ScreenKey] = { can_view: r.can_view, can_edit: r.can_edit, can_delete: r.can_delete };
@@ -146,7 +166,7 @@ export function PermissionsProvider({ user, children }: PermissionsProviderProps
   const refresh = async () => {
     setLoading(true);
     // Superadmin has no permission rows — it bypasses the matrix entirely.
-    const m = user.is_superadmin ? {} : await loadPermissionsForUser(user.id);
+    const m = user.is_superadmin ? {} : await loadPermissionsForUser(user.id, user.department);
     setPerms(m);
     setLoading(false);
   };

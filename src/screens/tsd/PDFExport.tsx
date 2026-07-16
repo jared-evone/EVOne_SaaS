@@ -29,7 +29,7 @@ Font.register({
   ],
 });
 import { C } from '../../theme';
-import { isOverlay, pagesOf } from './OverlayForm';
+import { isOverlay, pagesOf, SIGNATURE_FONT } from './OverlayForm';
 import { buildImagePdf } from './imagePdf';
 import { fetchToDataUrl, isStoredImageUrl } from '../../lib/formMedia';
 import type { FormField, FormTemplate, FormValues, OverlayPage, WorkOrder, WorkOrderForm } from '../../workOrderStore';
@@ -324,10 +324,27 @@ function drawCheck(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.restore();
 }
 
-function drawWrappedText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, w: number, h: number, fontPx: number) {
+// An ✕ stamped across the field box — used to strike out the option that doesn't
+// apply. Spans the box the same way the on-screen SVG does.
+function drawCross(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) {
+  const padX = w * 0.1, padY = h * 0.1;
+  ctx.save();
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = Math.max(1.5, Math.min(w, h) * 0.11);
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(x + padX, y + padY);
+  ctx.lineTo(x + w - padX, y + h - padY);
+  ctx.moveTo(x + w - padX, y + padY);
+  ctx.lineTo(x + padX, y + h - padY);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawWrappedText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, w: number, h: number, fontPx: number, fontFamily = 'Figtree, Arial, sans-serif') {
   ctx.save();
   ctx.fillStyle = '#1a1a1a';
-  ctx.font = `${fontPx}px Figtree, Arial, sans-serif`;
+  ctx.font = `${fontPx}px ${fontFamily}`;
   ctx.textBaseline = 'top';
   const lineH = fontPx * 1.22;
   const words = text.split(/\s+/);
@@ -375,10 +392,17 @@ async function flattenOverlayPage(
     const val = values[f.id];
     if (f.type === 'checkbox') {
       if (val === true) drawCheck(ctx, fx, fy, fw, fh);
+    } else if (f.type === 'cross') {
+      if (val === true) drawCross(ctx, fx, fy, fw, fh);
     } else if (f.type === 'photo' || f.type === 'signature') {
+      const typed = typeof val === 'string' ? val.trim() : '';
       if (typeof val === 'string' && isImageSrc(val)) {
         const im = await loadImage(val);
         if (im) drawContain(ctx, im, fx, fy, fw, fh);
+      } else if (f.type === 'signature' && typed) {
+        // Typed signature — draw it in the same script face shown on screen.
+        const fontPx = f.fontSize ? (f.fontSize / 100) * h : Math.max(8, Math.min(fh * 0.62, 15));
+        drawWrappedText(ctx, typed, fx, fy, fw, fh, fontPx, SIGNATURE_FONT);
       }
     } else if (typeof val === 'string' && val.trim()) {
       // Explicit size = % of page height (matches the on-screen cqh units); else auto-fit the box.

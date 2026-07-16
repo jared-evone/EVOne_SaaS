@@ -6,7 +6,10 @@ import {
   DEMO_TECHNICIAN,
   STATUS_COLORS,
   useWorkOrderStore,
+  assigneesLabel,
+  assigneesOf,
   type FormField,
+  type FormTemplate,
   type FormValues,
   type WorkOrder,
   type WorkOrderForm,
@@ -15,15 +18,16 @@ import { OverlayFormRenderer, isOverlay } from './OverlayForm';
 import { usePermissions } from '../../permissions';
 import { supabase } from '../../lib/supabase';
 import { uploadFormPhoto, uploadFormPdf } from '../../lib/formMedia';
-import { Power, Calendar, User, Camera, Search, ChevronDown, Navigation, ClipboardList } from 'lucide-react';
+import { Power, Calendar, User, Camera, Search, ChevronDown, ChevronRight, Navigation, ClipboardList } from 'lucide-react';
 import { googleMapsDirections, hasNavTarget } from '../../lib/navLinks';
+import { TechAvatar } from '../../components/TechAvatar';
 
 interface TechAppProps {
   onBack?: () => void;
   onSignOut?: () => void;
 }
 
-type TabKey = 'available' | 'mine' | 'all' | 'unassigned';
+type TabKey = 'mine' | 'all';
 
 export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
   const store = useWorkOrderStore();
@@ -33,16 +37,21 @@ export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
   const isAdmin = can('tsd_workorders', 'can_edit');
   const me = user.full_name || DEMO_TECHNICIAN;
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeFormId, setActiveFormId] = useState<string | null>(null);
   const [tab, setTab] = useState<TabKey>('mine');
   const [adminView, setAdminView] = useState<'list' | 'calendar'>('calendar');
   const [adminFilter, setAdminFilter] = useState<string>('all'); // 'all' | 'unassigned' | technician name
-  const [dbTechs, setDbTechs] = useState<string[]>([]);
+  const [dbTechs, setDbTechs] = useState<{ name: string; photo_path: string | null }[]>([]);
 
   useEffect(() => {
     if (!isAdmin) return;
     let cancelled = false;
-    supabase.from('technicians').select('name, is_active').order('name').then(({ data }) => {
-      if (!cancelled) setDbTechs(((data as { name: string; is_active?: boolean }[]) ?? []).filter((t) => t.is_active !== false).map((t) => t.name));
+    supabase.from('technicians').select('name, photo_path, is_active').order('name').then(({ data }) => {
+      if (!cancelled) {
+        setDbTechs(((data as { name: string; photo_path: string | null; is_active?: boolean }[]) ?? [])
+          .filter((t) => t.is_active !== false)
+          .map((t) => ({ name: t.name, photo_path: t.photo_path })));
+      }
     });
     return () => { cancelled = true; };
   }, [isAdmin]);
@@ -57,47 +66,59 @@ export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
     return () => { ok = false; };
   }, [activeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // name → profile photo, for the calendar cards. Must stay above the early
+  // returns below — hooks can't run conditionally.
+  const techPhotos = useMemo(() => new Map(dbTechs.map((t) => [t.name, t.photo_path])), [dbTechs]);
+
   const active = activeId ? store.workOrders.find((w) => w.id === activeId) : null;
-  if (active) {
-    if (hydratedId !== active.id) {
-      return (
-        <div style={{ minHeight: '60vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.slate, fontSize: 14 }}>
-          Loading job…
-        </div>
-      );
-    }
+
+  // Filling a form takes the full screen (it's long); the job itself is just a
+  // popup over the list.
+  const formIndex = active && activeFormId && hydratedId === active.id
+    ? active.forms.findIndex((f) => f.id === activeFormId)
+    : -1;
+  if (active && formIndex >= 0) {
     return (
       <TechFillFormView
         workOrder={active}
-        onBack={() => setActiveId(null)}
+        formIndex={formIndex}
+        onBack={() => setActiveFormId(null)}
         onSignOut={onSignOut}
       />
     );
   }
 
-  const available = store.workOrders.filter((w) => w.status === 'open');
-  const mine = store.workOrders.filter((w) => w.assignedTo === me && w.status !== 'completed');
-  const all = store.workOrders;
-  const unassigned = store.workOrders.filter((w) => !w.assignedTo);
+  const jobModal = active ? (
+    <TechJobModal
+      workOrder={active}
+      loading={hydratedId !== active.id}
+      onOpenForm={(fid) => setActiveFormId(fid)}
+      onClose={() => { setActiveId(null); setActiveFormId(null); }}
+    />
+  ) : null;
 
-  // Member tabs (My Jobs / Available).
+  const mine = store.workOrders.filter((w) => assigneesOf(w).includes(me) && w.status !== 'completed');
+  const all = store.workOrders;
+  const unassigned = store.workOrders.filter((w) => assigneesOf(w).length === 0);
+
+  // Technician tabs: their own jobs, plus visibility of everyone's schedule.
   const tabs: [TabKey, string][] = [
     ['mine', `My Jobs (${mine.length})`],
-    ['available', `Available (${available.length})`],
+    ['all', `All Jobs (${all.length})`],
   ];
-  const visible = tab === 'available' ? available : mine;
-  const emptyMsg = tab === 'mine' ? 'No open jobs assigned to you.' : 'No jobs available to pick up.';
+  const visible = tab === 'all' ? all : mine;
+  const emptyMsg = tab === 'mine' ? 'No jobs assigned to you yet.' : 'No work orders yet.';
 
   // Admin: per-technician job counts, listing every known technician plus any
   // assignee already on a job (so legacy names still appear as a filter).
   const jobsByAssignee = new Map<string, number>();
-  for (const w of store.workOrders) if (w.assignedTo) jobsByAssignee.set(w.assignedTo, (jobsByAssignee.get(w.assignedTo) ?? 0) + 1);
-  const techFilters = [...new Set([...dbTechs, ...jobsByAssignee.keys()])].sort((a, b) => a.localeCompare(b));
+  for (const w of store.workOrders) for (const a of assigneesOf(w)) jobsByAssignee.set(a, (jobsByAssignee.get(a) ?? 0) + 1);
+  const techFilters = [...new Set([...dbTechs.map((t) => t.name), ...jobsByAssignee.keys()])].sort((a, b) => a.localeCompare(b));
 
   const adminVisible =
     adminFilter === 'all' ? all :
     adminFilter === 'unassigned' ? unassigned :
-    store.workOrders.filter((w) => w.assignedTo === adminFilter);
+    store.workOrders.filter((w) => assigneesOf(w).includes(adminFilter));
   const adminEmptyMsg =
     adminFilter === 'all' ? 'No work orders yet.' :
     adminFilter === 'unassigned' ? 'No unassigned work orders.' :
@@ -114,6 +135,7 @@ export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
 
   if (isAdmin) {
     return (
+      <>
       <Shell
         onBack={onBack}
         onSignOut={onSignOut}
@@ -149,7 +171,7 @@ export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
             </div>
 
             {adminView === 'calendar' ? (
-              <JobCalendar key={adminFilter} jobs={adminVisible} onOpen={setActiveId} onReschedule={(id, date) => store.reschedule(id, date)} />
+              <JobCalendar key={adminFilter} jobs={adminVisible} techPhotos={techPhotos} onOpen={(id) => { setActiveId(id); setActiveFormId(null); }} onReschedule={(id, date) => store.reschedule(id, date)} />
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {adminVisible.length === 0 && (
@@ -158,26 +180,30 @@ export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
                   </div>
                 )}
                 {adminVisible.map((wo) => (
-                  <WorkOrderCard key={wo.id} wo={wo} assignee={wo.assignedTo} actionLabel="View" onAction={() => setActiveId(wo.id)} />
+                  <WorkOrderCard key={wo.id} wo={wo} assignee={wo.assignedTo} actionLabel="View" onAction={() => { setActiveId(wo.id); setActiveFormId(null); }} />
                 ))}
               </div>
             )}
           </div>
         </div>
       </Shell>
+      {jobModal}
+      </>
     );
   }
 
   return (
+    <>
     <Shell
       onBack={onBack}
       onSignOut={onSignOut}
       title="My Workday"
       subtitle={`Signed in as ${me}`}
       crumb="Technician"
+      wide
     >
       {/* Tabs */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
         {tabs.map(([k, l]) => (
           <button
             key={k}
@@ -201,46 +227,51 @@ export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
         ))}
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {visible.length === 0 && (
-          <div
-            style={{
-              padding: '40px 20px',
-              textAlign: 'center',
-              color: C.slate,
-              fontSize: 13,
-              background: C.white,
-              borderRadius: 14,
-              border: '1px dashed #EBEBEB',
-            }}
-          >
-            {emptyMsg}
-          </div>
-        )}
-        {visible.map((wo) => (
-          <WorkOrderCard
-            key={wo.id}
-            wo={wo}
-            assignee={isAdmin ? wo.assignedTo : undefined}
-            actionLabel={
-              isAdmin
-                ? 'View'
-                : tab === 'available'
-                  ? 'Pick up'
-                  : wo.status === 'in_progress'
-                    ? 'Continue'
-                    : wo.status === 'assigned'
-                      ? 'Start'
-                      : 'Open'
-            }
-            onAction={() => {
-              if (!isAdmin && wo.status === 'open') store.pickUp(wo.id, me);
-              setActiveId(wo.id);
-            }}
-          />
+      {/* List / calendar — same choice the admin gets */}
+      <div style={{ display: 'flex', gap: 4, background: C.seasalt, borderRadius: 10, padding: 4, width: 'fit-content', marginBottom: 16 }}>
+        {([['list', 'List view'], ['calendar', 'Calendar view']] as const).map(([k, l]) => (
+          <button key={k} onClick={() => setAdminView(k)}
+            style={{ padding: '7px 16px', borderRadius: 8, border: 'none', fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer',
+              background: adminView === k ? C.green : 'transparent', color: adminView === k ? C.white : C.slate }}>
+            {l}
+          </button>
         ))}
       </div>
+
+      {adminView === 'calendar' ? (
+        // Read-only for technicians: scheduling stays with the office (no drag).
+        <JobCalendar key={tab} jobs={visible} techPhotos={techPhotos} onOpen={(id) => { setActiveId(id); setActiveFormId(null); }} />
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {visible.length === 0 && (
+            <div
+              style={{
+                padding: '40px 20px',
+                textAlign: 'center',
+                color: C.slate,
+                fontSize: 13,
+                background: C.white,
+                borderRadius: 14,
+                border: '1px dashed #EBEBEB',
+              }}
+            >
+              {emptyMsg}
+            </div>
+          )}
+          {visible.map((wo) => (
+            <WorkOrderCard
+              key={wo.id}
+              wo={wo}
+              assignee={tab === 'all' ? wo.assignedTo : undefined}
+              actionLabel={wo.status === 'in_progress' ? 'Continue' : wo.status === 'assigned' ? 'Start' : 'Open'}
+              onAction={() => { setActiveId(wo.id); setActiveFormId(null); }}
+            />
+          ))}
+        </div>
+      )}
     </Shell>
+    {jobModal}
+    </>
   );
 }
 
@@ -356,7 +387,7 @@ function WorkOrderCard({
   wo: WorkOrder;
   actionLabel: string;
   onAction: () => void;
-  assignee?: string | null;
+  assignee?: string | string[] | null;
 }) {
   const sc = STATUS_COLORS[wo.status];
   const priorityColor = wo.priority === 'high' ? '#C0321A' : wo.priority === 'low' ? C.slate : C.opal;
@@ -414,11 +445,15 @@ function WorkOrderCard({
       )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 11, color: C.slate, display: 'inline-flex', alignItems: 'center', gap: 4 }}><Calendar size={11} strokeWidth={2} /> {wo.scheduledDate}</span>
-        {assignee !== undefined && (
-          <span style={{ fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 10px', borderRadius: 99, background: assignee ? C.honeydew : '#FFF0E0', color: assignee ? C.green : '#B45309' }}>
-            <User size={11} strokeWidth={2.25} /> {assignee ?? 'Unassigned'}
-          </span>
-        )}
+        {assignee !== undefined && (() => {
+          const names = assigneesOf({ assignedTo: assignee });
+          const has = names.length > 0;
+          return (
+            <span style={{ fontSize: 11, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 10px', borderRadius: 99, background: has ? C.honeydew : '#FFF0E0', color: has ? C.green : '#B45309' }}>
+              <User size={11} strokeWidth={2.25} /> {has ? names.join(', ') : 'Unassigned'}
+            </span>
+          );
+        })()}
         <button
           onClick={onAction}
           style={{
@@ -444,11 +479,16 @@ function WorkOrderCard({
 // ── Calendar (admin "All Jobs") ───────────────────────────────────
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+// Jobs shown per day in month view before the "+N more" toggle.
+const MONTH_ROWS = 3;
 
 function pad2(n: number) { return String(n).padStart(2, '0'); }
 function isoOf(d: Date) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+// Monday-based, matching the WEEKDAYS header.
+const startOfWeek = (d: Date) => addDays(d, -((d.getDay() + 6) % 7));
 
-function JobCalendar({ jobs, onOpen, onReschedule }: { jobs: WorkOrder[]; onOpen: (id: string) => void; onReschedule?: (id: string, date: string) => void }) {
+function JobCalendar({ jobs, onOpen, onReschedule, techPhotos }: { jobs: WorkOrder[]; onOpen: (id: string) => void; onReschedule?: (id: string, date: string) => void; techPhotos?: Map<string, string | null> }) {
   const [dragOverIso, setDragOverIso] = useState<string | null>(null);
   useEffect(() => {
     const clear = () => setDragOverIso(null);
@@ -456,12 +496,20 @@ function JobCalendar({ jobs, onOpen, onReschedule }: { jobs: WorkOrder[]; onOpen
     return () => document.removeEventListener('dragend', clear);
   }, []);
 
-  // Open on the month of the most recent scheduled job (falling back to today).
-  const [cursor, setCursor] = useState(() => {
+  // Week is the day-to-day working view; month is the overview.
+  const [mode, setMode] = useState<'week' | 'month'>('week');
+  // Month cells show MONTH_ROWS jobs; busier days expand on demand so the grid
+  // keeps a predictable height.
+  const [expandedDays, setExpandedDays] = useState<Set<string>>(new Set());
+  const toggleDay = (iso: string) =>
+    setExpandedDays((prev) => { const n = new Set(prev); n.has(iso) ? n.delete(iso) : n.add(iso); return n; });
+
+  // Open on the most recent scheduled job (falling back to today).
+  const [anchor, setAnchor] = useState<Date>(() => {
     const dates = jobs.map((j) => j.scheduledDate).filter(Boolean).sort();
     const base = dates.length ? dates[dates.length - 1] : isoOf(new Date());
-    const [yy, mm] = base.split('-').map(Number);
-    return { y: yy, m0: mm - 1 };
+    const [yy, mm, dd] = base.split('-').map(Number);
+    return new Date(yy, mm - 1, dd);
   });
 
   const byDate = useMemo(() => {
@@ -474,21 +522,31 @@ function JobCalendar({ jobs, onOpen, onReschedule }: { jobs: WorkOrder[]; onOpen
     return m;
   }, [jobs]);
 
-  const { y, m0 } = cursor;
   const todayIso = isoOf(new Date());
-  const monthLabel = new Date(y, m0, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
 
-  const first = new Date(y, m0, 1);
-  const startOffset = (first.getDay() + 6) % 7; // 0 = Monday
-  const daysInMonth = new Date(y, m0 + 1, 0).getDate();
-  const totalCells = Math.ceil((startOffset + daysInMonth) / 7) * 7;
-  const cells = Array.from({ length: totalCells }, (_, i) => new Date(y, m0, 1 - startOffset + i));
+  const cells = useMemo(() => {
+    if (mode === 'week') {
+      const s = startOfWeek(anchor);
+      return Array.from({ length: 7 }, (_, i) => addDays(s, i));
+    }
+    const y = anchor.getFullYear(), m0 = anchor.getMonth();
+    const startOffset = (new Date(y, m0, 1).getDay() + 6) % 7; // 0 = Monday
+    const daysInMonth = new Date(y, m0 + 1, 0).getDate();
+    const totalCells = Math.ceil((startOffset + daysInMonth) / 7) * 7;
+    return Array.from({ length: totalCells }, (_, i) => new Date(y, m0, 1 - startOffset + i));
+  }, [mode, anchor]);
 
-  const step = (delta: number) => setCursor((c) => {
-    const d = new Date(c.y, c.m0 + delta, 1);
-    return { y: d.getFullYear(), m0: d.getMonth() };
-  });
-  const goToday = () => { const n = new Date(); setCursor({ y: n.getFullYear(), m0: n.getMonth() }); };
+  const label = (() => {
+    if (mode === 'month') return anchor.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+    const a = cells[0], b = cells[6];
+    return a.getMonth() === b.getMonth()
+      ? `${a.getDate()} – ${b.getDate()} ${a.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}`
+      : `${a.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} – ${b.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
+  })();
+
+  const step = (delta: number) => setAnchor((a) =>
+    mode === 'week' ? addDays(a, delta * 7) : new Date(a.getFullYear(), a.getMonth() + delta, 1));
+  const goToday = () => setAnchor(new Date());
 
   const navBtn: React.CSSProperties = { width: 32, height: 32, borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontSize: 16, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 };
 
@@ -496,22 +554,32 @@ function JobCalendar({ jobs, onOpen, onReschedule }: { jobs: WorkOrder[]; onOpen
     <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
       <div style={{ minWidth: 700 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '14px 18px', borderBottom: '1px solid #F3F3F3' }}>
-        <button onClick={() => step(-1)} style={navBtn} title="Previous month">‹</button>
-        <button onClick={() => step(1)} style={navBtn} title="Next month">›</button>
-        <div style={{ fontSize: 16, fontWeight: 700, color: C.green, marginLeft: 4 }}>{monthLabel}</div>
-        <button onClick={goToday} style={{ marginLeft: 'auto', padding: '6px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Today</button>
+        <button onClick={() => step(-1)} style={navBtn} title={mode === 'week' ? 'Previous week' : 'Previous month'}>‹</button>
+        <button onClick={() => step(1)} style={navBtn} title={mode === 'week' ? 'Next week' : 'Next month'}>›</button>
+        <div style={{ fontSize: 16, fontWeight: 700, color: C.green, marginLeft: 4 }}>{label}</div>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 4, background: C.seasalt, borderRadius: 8, padding: 3 }}>
+            {(['week', 'month'] as const).map((m) => (
+              <button key={m} onClick={() => setMode(m)}
+                style={{ padding: '5px 12px', borderRadius: 6, border: 'none', background: mode === m ? C.green : 'transparent', color: mode === m ? C.white : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', textTransform: 'capitalize' }}>
+                {m}
+              </button>
+            ))}
+          </div>
+          <button onClick={goToday} style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Today</button>
+        </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', borderBottom: '1px solid #F3F3F3', background: C.seasalt }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', borderBottom: '1px solid #F3F3F3', background: C.seasalt }}>
         {WEEKDAYS.map((w) => (
           <div key={w} style={{ padding: '8px 10px', fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{w}</div>
         ))}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))' }}>
         {cells.map((d, i) => {
           const iso = isoOf(d);
-          const inMonth = d.getMonth() === m0;
+          const inMonth = mode === 'week' || d.getMonth() === anchor.getMonth();
           const dayJobs = byDate.get(iso) ?? [];
           const isToday = iso === todayIso;
           const isDropTarget = dragOverIso === iso;
@@ -525,7 +593,7 @@ function JobCalendar({ jobs, onOpen, onReschedule }: { jobs: WorkOrder[]; onOpen
                 if (id) onReschedule(id, iso);
               } : undefined}
               style={{
-                minHeight: 160,
+                minHeight: mode === 'week' ? 460 : 140,
                 borderRight: (i % 7 !== 6) ? '1px solid #F3F3F3' : 'none',
                 borderBottom: '1px solid #F3F3F3',
                 background: isDropTarget ? C.honeydew : inMonth ? C.white : '#FBFCFD',
@@ -534,6 +602,8 @@ function JobCalendar({ jobs, onOpen, onReschedule }: { jobs: WorkOrder[]; onOpen
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 4,
+                minWidth: 0, // let the track stay equal-width; card text truncates instead
+                overflow: 'hidden',
               }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 2px' }}>
                 <span style={{
@@ -545,8 +615,16 @@ function JobCalendar({ jobs, onOpen, onReschedule }: { jobs: WorkOrder[]; onOpen
                 }}>{d.getDate()}</span>
                 {dayJobs.length > 0 && <span style={{ fontSize: 10, color: C.slate, fontWeight: 700 }}>{dayJobs.length}</span>}
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, overflowY: 'auto', maxHeight: 280 }}>
-                {dayJobs.map((j) => <CalendarJobCard key={j.id} wo={j} onOpen={() => onOpen(j.id)} draggable={!!onReschedule} />)}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: mode === 'week' ? 6 : 3, overflowY: mode === 'week' ? 'auto' : 'visible', overflowX: 'hidden', maxHeight: mode === 'week' ? 560 : undefined, minWidth: 0 }}>
+                {(mode === 'month' && !expandedDays.has(iso) ? dayJobs.slice(0, MONTH_ROWS) : dayJobs).map((j) => (
+                  <CalendarJobCard key={j.id} wo={j} onOpen={() => onOpen(j.id)} draggable={!!onReschedule} compact={mode === 'month'} techPhotos={techPhotos} />
+                ))}
+                {mode === 'month' && dayJobs.length > MONTH_ROWS && (
+                  <button onClick={() => toggleDay(iso)}
+                    style={{ alignSelf: 'flex-start', padding: '2px 6px', borderRadius: 6, border: 'none', background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>
+                    {expandedDays.has(iso) ? 'Show less' : `+${dayJobs.length - MONTH_ROWS} more`}
+                  </button>
+                )}
               </div>
             </div>
           );
@@ -557,17 +635,48 @@ function JobCalendar({ jobs, onOpen, onReschedule }: { jobs: WorkOrder[]; onOpen
   );
 }
 
-function CalendarJobCard({ wo, onOpen, draggable }: { wo: WorkOrder; onOpen: () => void; draggable?: boolean }) {
+function CalendarJobCard({ wo, onOpen, draggable, compact, techPhotos }: { wo: WorkOrder; onOpen: () => void; draggable?: boolean; compact?: boolean; techPhotos?: Map<string, string | null> }) {
   const sc = STATUS_COLORS[wo.status];
   const priorityColor = wo.priority === 'high' ? '#C0321A' : wo.priority === 'low' ? C.slate : C.opal;
+  const dragProps = {
+    draggable,
+    onDragStart: draggable ? (e: React.DragEvent) => { e.dataTransfer.setData('text/plain', wo.id); e.dataTransfer.effectAllowed = 'move'; } : undefined,
+  };
+  const techs = assigneesOf(wo);
+  const hint = `${wo.customer} · ${wo.title}\n${techs.length ? techs.join(', ') : 'Unassigned'} · ${sc.label}${draggable ? '\nDrag to another day to reschedule' : ''}`;
+
+  // Month view: one narrow row per job — the technician's face instead of a
+  // status dot, so a month reads as "who is where" at a glance.
+  if (compact) {
+    return (
+      <button onClick={onOpen} {...dragProps} title={hint}
+        style={{
+          textAlign: 'left', width: '100%', minWidth: 0, overflow: 'hidden', display: 'flex', alignItems: 'center', gap: 6,
+          border: '1px solid #EBEBEB', borderLeft: `3px solid ${priorityColor}`, borderRadius: 6,
+          background: C.white, padding: '4px 6px', cursor: draggable ? 'grab' : 'pointer', fontFamily: 'Figtree',
+        }}>
+        {techs.length ? (
+          <span style={{ display: 'inline-flex', flexShrink: 0 }}>
+            {techs.slice(0, 2).map((n, i) => (
+              <span key={n} style={{ marginLeft: i ? -6 : 0, display: 'inline-flex' }}>
+                <TechAvatar name={n} photoPath={techPhotos?.get(n) ?? null} size={18} ring />
+              </span>
+            ))}
+          </span>
+        ) : (
+          <span title="Unassigned" style={{ width: 18, height: 18, borderRadius: 99, border: '1px dashed #CBD5DD', flexShrink: 0 }} />
+        )}
+        <span style={{ fontSize: 11, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+          {wo.customer}
+        </span>
+      </button>
+    );
+  }
+
   return (
-    <button
-      onClick={onOpen}
-      draggable={draggable}
-      onDragStart={draggable ? (e) => { e.dataTransfer.setData('text/plain', wo.id); e.dataTransfer.effectAllowed = 'move'; } : undefined}
-      title={draggable ? 'Drag to another day to reschedule' : undefined}
+    <button onClick={onOpen} {...dragProps} title={draggable ? 'Drag to another day to reschedule' : undefined}
       style={{
-        textAlign: 'left', width: '100%',
+        textAlign: 'left', width: '100%', minWidth: 0, overflow: 'hidden',
         border: '1px solid #EBEBEB', borderLeft: `3px solid ${priorityColor}`, borderRadius: 10,
         background: C.white, padding: '9px 11px', cursor: draggable ? 'grab' : 'pointer',
         display: 'flex', flexDirection: 'column', gap: 5, fontFamily: 'Figtree',
@@ -576,10 +685,23 @@ function CalendarJobCard({ wo, onOpen, draggable }: { wo: WorkOrder; onOpen: () 
       <span style={{ fontSize: 12, fontWeight: 700, color: C.green, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={wo.customer}>{wo.customer}</span>
       {/* Job title */}
       <span style={{ fontSize: 11, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={wo.title}>{wo.title}</span>
-      {/* Technician */}
-      <span style={{ fontSize: 10, color: wo.assignedTo ? C.slate : '#B45309', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {wo.assignedTo ?? 'Unassigned'}
-      </span>
+      {/* Technician(s) — photo + name, several can be on one job */}
+      {techs.length ? (
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+          <span style={{ display: 'inline-flex', flexShrink: 0 }}>
+            {techs.slice(0, 3).map((n, i) => (
+              <span key={n} style={{ marginLeft: i ? -7 : 0, display: 'inline-flex' }}>
+                <TechAvatar name={n} photoPath={techPhotos?.get(n) ?? null} size={20} ring />
+              </span>
+            ))}
+          </span>
+          <span style={{ fontSize: 10, color: C.slate, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+            {techs.length > 3 ? `${techs.slice(0, 3).join(', ')} +${techs.length - 3}` : techs.join(', ')}
+          </span>
+        </span>
+      ) : (
+        <span style={{ fontSize: 10, color: '#B45309', fontWeight: 600 }}>Unassigned</span>
+      )}
       {/* Status */}
       <span style={{ alignSelf: 'flex-start', fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: sc.bg, color: sc.color, whiteSpace: 'nowrap', letterSpacing: '0.02em' }}>{sc.label}</span>
     </button>
@@ -655,69 +777,95 @@ export function OtherFormCard({ inst, disabled, onUpload, onRemove }: {
   );
 }
 
-// ── Fill-form view ────────────────────────────────────────────────
+// ── Per-form progress ─────────────────────────────────────────────
 
-function TechFillFormView({
+type FormState = 'empty' | 'partial' | 'done';
+interface FormProgress { state: FormState; missing: string[]; requiredTotal: number; requiredDone: number; filled: number }
+
+// How far along one form instance is — drives the job page's status chips so a
+// tech can see at a glance what's left and never re-opens a finished form.
+function formProgress(inst: WorkOrderForm, tpl: FormTemplate | undefined): FormProgress {
+  if (!tpl) {
+    const has = !!(inst.reportPdfUrl || inst.reportPdfBase64);
+    return { state: has ? 'done' : 'empty', missing: has ? [] : ['PDF report'], requiredTotal: 1, requiredDone: has ? 1 : 0, filled: has ? 1 : 0 };
+  }
+  // Container groups contribute their children, not themselves.
+  const flat = tpl.fields.flatMap((f) => (f.type === 'group' && f.children ? f.children : [f]));
+  const answerable = flat.filter((f) => f.type !== 'section');
+  const vals = inst.values ?? {};
+  const isFilled = (f: FormField) => { const v = vals[f.id]; return !(v === undefined || v === '' || v === false); };
+  const required = answerable.filter((f) => f.required);
+  const missing = required.filter((f) => !isFilled(f)).map((f) => f.label);
+  const filled = answerable.filter(isFilled).length;
+  const state: FormState =
+    missing.length === 0 && (required.length > 0 || filled > 0) ? 'done' : filled > 0 ? 'partial' : 'empty';
+  return { state, missing, requiredTotal: required.length, requiredDone: required.length - missing.length, filled };
+}
+
+const FORM_STATE_CHIP: Record<FormState, { bg: string; color: string; label: string }> = {
+  done:    { bg: '#E4F3E3', color: '#1B512D', label: 'Complete' },
+  partial: { bg: '#FFF8E1', color: '#B07D00', label: 'In progress' },
+  empty:   { bg: '#F3F3F3', color: '#767B77', label: 'Not started' },
+};
+
+// ── Job info page ─────────────────────────────────────────────────
+
+// Opening a job lands here, not straight in a form: where to go, what the office
+// said, and one row per form with its live progress. Forms are opened one at a
+// time from here.
+function TechJobModal({
   workOrder,
-  onBack,
-  onSignOut,
+  onOpenForm,
+  onClose,
+  loading,
 }: {
   workOrder: WorkOrder;
-  onBack: () => void;
-  onSignOut?: () => void;
+  onOpenForm: (formId: string) => void;
+  onClose: () => void;
+  loading?: boolean;
 }) {
   const store = useWorkOrderStore();
   const { user } = usePermissions();
   const me = user.full_name || DEMO_TECHNICIAN;
-  const [forms, setForms] = useState<WorkOrderForm[]>(() => workOrder.forms.map((f) => ({ ...f, values: { ...(f.values ?? {}) } })));
-  const [savedAt, setSavedAt] = useState<string | null>(null);
-
-  const setField = (i: number, id: string, val: string | boolean) =>
-    setForms((fs) => fs.map((f, idx) => (idx === i ? { ...f, values: { ...(f.values ?? {}), [id]: val } } : f)));
-  const setReport = (i: number, name: string, url: string) =>
-    setForms((fs) => fs.map((f, idx) => (idx === i ? { ...f, reportFileName: name || undefined, reportPdfUrl: url || undefined, reportPdfBase64: undefined } : f)));
-
-  const missingRequired = useMemo(() => {
-    const out: string[] = [];
-    for (const inst of forms) {
-      const tpl = store.getTemplate(inst.templateId);
-      if (!tpl) {
-        if (!inst.reportPdfBase64 && !inst.reportPdfUrl) out.push(`${inst.label}: PDF report`);
-        continue;
-      }
-      // container groups contribute their children, not themselves
-      const flat = tpl.fields.flatMap((f) => (f.type === 'group' && f.children ? f.children : [f]));
-      for (const f of flat) {
-        if (!f.required) continue;
-        const v = (inst.values ?? {})[f.id];
-        if (v === undefined || v === '' || v === false) out.push(`${inst.label}: ${f.label}`);
-      }
-    }
-    return out;
-  }, [forms, store]);
-
   const readOnly = workOrder.status === 'submitted' || workOrder.status === 'reviewed' || workOrder.status === 'completed';
 
-  const handleSaveDraft = () => {
-    store.saveDraft(workOrder.id, forms);
-    setSavedAt(new Date().toLocaleTimeString());
-  };
+  const progs = workOrder.forms.map((f) => formProgress(f, store.getTemplate(f.templateId)));
+  const allDone = progs.length > 0 && progs.every((p) => p.state === 'done');
+  const outstanding = workOrder.forms.filter((_, i) => progs[i].state !== 'done').length;
+  const sc = STATUS_COLORS[workOrder.status];
+
   const handleSubmit = () => {
-    if (missingRequired.length > 0) return;
-    store.submit(workOrder.id, forms, me);
-    onBack();
+    if (!allDone) return;
+    store.submit(workOrder.id, workOrder.forms, me);
+    onClose();
   };
 
+  const meta = (label: string, value: string) => (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</div>
+      <div style={{ fontSize: 13, color: '#1a1a1a', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+    </div>
+  );
+
   return (
-    <Shell
-      onBack={onBack}
-      onSignOut={onSignOut}
-      title={workOrder.title || 'Work Order'}
-      subtitle={`${workOrder.id} · ${workOrder.customer} · ${forms.length} form${forms.length === 1 ? '' : 's'}`}
-      crumb="Technician"
-    >
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 12 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 620, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.green, letterSpacing: '-0.01em' }}>{workOrder.title || 'Work Order'}</div>
+            <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
+              {workOrder.id} · {workOrder.customer} · {workOrder.forms.length} form{workOrder.forms.length === 1 ? '' : 's'}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ width: 32, height: 32, flexShrink: 0, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, color: C.slate, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Figtree' }}>×</button>
+        </div>
+
+      {loading ? (
+        <div style={{ padding: '40px 0', textAlign: 'center', color: C.slate, fontSize: 14 }}>Loading job…</div>
+      ) : (
+      <>
       {workOrder.address && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: C.seasalt, border: '1px solid #EBEBEB', borderRadius: 12, padding: '12px 14px', marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: C.seasalt, border: '1px solid #EBEBEB', borderRadius: 12, padding: '12px 14px', marginBottom: 12 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Location</div>
             <div style={{ fontSize: 13, color: '#1a1a1a', marginTop: 2, lineHeight: 1.4 }}>{workOrder.address}</div>
@@ -732,120 +880,166 @@ function TechFillFormView({
           )}
         </div>
       )}
+
       {workOrder.instructions && (
-        <div style={{ background: '#FFF8E1', border: '1px solid #F3E4B0', borderRadius: 12, padding: '12px 14px', marginBottom: 16 }}>
+        <div style={{ background: '#FFF8E1', border: '1px solid #F3E4B0', borderRadius: 12, padding: '12px 14px', marginBottom: 12 }}>
           <div style={{ fontSize: 10, fontWeight: 700, color: '#B07D00', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: 6 }}>
             <ClipboardList size={12} strokeWidth={2.25} /> Instructions from office
           </div>
           <div style={{ fontSize: 13, color: '#1a1a1a', marginTop: 5, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{workOrder.instructions}</div>
         </div>
       )}
-      {forms.map((inst, i) => {
-        const tpl = store.getTemplate(inst.templateId);
-        return (
-          <div key={inst.id} style={{ marginBottom: 18 }}>
-            {forms.length > 1 && (
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
-                Form {i + 1} of {forms.length} · {inst.label}
+
+      <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, padding: '14px 16px', marginBottom: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12 }}>
+        {meta('Scheduled', workOrder.scheduledDate || '—')}
+        {meta('Priority', workOrder.priority)}
+        {meta(assigneesOf(workOrder).length > 1 ? 'Technicians' : 'Technician', assigneesLabel(workOrder))}
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Status</div>
+          <span style={{ display: 'inline-block', marginTop: 3, fontSize: 11, fontWeight: 700, padding: '2px 10px', borderRadius: 99, background: sc.bg, color: sc.color }}>{sc.label}</span>
+        </div>
+      </div>
+
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+        Forms {!readOnly && outstanding > 0 && `· ${outstanding} left`}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {workOrder.forms.map((f, i) => {
+          const p = progs[i];
+          const chip = FORM_STATE_CHIP[p.state];
+          const detail = p.requiredTotal > 0
+            ? `${p.requiredDone} of ${p.requiredTotal} required filled`
+            : p.filled > 0 ? `${p.filled} field${p.filled === 1 ? '' : 's'} filled` : 'Nothing filled yet';
+          return (
+            <button key={f.id} onClick={() => onOpenForm(f.id)}
+              style={{
+                width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 12,
+                background: C.white, border: `1px solid ${p.state === 'done' ? '#E4F3E3' : '#EBEBEB'}`, borderRadius: 12,
+                padding: '14px 16px', cursor: 'pointer', fontFamily: 'Figtree',
+              }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  Form {i + 1} · {f.label}
+                </div>
+                <div style={{ fontSize: 11, color: C.slate, marginTop: 3 }}>{detail}</div>
               </div>
-            )}
-            {tpl ? (
-              isOverlay(tpl) ? (
-                <OverlayFormRenderer template={tpl} values={inst.values ?? {}} onChange={(fid, val) => setField(i, fid, val)} disabled={readOnly} />
-              ) : (
-                <FormPaper>
-                  <FormHeader template={tpl} workOrder={workOrder} />
-                  <FieldList fields={tpl.fields} values={inst.values ?? {}} onChange={(fid, val) => setField(i, fid, val)} disabled={readOnly} chargerCustomerId={workOrder.customerId} />
-                </FormPaper>
-              )
-            ) : (
-              <OtherFormCard inst={inst} disabled={readOnly} onUpload={(name, b64) => setReport(i, name, b64)} onRemove={() => setReport(i, '', '')} />
-            )}
-          </div>
-        );
-      })}
+              <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, padding: '3px 10px', borderRadius: 99, background: chip.bg, color: chip.color, whiteSpace: 'nowrap' }}>
+                {chip.label}
+              </span>
+              <ChevronRight size={16} strokeWidth={2.25} style={{ color: C.slate, flexShrink: 0 }} />
+            </button>
+          );
+        })}
+      </div>
 
       {readOnly ? (
-        <div
-          style={{
-            marginTop: 18,
-            padding: '12px 16px',
-            background: C.honeydew,
-            color: C.green,
-            borderRadius: 12,
-            fontSize: 13,
-            fontWeight: 600,
-            textAlign: 'center',
-          }}
-        >
+        <div style={{ marginTop: 18, padding: '12px 16px', background: C.honeydew, color: C.green, borderRadius: 12, fontSize: 13, fontWeight: 600, textAlign: 'center' }}>
           This report has been submitted. The PIC handles edits from here.
         </div>
       ) : (
-        <div
-          style={{
-            marginTop: 20,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 10,
-            padding: 16,
-            background: C.white,
-            borderRadius: 12,
-            border: '1px solid #EBEBEB',
-          }}
-        >
-          {missingRequired.length > 0 && (
-            <div
-              style={{
-                fontSize: 12,
-                color: '#C0321A',
-                background: '#FDEAEA',
-                padding: '8px 12px',
-                borderRadius: 8,
-              }}
-            >
-              Required: {missingRequired.join(', ')}
+        <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 10, padding: 16, background: C.white, borderRadius: 12, border: '1px solid #EBEBEB' }}>
+          {!allDone && (
+            <div style={{ fontSize: 12, color: '#B45309', background: '#FFF8E1', padding: '8px 12px', borderRadius: 8 }}>
+              {outstanding} form{outstanding === 1 ? '' : 's'} still need{outstanding === 1 ? 's' : ''} finishing before you can submit.
+            </div>
+          )}
+          <button onClick={handleSubmit} disabled={!allDone}
+            style={{ padding: '12px 16px', borderRadius: 10, border: 'none', background: allDone ? C.green : '#A5D6A7', color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: allDone ? 'pointer' : 'not-allowed' }}>
+            Submit report
+          </button>
+        </div>
+      )}
+      </>
+      )}
+      </div>
+    </div>
+  );
+}
+
+// ── Fill-form view ────────────────────────────────────────────────
+
+// One form at a time — a job with several forms is paged from the job info page,
+// never an endless scroll. Work is saved back to the job's draft so the tech can
+// stop half way and pick it up later.
+function TechFillFormView({
+  workOrder,
+  formIndex,
+  onBack,
+  onSignOut,
+}: {
+  workOrder: WorkOrder;
+  formIndex: number;
+  onBack: () => void;
+  onSignOut?: () => void;
+}) {
+  const store = useWorkOrderStore();
+  const source = workOrder.forms[formIndex];
+  const [inst, setInst] = useState<WorkOrderForm>(() => ({ ...source, values: { ...(source.values ?? {}) } }));
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+
+  const setField = (id: string, val: string | boolean) =>
+    setInst((f) => ({ ...f, values: { ...(f.values ?? {}), [id]: val } }));
+  const setReport = (name: string, url: string) =>
+    setInst((f) => ({ ...f, reportFileName: name || undefined, reportPdfUrl: url || undefined, reportPdfBase64: undefined }));
+
+  const tpl = store.getTemplate(inst.templateId);
+  const readOnly = workOrder.status === 'submitted' || workOrder.status === 'reviewed' || workOrder.status === 'completed';
+  const prog = formProgress(inst, tpl);
+
+  const merged = () => workOrder.forms.map((f, i) => (i === formIndex ? inst : f));
+  const handleSaveDraft = () => {
+    store.saveDraft(workOrder.id, merged());
+    setSavedAt(new Date().toLocaleTimeString());
+  };
+  // Leaving always keeps the work — a half-filled form is a valid draft.
+  const saveAndClose = () => {
+    if (!readOnly) store.saveDraft(workOrder.id, merged());
+    onBack();
+  };
+
+  return (
+    <Shell
+      onBack={saveAndClose}
+      onSignOut={onSignOut}
+      title={inst.label}
+      subtitle={`${workOrder.id} · ${workOrder.customer} · Form ${formIndex + 1} of ${workOrder.forms.length}`}
+      crumb="Technician"
+    >
+      {tpl ? (
+        isOverlay(tpl) ? (
+          <OverlayFormRenderer template={tpl} values={inst.values ?? {}} onChange={setField} disabled={readOnly} />
+        ) : (
+          <FormPaper>
+            <FormHeader template={tpl} workOrder={workOrder} />
+            <FieldList fields={tpl.fields} values={inst.values ?? {}} onChange={setField} disabled={readOnly} chargerCustomerId={workOrder.customerId} />
+          </FormPaper>
+        )
+      ) : (
+        <OtherFormCard inst={inst} disabled={readOnly} onUpload={(name, url) => setReport(name, url)} onRemove={() => setReport('', '')} />
+      )}
+
+      {readOnly ? (
+        <div style={{ marginTop: 18, padding: '12px 16px', background: C.honeydew, color: C.green, borderRadius: 12, fontSize: 13, fontWeight: 600, textAlign: 'center' }}>
+          This report has been submitted. The PIC handles edits from here.
+        </div>
+      ) : (
+        <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 10, padding: 16, background: C.white, borderRadius: 12, border: '1px solid #EBEBEB' }}>
+          {prog.missing.length > 0 && (
+            <div style={{ fontSize: 12, color: '#C0321A', background: '#FDEAEA', padding: '8px 12px', borderRadius: 8 }}>
+              Still required: {prog.missing.join(', ')}
             </div>
           )}
           {savedAt && (
-            <div style={{ fontSize: 11, color: C.slate, textAlign: 'center' }}>
-              Draft saved at {savedAt}
-            </div>
+            <div style={{ fontSize: 11, color: C.slate, textAlign: 'center' }}>Draft saved at {savedAt}</div>
           )}
           <div style={{ display: 'flex', gap: 10 }}>
-            <button
-              onClick={handleSaveDraft}
-              style={{
-                flex: 1,
-                padding: '12px 16px',
-                borderRadius: 10,
-                border: `1px solid ${C.green}`,
-                background: 'transparent',
-                color: C.green,
-                fontFamily: 'Figtree',
-                fontSize: 13,
-                fontWeight: 700,
-                cursor: 'pointer',
-              }}
-            >
+            <button onClick={handleSaveDraft}
+              style={{ flex: 1, padding: '12px 16px', borderRadius: 10, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
               Save draft
             </button>
-            <button
-              onClick={handleSubmit}
-              disabled={missingRequired.length > 0}
-              style={{
-                flex: 2,
-                padding: '12px 16px',
-                borderRadius: 10,
-                border: 'none',
-                background: missingRequired.length > 0 ? '#A5D6A7' : C.green,
-                color: C.white,
-                fontFamily: 'Figtree',
-                fontSize: 13,
-                fontWeight: 700,
-                cursor: missingRequired.length > 0 ? 'not-allowed' : 'pointer',
-              }}
-            >
-              Submit report
+            <button onClick={saveAndClose}
+              style={{ flex: 2, padding: '12px 16px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              Save &amp; back to job
             </button>
           </div>
         </div>
@@ -875,7 +1069,7 @@ export function FormPaper({ children }: { children: React.ReactNode }) {
 export interface FormHeaderInfo {
   id: string;
   scheduledDate: string;
-  assignedTo: string | null;
+  assignedTo: string | string[] | null;
 }
 
 export function FormHeader({
@@ -941,7 +1135,7 @@ export function FormHeader({
           <strong style={{ color: '#1a1a1a' }}>Scheduled:</strong> {workOrder.scheduledDate}
         </span>
         <span>
-          <strong style={{ color: '#1a1a1a' }}>Technician:</strong> {workOrder.assignedTo ?? '—'}
+          <strong style={{ color: '#1a1a1a' }}>Technician:</strong> {assigneesLabel(workOrder, '—')}
         </span>
       </div>
     </div>

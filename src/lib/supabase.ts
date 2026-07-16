@@ -37,6 +37,12 @@ export function setAppToken(t: string | null) {
     if (t) localStorage.setItem(TOKEN_KEY, t);
     else localStorage.removeItem(TOKEN_KEY);
   } catch { /* ignore */ }
+  // Re-authorize the Realtime socket with the new token. Without this the
+  // websocket may stay on the anon key, and RLS (authenticated-only) then blocks
+  // every postgres-changes event — so a tech never sees a newly-added work order
+  // until they reload. setAuth() with no arg pulls the fresh token from the
+  // accessToken callback and re-sends it to all joined channels.
+  try { void supabase.realtime.setAuth(); } catch { /* ignore */ }
 }
 
 export function hasValidAppToken(): boolean {

@@ -17,9 +17,11 @@ export type FieldType =
   | 'number'
   | 'textarea'
   | 'checkbox'
+  | 'cross'      // overlay-only: stamps an ✕ (e.g. to strike out "delete as appropriate")
   | 'photo'
   | 'group'
   | 'date'
+  | 'time'
   | 'signature'
   | 'select'
   | 'charger';
@@ -106,9 +108,24 @@ export interface WorkOrder {
   scheduledDate: string;
   priority: 'low' | 'normal' | 'high';
   status: WorkOrderStatus;
-  assignedTo: string | null;
+  /** Assigned technician(s). Work orders created before multi-assign hold a
+   *  single name string — always read this through assigneesOf(). */
+  assignedTo: string | string[] | null;
   forms: WorkOrderForm[];      // one or more form instances to complete
   response: FormResponse | null;
+}
+
+/** Assignees as a list — tolerates the legacy single-string shape. */
+export function assigneesOf(w: { assignedTo?: string | string[] | null }): string[] {
+  const a = w.assignedTo;
+  if (!a) return [];
+  return (Array.isArray(a) ? a : [a]).filter(Boolean);
+}
+
+/** Display label for a work order's assignees. */
+export function assigneesLabel(w: { assignedTo?: string | string[] | null }, empty = 'Unassigned'): string {
+  const list = assigneesOf(w);
+  return list.length ? list.join(', ') : empty;
 }
 
 export type CustomerType = 'Residential' | 'Commercial' | 'Enterprise';
@@ -146,7 +163,6 @@ interface Store {
   loadWorkOrderDetail(workOrderId: string): Promise<void>;
 
   // technician actions
-  pickUp(workOrderId: string, technicianName: string): void;
   saveDraft(workOrderId: string, forms: WorkOrderForm[]): void;
   submit(workOrderId: string, forms: WorkOrderForm[], technicianName: string): void;
 
@@ -156,10 +172,10 @@ interface Store {
 
   // admin actions
   createWorkOrder(input: Omit<WorkOrder, 'id' | 'status' | 'response'>): void;
-  reassign(workOrderId: string, technicianName: string | null): void;
-  /** Change the assignee without disturbing an in-flight status (submitted/
+  reassign(workOrderId: string, technicians: string[]): void;
+  /** Change the assignees without disturbing an in-flight status (submitted/
    *  reviewed/completed stay put); only the open⇄assigned pair tracks assignment. */
-  setAssignee(workOrderId: string, technicianName: string | null): void;
+  setAssignee(workOrderId: string, technicians: string[]): void;
   renameWorkOrder(workOrderId: string, title: string): void;
   setWorkOrderCategory(workOrderId: string, category: string | null): void;
   setWorkOrderInstructions(workOrderId: string, instructions: string | null): void;
@@ -200,10 +216,10 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
     // the work-order fetch. Work orders come back as a LIGHT projection (photos /
     // report PDFs stripped server-side); full detail is lazy-loaded per row when a
     // work order is opened, via loadWorkOrderDetail.
-    const loadAll = () => {
-      supabase.from('tsd_form_templates').select('template').then(({ data }) => {
-        if (live && data) setTemplates(data.map((r) => (r as { template: FormTemplate }).template));
-      });
+    // The work-order list only — cheap (photos stripped server-side). Polled on a
+    // short interval so a tech sees a newly-assigned job within seconds even if the
+    // realtime socket is asleep, without a manual reload.
+    const loadWorkOrders = () => {
       supabase.rpc('tsd_work_orders_list').then(({ data, error }) => {
         if (!live) return;
         if (error) { console.error('load work orders failed', error); return; }
@@ -221,6 +237,13 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
           });
         });
       });
+    };
+
+    const loadAll = () => {
+      supabase.from('tsd_form_templates').select('template').then(({ data }) => {
+        if (live && data) setTemplates(data.map((r) => (r as { template: FormTemplate }).template));
+      });
+      loadWorkOrders();
       supabase.from('tsd_customers').select('data').then(({ data }) => {
         if (live && data) setCustomers(data.map((r) => (r as { data: Customer }).data));
       });
@@ -260,8 +283,15 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
     };
     document.addEventListener('visibilitychange', onVisible);
 
+    // Backstop poll (visible tabs only): guarantees new/assigned work orders show
+    // up promptly regardless of realtime delivery. Cheap — the light list is a few KB.
+    const poll = window.setInterval(() => {
+      if (document.visibilityState === 'visible') loadWorkOrders();
+    }, 15000);
+
     return () => {
       live = false;
+      window.clearInterval(poll);
       document.removeEventListener('visibilitychange', onVisible);
       void supabase.removeChannel(channel);
     };
@@ -315,15 +345,6 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
       setWorkOrders((ws) => (ws.some((w) => w.id === wo.id) ? ws.map((w) => (w.id === wo.id ? wo : w)) : [wo, ...ws]));
     },
 
-    pickUp: (id, tech) =>
-      setWorkOrders((ws) =>
-        ws.map((w) => {
-          if (w.id !== id || w.status !== 'open') return w;
-          patchWorkOrder(id, { status: 'assigned', assignedTo: tech });
-          return { ...w, status: 'assigned', assignedTo: tech };
-        }),
-      ),
-
     saveDraft: (id, forms) =>
       setWorkOrders((ws) =>
         ws.map((w) => {
@@ -371,13 +392,13 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
       persistWorkOrder(wo);
     },
 
-    reassign: (id, tech) =>
+    reassign: (id, techs) =>
       setWorkOrders((ws) =>
         ws.map((w) => {
           if (w.id !== id) return w;
-          const status: WorkOrderStatus = tech ? 'assigned' : 'open';
-          patchWorkOrder(id, { assignedTo: tech, status });
-          return { ...w, assignedTo: tech, status };
+          const status: WorkOrderStatus = techs.length ? 'assigned' : 'open';
+          patchWorkOrder(id, { assignedTo: techs, status });
+          return { ...w, assignedTo: techs, status };
         }),
       ),
 
@@ -390,16 +411,16 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
         }),
       ),
 
-    setAssignee: (id, tech) =>
+    setAssignee: (id, techs) =>
       setWorkOrders((ws) =>
         ws.map((w) => {
           if (w.id !== id) return w;
           // Preserve any progressed status; only the open⇄assigned pair reflects
           // whether a technician is on it. Editing a submitted job never resets it.
           const status: WorkOrderStatus =
-            w.status === 'open' || w.status === 'assigned' ? (tech ? 'assigned' : 'open') : w.status;
-          patchWorkOrder(id, { assignedTo: tech, status });
-          return { ...w, assignedTo: tech, status };
+            w.status === 'open' || w.status === 'assigned' ? (techs.length ? 'assigned' : 'open') : w.status;
+          patchWorkOrder(id, { assignedTo: techs, status });
+          return { ...w, assignedTo: techs, status };
         }),
       ),
 

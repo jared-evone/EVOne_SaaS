@@ -20,6 +20,9 @@ import { PDFPreviewModal, generateWorkOrderPdf } from './PDFExport';
 
 const CPO_BUCKET = 'cpo-maintenance-pdfs';
 
+// Review cards per page in the list pane.
+const PER_PAGE = 5;
+
 interface PICAppProps {
   onBack: () => void;
   onSignOut: () => void;
@@ -105,7 +108,6 @@ export function PICReviewBoard() {
   const pending = all.filter((w) => w.status !== 'completed');
   const done = all.filter((w) => w.status === 'completed');
   const [tab, setTab] = useState<'pending' | 'completed'>('pending');
-  const visible = tab === 'pending' ? pending : done;
   const [selectedId, setSelectedId] = useState<string | null>(pending[0]?.id ?? null);
   const selected = all.find((w) => w.id === selectedId) ?? null;
 
@@ -155,6 +157,32 @@ export function PICReviewBoard() {
   };
   useEffect(() => { loadPushed(); }, []);
 
+  // Completed can grow without bound, so it gets filter pills + paging. Each pill
+  // is an independent toggle; combining them narrows further.
+  const [fThisMonth, setFThisMonth] = useState(false);
+  const [fCpo, setFCpo] = useState(false);
+  const [fSynced, setFSynced] = useState(false);
+  const [page, setPage] = useState(1);
+  useEffect(() => { setPage(1); }, [tab, fThisMonth, fCpo, fSynced]);
+
+  const thisMonth = (() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  })();
+  const woDate = (w: WorkOrder) => w.response?.submittedAt || w.scheduledDate || '';
+  const isCpoWo = (w: WorkOrder) => !!w.customerId && cpoIds.has(w.customerId);
+
+  const filtered = tab === 'completed'
+    ? done.filter((w) =>
+        (!fThisMonth || woDate(w).startsWith(thisMonth)) &&
+        (!fCpo || isCpoWo(w)) &&
+        (!fSynced || pushedIds.has(w.id)))
+    : pending;
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PER_PAGE));
+  const safePage = Math.min(page, totalPages);
+  const visible = filtered.slice((safePage - 1) * PER_PAGE, safePage * PER_PAGE);
+
   return (
     <div
       style={{
@@ -173,7 +201,21 @@ export function PICReviewBoard() {
             </button>
           ))}
         </div>
-        {visible.length === 0 && (
+        {tab === 'completed' && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {([
+              ['This month', fThisMonth, setFThisMonth],
+              ['CPO', fCpo, setFCpo],
+              ['Synced', fSynced, setFSynced],
+            ] as const).map(([label, on, set]) => (
+              <button key={label} onClick={() => set(!on)}
+                style={{ padding: '5px 12px', borderRadius: 99, border: `1px solid ${on ? C.green : '#EBEBEB'}`, background: on ? C.green : C.white, color: on ? C.white : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+        {filtered.length === 0 && (
           <div
             style={{
               padding: '32px 16px',
@@ -185,7 +227,9 @@ export function PICReviewBoard() {
               border: '1px dashed #EBEBEB',
             }}
           >
-            {tab === 'pending' ? 'No reports waiting for review.' : 'No completed reports yet.'}
+            {tab === 'pending'
+              ? 'No reports waiting for review.'
+              : (fThisMonth || fCpo || fSynced) ? 'No completed reports match these filters.' : 'No completed reports yet.'}
           </div>
         )}
         {visible.map((w) => {
@@ -241,6 +285,21 @@ export function PICReviewBoard() {
             </button>
           );
         })}
+        {totalPages > 1 && (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '2px 2px' }}>
+            <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={safePage <= 1}
+              style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: safePage <= 1 ? '#C9CFD5' : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: safePage <= 1 ? 'default' : 'pointer' }}>
+              ‹ Prev
+            </button>
+            <span style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>
+              {(safePage - 1) * PER_PAGE + 1}–{Math.min(safePage * PER_PAGE, filtered.length)} of {filtered.length}
+            </span>
+            <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={safePage >= totalPages}
+              style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: safePage >= totalPages ? '#C9CFD5' : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: safePage >= totalPages ? 'default' : 'pointer' }}>
+              Next ›
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Detail pane */}
@@ -409,15 +468,9 @@ function PICReportEditor({ workOrder, alreadyPushed = false, onPushed, onDeleted
             )}
             {tpl ? (
               isOverlay(tpl) ? (
-                <>
-                  <OverlayFormRenderer template={tpl} values={inst.values ?? {}} onChange={(fid, v) => setField(i, fid, v)} disabled={completed} />
-                  {tpl.fields.length > 0 && (
-                    <div style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase' }}>Cross-reference · Filled values</span>
-                      <FieldList fields={tpl.fields} values={inst.values ?? {}} onChange={(fid, v) => setField(i, fid, v)} disabled={completed} chargerCustomerId={workOrder.customerId} />
-                    </div>
-                  )}
-                </>
+                // Overlay fields are edited in place on the form itself — the PIC
+                // reads top to bottom, so no consolidated value list is needed.
+                <OverlayFormRenderer template={tpl} values={inst.values ?? {}} onChange={(fid, v) => setField(i, fid, v)} disabled={completed} />
               ) : (
                 <FormPaper>
                   <FormHeader template={tpl} workOrder={workOrder} />

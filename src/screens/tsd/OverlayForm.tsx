@@ -71,14 +71,17 @@ function pageAspect(page: OverlayPage): React.CSSProperties {
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 
 const fieldColor = (type: FieldType) =>
-  type === 'checkbox' ? C.opal : type === 'textarea' ? C.yellow : type === 'photo' || type === 'signature' ? C.opal : C.green;
+  type === 'cross' ? '#C0321A'
+  : type === 'checkbox' ? C.opal : type === 'textarea' ? C.yellow : type === 'photo' || type === 'signature' ? C.opal : C.green;
 
 const OVERLAY_FIELD_LABELS: Partial<Record<FieldType, string>> = {
   text: 'Text',
   textarea: 'Long text',
   checkbox: 'Checkbox',
+  cross: 'Cross',
   photo: 'Photo',
   date: 'Date',
+  time: 'Time',
   signature: 'Signature',
 };
 
@@ -152,10 +155,12 @@ export function OverlayEditor({
     const id = `f-${Date.now()}`;
     const sizes: Partial<Record<FieldType, { w: number; h: number }>> = {
       checkbox: { w: 3, h: 3 },
+      cross: { w: 3, h: 3 },
       textarea: { w: 40, h: 10 },
       photo: { w: 25, h: 18 },
       signature: { w: 30, h: 10 },
       date: { w: 18, h: 4 },
+      time: { w: 12, h: 4 },
     };
     const size = sizes[type] ?? { w: 30, h: 4 };
     const newField: FormField = {
@@ -163,10 +168,12 @@ export function OverlayEditor({
       type,
       label:
         type === 'checkbox' ? 'Check'
+        : type === 'cross' ? 'Cross'
         : type === 'textarea' ? 'Notes'
         : type === 'photo' ? 'Photo'
         : type === 'signature' ? 'Signature'
         : type === 'date' ? 'Date'
+        : type === 'time' ? 'Time'
         : 'Field',
       page: currentPage,
       x: 10,
@@ -364,7 +371,7 @@ function Toolbar({
       >
         Place field:
       </span>
-      {(['text', 'textarea', 'checkbox', 'photo', 'date', 'signature'] as FieldType[]).map((t) => (
+      {(['text', 'textarea', 'checkbox', 'cross', 'photo', 'date', 'time', 'signature'] as FieldType[]).map((t) => (
         <button
           key={t}
           onClick={() => onAdd(t)}
@@ -648,7 +655,7 @@ function FieldBox({
     >
       <span style={{ pointerEvents: 'none', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', maxWidth: '100%',
         ...(['text', 'textarea', 'date'].includes(field.type) && field.fontSize ? { fontSize: `${field.fontSize}cqh`, textTransform: 'none' as const } : {}) }}>
-        {field.type === 'checkbox' ? '☐' : field.label}
+        {field.type === 'checkbox' ? '☐' : field.type === 'cross' ? '✕' : field.label}
       </span>
       {selected && (
         <div
@@ -776,7 +783,7 @@ function FieldContextMenu({
     );
   }
 
-  const isText = ['text', 'textarea', 'date'].includes(field.type);
+  const isText = ['text', 'textarea', 'date', 'time'].includes(field.type);
   return (
     <div ref={ref} style={box}>
       <MenuAction label="Copy" onClick={() => { onCopy(); onClose(); }} />
@@ -785,7 +792,7 @@ function FieldContextMenu({
       {divider}
       <RenameRow value={field.label} onChange={onRename} onClose={onClose} />
       {isText && <FontSizeRow value={field.fontSize} onChange={onFontSize} />}
-      {field.type !== 'checkbox' && (
+      {field.type !== 'checkbox' && field.type !== 'cross' && (
         <MenuAction label={`${field.required ? '✓ ' : ''}Required when filling`} onClick={onToggleRequired} />
       )}
       {divider}
@@ -910,6 +917,37 @@ function OverlayInput({
     boxSizing: 'border-box',
   };
 
+  // Cross: a tap stamps an ✕ over the spot (e.g. striking out the option that
+  // doesn't apply). Same on/off value shape as a checkbox, drawn as a cross.
+  if (field.type === 'cross') {
+    const marked = value === true;
+    return (
+      <div
+        onClick={() => { if (!disabled) onChange(!marked); }}
+        title={disabled ? undefined : marked ? 'Remove cross' : 'Place cross'}
+        style={{
+          ...base,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: disabled ? 'default' : 'pointer',
+          border: disabled || marked ? '1px solid transparent' : '1px dashed #CBD5DD',
+          borderRadius: 4,
+          background: marked ? 'transparent' : disabled ? 'transparent' : 'rgba(255,255,255,0.7)',
+          userSelect: 'none',
+        }}
+      >
+        {marked && (
+          // Scales to the field box — matches the cross the exported PDF draws.
+          <svg viewBox="0 0 10 10" preserveAspectRatio="none" style={{ width: '100%', height: '100%', display: 'block' }}>
+            <line x1="1" y1="1" x2="9" y2="9" stroke="#1a1a1a" strokeWidth="1.1" strokeLinecap="round" />
+            <line x1="9" y1="1" x2="1" y2="9" stroke="#1a1a1a" strokeWidth="1.1" strokeLinecap="round" />
+          </svg>
+        )}
+      </div>
+    );
+  }
+
   if (field.type === 'checkbox') {
     const checked = value === true;
     return (
@@ -943,10 +981,10 @@ function OverlayInput({
   // Explicit text size (as % of page height via container-query units) or default.
   const textFont = field.fontSize ? `${field.fontSize}cqh` : undefined;
 
-  if (field.type === 'date') {
+  if (field.type === 'date' || field.type === 'time') {
     return (
       <input
-        type="date"
+        type={field.type}
         value={strVal}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
@@ -1008,7 +1046,7 @@ function OverlayInput({
   }
 
   if (field.type === 'signature') {
-    return <OverlaySignature value={strVal} disabled={disabled} onChange={onChange} style={base} />;
+    return <OverlaySignature value={strVal} disabled={disabled} onChange={onChange} style={base} fontSize={textFont} />;
   }
 
   if (field.type === 'textarea') {
@@ -1057,100 +1095,67 @@ function OverlayInput({
   );
 }
 
+// Overlay signatures are TYPED, not hand-drawn: the technician types their name
+// and it renders in a script face — the same one the exported PDF draws, so what
+// they see is what gets printed. Work orders signed before this change hold a
+// drawn PNG (a data: URL); those still render as an image, with a clear button to
+// switch to typing.
 function OverlaySignature({
   value,
   onChange,
   disabled,
   style,
+  fontSize,
 }: {
   value: string;
   onChange: (v: string) => void;
   disabled: boolean;
   style: React.CSSProperties;
+  fontSize?: string;
 }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const drawing = useRef(false);
-  const dirty = useRef(false);
-
-  // Pre-paint an already-saved signature so editing (PIC review) doesn't start
-  // blank, and so multi-stroke signing keeps the earlier strokes.
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (disabled || !canvas || !value || dirty.current) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    const img = new Image();
-    img.onload = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    };
-    img.src = value;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [disabled]);
-
-  const pos = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current!;
-    const rect = canvas.getBoundingClientRect();
-    return {
-      x: ((e.clientX - rect.left) / rect.width) * canvas.width,
-      y: ((e.clientY - rect.top) / rect.height) * canvas.height,
-    };
-  };
-
-  if (disabled) {
+  if (value.startsWith('data:')) {
     return (
       <div style={{ ...style, border: '1px solid transparent', overflow: 'hidden' }}>
-        {value && <img src={value} alt="Signature" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />}
+        <img src={value} alt="Signature" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+        {!disabled && (
+          <button type="button" onClick={() => onChange('')} title="Clear this drawn signature and type instead"
+            style={{ position: 'absolute', top: 0, right: 0, width: 16, height: 16, lineHeight: '14px', padding: 0, borderRadius: 4, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontSize: 11, cursor: 'pointer' }}>
+            ×
+          </button>
+        )}
       </div>
     );
   }
 
   return (
-    <div style={{ ...style }}>
-      <canvas
-        ref={canvasRef}
-        width={400}
-        height={160}
-        onPointerDown={(e) => {
-          e.preventDefault();
-          drawing.current = true;
-          const ctx = canvasRef.current!.getContext('2d')!;
-          const p = pos(e);
-          ctx.beginPath();
-          ctx.moveTo(p.x, p.y);
-          canvasRef.current!.setPointerCapture(e.pointerId);
-        }}
-        onPointerMove={(e) => {
-          if (!drawing.current) return;
-          e.preventDefault();
-          const ctx = canvasRef.current!.getContext('2d')!;
-          ctx.lineWidth = 2.5;
-          ctx.lineCap = 'round';
-          ctx.strokeStyle = '#1a1a1a';
-          const p = pos(e);
-          ctx.lineTo(p.x, p.y);
-          ctx.stroke();
-          dirty.current = true;
-        }}
-        onPointerUp={() => {
-          if (!drawing.current) return;
-          drawing.current = false;
-          if (dirty.current) onChange(canvasRef.current!.toDataURL('image/png'));
-        }}
-        style={{
-          width: '100%',
-          height: '100%',
-          touchAction: 'none',
-          background: 'rgba(255,255,255,0.7)',
-          border: '1px dashed #CBD5DD',
-          borderRadius: 4,
-          cursor: 'crosshair',
-        }}
-      />
-    </div>
+    <input
+      value={value}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={disabled ? '' : 'Type name'}
+      spellCheck={false}
+      autoComplete="off"
+      style={{
+        ...style,
+        fontFamily: SIGNATURE_FONT,
+        fontSize: fontSize ?? `${((Number(style.height ? String(style.height).replace('%', '') : 5) || 5) * 0.6).toFixed(2)}cqh`,
+        color: '#1a1a1a',
+        textAlign: 'center',
+        padding: '0 4px',
+        border: disabled ? '1px solid transparent' : '1px dashed #CBD5DD',
+        borderRadius: 4,
+        background: disabled ? 'transparent' : 'rgba(255,255,255,0.7)',
+        outline: 'none',
+      }}
+    />
   );
 }
 
 // ── Convenience: which kind is this template? ────────────────────
 
 export const isOverlay = (t: FormTemplate) => (t.kind ?? 'structured') === 'overlay';
+
+// Script face for typed signatures. Shared with the PDF export so the flattened
+// page draws the same thing the technician saw. System faces only — no webfont is
+// added; the generic `cursive` keyword is the guaranteed fallback.
+export const SIGNATURE_FONT = "'Segoe Script', 'Bradley Hand', 'Snell Roundhand', 'Brush Script MT', cursive";

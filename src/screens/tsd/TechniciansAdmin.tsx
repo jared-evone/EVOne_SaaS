@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { C } from '../../theme';
 import { supabase } from '../../lib/supabase';
-import { usePermissions, DEPARTMENT_SCREENS } from '../../permissions';
-import { useWorkOrderStore } from '../../workOrderStore';
+import { usePermissions } from '../../permissions';
+import { useWorkOrderStore, assigneesOf } from '../../workOrderStore';
 import { AvatarCropper } from '../../components/AvatarCropper';
 import { Search, UserPlus } from 'lucide-react';
 
@@ -32,11 +32,12 @@ function fmtDate(s: string): string {
 async function removeLoginIfTechOnly(appUserId: string): Promise<void> {
   const { data } = await supabase
     .from('app_user_permissions')
-    .select('screen_key, can_view')
+    .select('department, can_view')
     .eq('user_id', appUserId);
-  const techKeys = new Set<string>(DEPARTMENT_SCREENS.tech);
-  const usedElsewhere = ((data ?? []) as { screen_key: string; can_view: boolean }[])
-    .some((g) => g.can_view && !techKeys.has(g.screen_key));
+  // Grants are per-department now: "used elsewhere" = a viewable grant in any
+  // department other than Technical Service.
+  const usedElsewhere = ((data ?? []) as { department: string; can_view: boolean }[])
+    .some((g) => g.can_view && g.department !== 'tech');
   if (!usedElsewhere) await supabase.from('app_users').delete().eq('id', appUserId);
 }
 
@@ -92,7 +93,8 @@ export function TechniciansAdmin() {
   const jobsByTech = useMemo(() => {
     const m = new Map<string, number>();
     for (const w of store.workOrders) {
-      if (w.assignedTo && w.status !== 'completed') m.set(w.assignedTo, (m.get(w.assignedTo) ?? 0) + 1);
+      if (w.status === 'completed') continue;
+      for (const a of assigneesOf(w)) m.set(a, (m.get(a) ?? 0) + 1);
     }
     return m;
   }, [store.workOrders]);
@@ -351,10 +353,10 @@ function TechnicianModal({ initial, existingNames, onClose, onSaved }: Technicia
         // least open the Technician app; anything more is granted in the
         // superadmin console. Never removes access the person already has.
         const { data: grants } = await supabase.from('app_user_permissions')
-          .select('screen_key').eq('user_id', appUserId).eq('screen_key', 'tsd_technician');
+          .select('screen_key').eq('user_id', appUserId).eq('department', 'tech').eq('screen_key', 'tsd_technician');
         if (!(grants ?? []).length) {
           const { error: permErr } = await supabase.from('app_user_permissions')
-            .insert({ user_id: appUserId, screen_key: 'tsd_technician', can_view: true, can_edit: false, can_delete: false });
+            .insert({ user_id: appUserId, department: 'tech', screen_key: 'tsd_technician', can_view: true, can_edit: false, can_delete: false });
           if (permErr) throw permErr;
         }
         if (password.trim()) {

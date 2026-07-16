@@ -46,10 +46,17 @@ import { FormTestPage } from './screens/tsd/FormTestPage';
 import {
   PermissionsProvider, usePermissions,
   DEPARTMENT_LABELS, DEPARTMENT_SCREENS,
-  type ScreenKey, type SignedInUser,
+  type ScreenKey, type SignedInUser, type Department,
 } from './permissions';
 
 type ScreenId = ScreenKey;
+
+// Landing screen per department when a session starts (used if that screen is
+// visible to the user; otherwise the first available screen is used). Technicians
+// land on their job list rather than the shared Customers tab.
+const DEPARTMENT_DEFAULT_SCREEN: Partial<Record<Department, ScreenId>> = {
+  tech: 'tsd_technician',
+};
 
 type NavLeaf  = { kind: 'leaf';  id: ScreenId; icon: LucideIcon; label: string };
 type NavGroup = { kind: 'group'; key: string;  icon: LucideIcon; label: string; children: NavLeaf[] };
@@ -172,7 +179,9 @@ function Dashboard({ onSignOut }: DashboardProps) {
   });
 
   const allVisibleLeafIds: ScreenId[] = NAV.flatMap((n) => n.kind === 'leaf' ? [n.id] : n.children.map((c) => c.id));
-  const fallbackScreen: ScreenId | null = allVisibleLeafIds[0] ?? null;
+  const preferredDefault = DEPARTMENT_DEFAULT_SCREEN[user.department];
+  const fallbackScreen: ScreenId | null =
+    (preferredDefault && allVisibleLeafIds.includes(preferredDefault) ? preferredDefault : allVisibleLeafIds[0]) ?? null;
   const [screen, setScreen] = useState<ScreenId | null>(fallbackScreen);
   const activeScreen = screen && allVisibleLeafIds.includes(screen) ? screen : fallbackScreen;
 

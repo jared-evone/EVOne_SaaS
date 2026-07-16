@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { C } from '../theme';
 import { Logo } from '../components/Logo';
 import { supabase, setAppToken } from '../lib/supabase';
-import { type Department, DEPARTMENT_LABELS, PERMISSION_SECTIONS, type SignedInUser } from '../permissions';
+import { type Department, DEPARTMENT_LABELS, type SignedInUser } from '../permissions';
 import { Wrench, Handshake, Zap, FolderKanban, type LucideIcon } from 'lucide-react';
 
 interface DepartmentCard {
@@ -76,17 +76,15 @@ export function Login({ onLogin }: LoginProps) {
     // after) runs authenticated rather than anonymous.
     setAppToken(row.token ?? null);
 
-    // Superadmin grants decide which departments this email can enter: the
-    // account needs at least one viewable screen OWNED by the chosen department
-    // (same attribution as the Access chips in the manager console).
+    // Grants are per-department: the account may enter the chosen department when
+    // it has at least one viewable screen granted IN that department.
     const { data: grants } = await supabase
       .from('app_user_permissions')
       .select('screen_key')
       .eq('user_id', row.id)
+      .eq('department', department)
       .eq('can_view', true);
-    const viewable = new Set(((grants ?? []) as { screen_key: string }[]).map((g) => g.screen_key));
-    const sectionKeys = PERMISSION_SECTIONS.find((s) => s.department === department)?.keys ?? [];
-    const hasDepartmentAccess = sectionKeys.some((k) => viewable.has(k));
+    const hasDepartmentAccess = (grants ?? []).length > 0;
 
     setBusy(false);
 

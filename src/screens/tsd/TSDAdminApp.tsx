@@ -9,6 +9,8 @@ import {
   STATUS_COLORS,
   OTHER_FORM_ID,
   useWorkOrderStore,
+  assigneesLabel,
+  assigneesOf,
   type Customer,
   type CustomerType,
   type FieldType,
@@ -21,8 +23,9 @@ import {
 } from '../../workOrderStore';
 import { FieldList, FormHeader, FormPaper } from './TechApp';
 import { splitUnit } from '../Projects';
-import { OverlayEditor, OverlayFormRenderer, isOverlay } from './OverlayForm';
+import { OverlayEditor, OverlayFormRenderer, isOverlay, pagesOf } from './OverlayForm';
 import { PICReviewBoard } from './PICApp';
+import { TechAvatar } from '../../components/TechAvatar';
 
 interface TSDAdminAppProps {
   onBack: () => void;
@@ -333,7 +336,7 @@ export function WorkOrdersAdmin() {
                     const s = [...counts.entries()].map(([n, c]) => (c > 1 ? `${c}× ${n}` : n)).join(', ');
                     return s || '—';
                   })()}</td>
-                  <td style={{ padding: '11px 14px', color: C.slate }}>{w.assignedTo ?? '—'}</td>
+                  <td style={{ padding: '11px 14px', color: C.slate }}>{assigneesLabel(w, '—')}</td>
                   <td style={{ padding: '11px 14px', color: C.slate }}>{w.scheduledDate}</td>
                   <td style={{ padding: '11px 14px' }}>
                     <span
@@ -426,7 +429,7 @@ function WorkOrderModal({
     // New work orders default to today (local date) for quicker entry.
     scheduledDate: workOrder?.scheduledDate ?? new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10),
     priority: workOrder?.priority ?? ('normal' as 'low' | 'normal' | 'high'),
-    assignedTo: workOrder?.assignedTo ?? null,
+    assignedTo: assigneesOf(workOrder ?? { assignedTo: null }),
   });
 
   // A work order can bundle several forms, each with a quantity.
@@ -551,7 +554,8 @@ function WorkOrderModal({
       });
     } else if (workOrder) {
       // Reassign without resetting an in-flight status back to "assigned".
-      if ((form.assignedTo ?? null) !== (workOrder.assignedTo ?? null)) store.setAssignee(workOrder.id, form.assignedTo);
+      const before = assigneesOf(workOrder);
+      if (form.assignedTo.join('|') !== before.join('|')) store.setAssignee(workOrder.id, form.assignedTo);
       if (canEdit) {
         if (derivedTitle && derivedTitle !== workOrder.title) store.renameWorkOrder(workOrder.id, derivedTitle);
         if ((form.category ?? null) !== (workOrder.category ?? null)) store.setWorkOrderCategory(workOrder.id, form.category ?? null);
@@ -731,11 +735,11 @@ function WorkOrderModal({
             style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box', resize: 'vertical', lineHeight: 1.5, background: fieldsLocked ? C.seasalt : C.white, color: fieldsLocked ? C.slate : '#1a1a1a' }}
           />
         </FormRow>
-        <FormRow label="Assigned technician">
+        <FormRow label={form.assignedTo.length > 1 ? 'Assigned technicians' : 'Assigned technician'}>
           <TechnicianSelect
             value={form.assignedTo}
             technicians={techs}
-            onChange={(name) => setForm((f) => ({ ...f, assignedTo: name }))}
+            onChange={(names) => setForm((f) => ({ ...f, assignedTo: names }))}
           />
         </FormRow>
 
@@ -1083,25 +1087,12 @@ function SearchSelect({ value, options, onChange, disabled, placeholder, emptyTe
 
 interface TechRec { name: string; fin_number: string | null; contact_number: string | null; photo_path: string | null; is_active?: boolean; }
 
-function techPhotoUrl(path: string): string {
-  return supabase.storage.from('technician-photos').getPublicUrl(path).data.publicUrl;
-}
-
-function TechAvatar({ name, photoPath, size = 30 }: { name: string; photoPath: string | null; size?: number }) {
-  if (photoPath) {
-    return <img src={techPhotoUrl(photoPath)} alt={name} style={{ width: size, height: size, borderRadius: '50%', objectFit: 'cover', border: '1px solid #EBEBEB', flexShrink: 0 }} />;
-  }
-  return (
-    <div style={{ width: size, height: size, borderRadius: '50%', background: C.honeydew, color: C.green, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: size * 0.42, flexShrink: 0 }}>
-      {(name.trim().charAt(0) || '?').toUpperCase()}
-    </div>
-  );
-}
-
+// Several technicians can be on one job, so this is a multi-select: rows toggle
+// and the menu stays open until you're done picking.
 function TechnicianSelect({ value, technicians, onChange }: {
-  value: string | null;
+  value: string[];
   technicians: TechRec[];
-  onChange: (name: string | null) => void;
+  onChange: (names: string[]) => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -1112,21 +1103,26 @@ function TechnicianSelect({ value, technicians, onChange }: {
     return () => document.removeEventListener('mousedown', h);
   }, [open]);
 
-  const selected = value ? technicians.find((t) => t.name === value) : undefined;
+  const toggle = (name: string) =>
+    onChange(value.includes(name) ? value.filter((n) => n !== name) : [...value, name]);
+
   // Only active technicians are assignable; an already-assigned (now-inactive)
   // one still shows as selected above, it just can't be picked afresh.
   const options = technicians.filter((t) => t.is_active !== false);
+  const photoOf = (name: string) => technicians.find((t) => t.name === name)?.photo_path ?? null;
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
       <button type="button" onClick={() => setOpen((o) => !o)}
-        style={{ ...inputStyle(false), display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, cursor: 'pointer', textAlign: 'left', borderColor: open ? C.green : '#EBEBEB' }}>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 8, overflow: 'hidden' }}>
-          {value ? (
-            <>
-              <TechAvatar name={value} photoPath={selected?.photo_path ?? null} size={24} />
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#1a1a1a' }}>{value}</span>
-            </>
+        style={{ ...inputStyle(false), height: 'auto', minHeight: 42, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, cursor: 'pointer', textAlign: 'left', borderColor: open ? C.green : '#EBEBEB' }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden', flexWrap: 'wrap' }}>
+          {value.length ? (
+            value.map((n) => (
+              <span key={n} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: C.honeydew, borderRadius: 99, padding: '2px 10px 2px 2px' }}>
+                <TechAvatar name={n} photoPath={photoOf(n)} size={22} />
+                <span style={{ fontSize: 12, fontWeight: 700, color: C.green, whiteSpace: 'nowrap' }}>{n}</span>
+              </span>
+            ))
           ) : (
             <span style={{ color: C.slate }}>— Unassigned —</span>
           )}
@@ -1140,19 +1136,20 @@ function TechnicianSelect({ value, technicians, onChange }: {
           boxShadow: '0 12px 32px rgba(0,0,0,.14)', padding: 6, maxHeight: 320, overflowY: 'auto',
           display: 'flex', flexDirection: 'column', gap: 1,
         }}>
-          <button type="button" onClick={() => { onChange(null); setOpen(false); }}
-            onMouseEnter={(e) => { if (value) e.currentTarget.style.background = C.seasalt; }}
-            onMouseLeave={(e) => { if (value) e.currentTarget.style.background = 'transparent'; }}
-            style={{ flexShrink: 0, width: '100%', textAlign: 'left', padding: '9px 12px', borderRadius: 8, border: 'none', background: !value ? C.honeydew : 'transparent', color: !value ? C.green : '#1a1a1a', fontFamily: 'Figtree', fontSize: 13, fontWeight: !value ? 700 : 500, cursor: 'pointer' }}>
+          <button type="button" onClick={() => { onChange([]); setOpen(false); }}
+            onMouseEnter={(e) => { if (value.length) e.currentTarget.style.background = C.seasalt; }}
+            onMouseLeave={(e) => { if (value.length) e.currentTarget.style.background = 'transparent'; }}
+            style={{ flexShrink: 0, width: '100%', textAlign: 'left', padding: '9px 12px', borderRadius: 8, border: 'none', background: !value.length ? C.honeydew : 'transparent', color: !value.length ? C.green : '#1a1a1a', fontFamily: 'Figtree', fontSize: 13, fontWeight: !value.length ? 700 : 500, cursor: 'pointer' }}>
             — Unassigned —
           </button>
           {options.map((t) => {
-            const active = t.name === value;
+            const active = value.includes(t.name);
             return (
-              <button key={t.name} type="button" onClick={() => { onChange(t.name); setOpen(false); }}
+              <button key={t.name} type="button" onClick={() => toggle(t.name)}
                 onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = C.seasalt; }}
                 onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent'; }}
                 style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left', padding: '8px 10px', borderRadius: 8, border: 'none', background: active ? C.honeydew : 'transparent', cursor: 'pointer', fontFamily: 'Figtree' }}>
+                <input type="checkbox" readOnly checked={active} style={{ width: 15, height: 15, accentColor: C.green, flexShrink: 0, pointerEvents: 'none' }} />
                 <TechAvatar name={t.name} photoPath={t.photo_path} size={34} />
                 <span style={{ display: 'flex', flexDirection: 'column', gap: 2, overflow: 'hidden' }}>
                   <span style={{ fontSize: 13, fontWeight: 700, color: active ? C.green : '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</span>
@@ -1805,9 +1802,11 @@ const FIELD_TYPE_LABELS: Record<FieldType, string> = {
   number: 'Number',
   textarea: 'Long Text',
   checkbox: 'Checkbox',
+  cross: 'Cross', // overlay-only; not offered in the structured builder
   photo: 'Photo',
   group: 'Group',
   date: 'Date',
+  time: 'Time',
   signature: 'Signature',
   select: 'Dropdown',
   charger: 'Charger',
@@ -1826,6 +1825,7 @@ function TemplateEditor({
 }) {
   const store = useWorkOrderStore();
   const [draft, setDraft] = useState<FormTemplate>(template);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const dirty = JSON.stringify(draft) !== JSON.stringify(template);
 
   const cloneField = (f: FormField): FormField => {
@@ -2006,7 +2006,7 @@ function TemplateEditor({
             </button>
           )}
           <button
-            onClick={onDelete}
+            onClick={() => setConfirmDelete(true)}
             style={{
               marginLeft: 'auto',
               padding: '6px 12px',
@@ -2041,6 +2041,29 @@ function TemplateEditor({
           </button>
         </div>
       </div>
+
+      {confirmDelete && (
+        <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#C0321A' }}>
+            Delete “{draft.name || 'Untitled template'}”?
+          </div>
+          <div style={{ fontSize: 12, color: '#C0321A', lineHeight: 1.5 }}>
+            This permanently removes the template and its {draft.fields.length} field{draft.fields.length === 1 ? '' : 's'}
+            {isOverlay(draft) ? ` and ${pagesOf(draft).length} uploaded page${pagesOf(draft).length === 1 ? '' : 's'}` : ''}.
+            Work orders already using it will no longer render their form. This cannot be undone.
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => setConfirmDelete(false)}
+              style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #FDEAEA', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+              Cancel
+            </button>
+            <button onClick={() => { setConfirmDelete(false); onDelete(); }}
+              style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+              Yes, delete template
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Fields — structured or overlay */}
       {isOverlay(draft) ? (

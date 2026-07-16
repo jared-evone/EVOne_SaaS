@@ -4,7 +4,7 @@ import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { Search, ArrowLeft } from 'lucide-react';
 import {
-  DEPARTMENT_LABELS, PERMISSION_SECTIONS, SCREEN_LABELS, usePermissions,
+  DEPARTMENT_LABELS, DEPARTMENTS, MATRIX_SECTIONS, SCREEN_LABELS, SHARED_SCREENS, usePermissions,
   type ScreenKey, type ScreenCap, type Department,
 } from '../permissions';
 
@@ -18,11 +18,15 @@ interface AppUser {
   is_active: boolean;
 }
 
-type PermissionRow = ScreenCap & { screen_key: ScreenKey };
+type PermissionRow = ScreenCap & { department: Department; screen_key: ScreenKey };
 
 const SHORT_DEPT: Record<Department, string> = { cpo: 'CPO', sales: 'Sales', tech: 'Tech', pm: 'Registry' };
 
-const ALL_GRANTABLE_KEYS: ScreenKey[] = PERMISSION_SECTIONS.flatMap((s) => s.keys);
+// Grants are per (department, screen). Matrix cells are keyed by this pair so the
+// same shared screen can differ between departments for one user.
+const cellKey = (d: Department, k: ScreenKey) => `${d}::${k}`;
+const ALL_MANAGED_CELLS: { department: Department; screen_key: ScreenKey }[] =
+  MATRIX_SECTIONS.flatMap((s) => s.keys.map((k) => ({ department: s.department, screen_key: k })));
 
 // ── Root ──────────────────────────────────────────────────────────
 
@@ -34,7 +38,7 @@ export function ScreenSettings() {
   const fetchAll = async () => {
     const [{ data: u }, { data: p }] = await Promise.all([
       supabase.from('app_users').select('id, department, email, full_name, is_active').order('full_name'),
-      supabase.from('app_user_permissions').select('user_id, screen_key, can_view, can_edit, can_delete'),
+      supabase.from('app_user_permissions').select('user_id, department, screen_key, can_view, can_edit, can_delete'),
     ]);
     setUsers((u as AppUser[]) ?? []);
     setAllPerms((p as (PermissionRow & { user_id: string })[]) ?? []);
@@ -83,22 +87,19 @@ function UsersTab({ users, allPerms, onRefresh }: UsersTabProps) {
 
   const permUser = users.find((u) => u.id === permUserId) ?? null;
 
-  // Which departments each user can access: ≥1 viewable screen OWNED by that
-  // department (shared screens like customers count only for their owning
-  // section, so a Sales-only user doesn't read as having Tech access).
+  // Which departments each user can access: a viewable grant now carries its own
+  // department, so this is a direct read.
   const accessByUser = useMemo(() => {
-    const viewable = new Map<string, Set<ScreenKey>>();
+    const m = new Map<string, Set<Department>>();
     for (const p of allPerms) {
-      if (!p.can_view) continue;
-      const s = viewable.get(p.user_id) ?? new Set<ScreenKey>();
-      s.add(p.screen_key);
-      viewable.set(p.user_id, s);
+      if (!p.can_view || !DEPARTMENTS.includes(p.department)) continue;
+      const s = m.get(p.user_id) ?? new Set<Department>();
+      s.add(p.department);
+      m.set(p.user_id, s);
     }
-    const m = new Map<string, Department[]>();
-    for (const [uid, keys] of viewable) {
-      m.set(uid, PERMISSION_SECTIONS.filter((s) => s.keys.some((k) => keys.has(k))).map((s) => s.department));
-    }
-    return m;
+    const out = new Map<string, Department[]>();
+    for (const [uid, set] of m) out.set(uid, DEPARTMENTS.filter((d) => set.has(d)));
+    return out;
   }, [allPerms]);
 
   const visible = users.filter((u) => {
@@ -236,7 +237,8 @@ interface UserPermissionsEditorProps {
 
 function UserPermissionsEditor({ user, onBack, onRefresh }: UserPermissionsEditorProps) {
   const { refresh: refreshActivePerms } = usePermissions();
-  const [perms, setPerms] = useState<Record<ScreenKey, ScreenCap>>(() => emptyMatrix(ALL_GRANTABLE_KEYS));
+  // Keyed by cellKey(department, screen).
+  const [perms, setPerms] = useState<Record<string, ScreenCap>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -245,13 +247,13 @@ function UserPermissionsEditor({ user, onBack, onRefresh }: UserPermissionsEdito
     (async () => {
       const { data } = await supabase
         .from('app_user_permissions')
-        .select('screen_key, can_view, can_edit, can_delete')
+        .select('department, screen_key, can_view, can_edit, can_delete')
         .eq('user_id', user.id);
-      const matrix = emptyMatrix(ALL_GRANTABLE_KEYS);
+      const matrix: Record<string, ScreenCap> = {};
+      for (const cell of ALL_MANAGED_CELLS) matrix[cellKey(cell.department, cell.screen_key)] = { can_view: false, can_edit: false, can_delete: false };
       for (const row of (data ?? []) as PermissionRow[]) {
-        if (row.screen_key in matrix) {
-          matrix[row.screen_key] = { can_view: row.can_view, can_edit: row.can_edit, can_delete: row.can_delete };
-        }
+        const key = cellKey(row.department, row.screen_key as ScreenKey);
+        if (key in matrix) matrix[key] = { can_view: row.can_view, can_edit: row.can_edit, can_delete: row.can_delete };
       }
       setPerms(matrix);
       setLoading(false);
@@ -260,63 +262,74 @@ function UserPermissionsEditor({ user, onBack, onRefresh }: UserPermissionsEdito
 
   const totals = useMemo(() => {
     let v = 0, e = 0, d = 0;
-    for (const k of ALL_GRANTABLE_KEYS) {
-      if (perms[k]?.can_view) v++;
-      if (perms[k]?.can_edit) e++;
-      if (perms[k]?.can_delete) d++;
+    for (const cell of ALL_MANAGED_CELLS) {
+      const p = perms[cellKey(cell.department, cell.screen_key)];
+      if (p?.can_view) v++;
+      if (p?.can_edit) e++;
+      if (p?.can_delete) d++;
     }
     return { v, e, d };
   }, [perms]);
 
-  const togglePerm = (k: ScreenKey, cap: keyof ScreenCap) => {
+  const togglePerm = (dep: Department, k: ScreenKey, cap: keyof ScreenCap) => {
     setSaved(false);
+    const key = cellKey(dep, k);
     setPerms((prev) => {
-      const next = { ...prev, [k]: { ...prev[k], [cap]: !prev[k][cap] } };
-      if (cap === 'can_view' && !next[k].can_view) {
-        next[k] = { can_view: false, can_edit: false, can_delete: false };
-      } else if (cap !== 'can_view' && next[k][cap]) {
-        next[k].can_view = true;
+      const next = { ...prev, [key]: { ...prev[key], [cap]: !prev[key][cap] } };
+      if (cap === 'can_view' && !next[key].can_view) {
+        next[key] = { can_view: false, can_edit: false, can_delete: false };
+      } else if (cap !== 'can_view' && next[key][cap]) {
+        next[key].can_view = true;
       }
       return next;
     });
   };
 
-  const toggleAllForScreen = (k: ScreenKey) => {
+  const toggleAllForScreen = (dep: Department, k: ScreenKey) => {
     setSaved(false);
+    const key = cellKey(dep, k);
     setPerms((prev) => {
-      const all = prev[k].can_view && prev[k].can_edit && prev[k].can_delete;
-      return { ...prev, [k]: { can_view: !all, can_edit: !all, can_delete: !all } };
+      const all = prev[key].can_view && prev[key].can_edit && prev[key].can_delete;
+      return { ...prev, [key]: { can_view: !all, can_edit: !all, can_delete: !all } };
     });
   };
 
-  const toggleSection = (keys: ScreenKey[]) => {
+  const toggleSection = (dep: Department, keys: ScreenKey[]) => {
     setSaved(false);
     setPerms((prev) => {
-      const allOn = keys.every((k) => prev[k].can_view && prev[k].can_edit && prev[k].can_delete);
+      const allOn = keys.every((k) => { const p = prev[cellKey(dep, k)]; return p.can_view && p.can_edit && p.can_delete; });
       const next = { ...prev };
-      for (const k of keys) next[k] = { can_view: !allOn, can_edit: !allOn, can_delete: !allOn };
+      for (const k of keys) next[cellKey(dep, k)] = { can_view: !allOn, can_edit: !allOn, can_delete: !allOn };
       return next;
     });
   };
 
   const save = async () => {
     setSaving(true);
-    // Upsert the enabled grants first, then prune the revoked ones — never a
-    // window where a failed request has wiped the user's access.
-    const granted = ALL_GRANTABLE_KEYS.filter((k) => perms[k].can_view || perms[k].can_edit || perms[k].can_delete);
-    const rows = granted.map((k) => ({ user_id: user.id, screen_key: k, ...perms[k] }));
+    // Upsert the enabled grants first, then prune the revoked matrix cells — never
+    // a window where a failed request has wiped the user's access. The prune is
+    // scoped to matrix-managed (department, screen) pairs, so retired/'legacy'
+    // rows are left untouched.
+    const rows = ALL_MANAGED_CELLS
+      .map((cell) => ({ cell, cap: perms[cellKey(cell.department, cell.screen_key)] }))
+      .filter(({ cap }) => cap.can_view || cap.can_edit || cap.can_delete)
+      .map(({ cell, cap }) => ({ user_id: user.id, department: cell.department, screen_key: cell.screen_key, ...cap }));
+
     let failure: string | null = null;
     if (rows.length) {
-      const { error } = await supabase.from('app_user_permissions').upsert(rows, { onConflict: 'user_id,screen_key' });
+      const { error } = await supabase.from('app_user_permissions').upsert(rows, { onConflict: 'user_id,department,screen_key' });
       if (error) failure = error.message;
     }
     if (!failure) {
-      const prune = granted.length
-        ? supabase.from('app_user_permissions').delete().eq('user_id', user.id)
-            .not('screen_key', 'in', `(${granted.map((k) => `"${k}"`).join(',')})`)
-        : supabase.from('app_user_permissions').delete().eq('user_id', user.id);
-      const { error } = await prune;
-      if (error) failure = error.message;
+      // Delete turned-off cells department by department (scoped so we never touch
+      // another department's or a legacy row).
+      for (const { department, keys } of MATRIX_SECTIONS) {
+        const revoked = keys.filter((k) => { const p = perms[cellKey(department, k)]; return !(p.can_view || p.can_edit || p.can_delete); });
+        if (!revoked.length) continue;
+        const { error } = await supabase.from('app_user_permissions').delete()
+          .eq('user_id', user.id).eq('department', department).in('screen_key', revoked);
+        if (error) { failure = error.message; break; }
+      }
     }
     setSaving(false);
     if (failure) { window.alert(`Could not save access: ${failure}`); return; }
@@ -341,7 +354,7 @@ function UserPermissionsEditor({ user, onBack, onRefresh }: UserPermissionsEdito
           <div style={{ fontSize: 18, fontWeight: 700, color: C.green, letterSpacing: '-0.01em' }}>{user.full_name}</div>
           <div style={{ fontSize: 12, color: C.slate, marginTop: 4 }}>{user.email}</div>
           <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>
-            View: <strong style={{ color: '#1a1a1a' }}>{totals.v}</strong> · Edit: <strong style={{ color: '#1a1a1a' }}>{totals.e}</strong> · Delete: <strong style={{ color: '#1a1a1a' }}>{totals.d}</strong> of {ALL_GRANTABLE_KEYS.length} screens
+            View: <strong style={{ color: '#1a1a1a' }}>{totals.v}</strong> · Edit: <strong style={{ color: '#1a1a1a' }}>{totals.e}</strong> · Delete: <strong style={{ color: '#1a1a1a' }}>{totals.d}</strong> of {ALL_MANAGED_CELLS.length} screens
           </div>
         </div>
         <button onClick={save} disabled={saving}
@@ -350,12 +363,14 @@ function UserPermissionsEditor({ user, onBack, onRefresh }: UserPermissionsEdito
         </button>
       </div>
 
-      {/* Matrix, one section per department */}
-      {PERMISSION_SECTIONS.map(({ department, keys }) => (
+      {/* Matrix, one section per department. Shared screens (Customers, Charger
+          Registry) appear under every department that exposes them — one grant,
+          shown wherever you'd look for it. */}
+      {MATRIX_SECTIONS.map(({ department, keys }) => (
         <div key={department} style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
           <div style={{ padding: '14px 16px', borderBottom: '1px solid #F3F3F3', display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>{DEPARTMENT_LABELS[department]}</div>
-            <button onClick={() => toggleSection(keys)}
+            <button onClick={() => toggleSection(department, keys)}
               style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 700, padding: '3px 10px', borderRadius: 99, border: '1px solid #EBEBEB', background: C.white, color: C.slate, cursor: 'pointer', fontFamily: 'Figtree', letterSpacing: '0.04em', textTransform: 'uppercase' }}>
               Toggle All
             </button>
@@ -372,21 +387,27 @@ function UserPermissionsEditor({ user, onBack, onRefresh }: UserPermissionsEdito
             </thead>
             <tbody>
               {keys.map((k) => {
-                const p = perms[k];
+                const p = perms[cellKey(department, k)] ?? { can_view: false, can_edit: false, can_delete: false };
                 return (
                   <tr key={k} style={{ borderBottom: '1px solid #F3F3F3' }}>
                     <td style={{ padding: '10px 16px', fontSize: 13, fontWeight: 600, color: '#1a1a1a' }}>
                       {SCREEN_LABELS[k]}
+                      {SHARED_SCREENS.has(k) && (
+                        <span title="Also appears in other departments — each department is controlled independently."
+                          style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 99, background: C.seasalt, color: C.slate, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                          Multi-dept
+                        </span>
+                      )}
                       <div style={{ fontSize: 10, color: C.slate, marginTop: 2 }}><code style={{ background: C.seasalt, padding: '1px 5px', borderRadius: 4 }}>{k}</code></div>
                     </td>
                     {(['can_view', 'can_edit', 'can_delete'] as const).map((cap) => (
                       <td key={cap} style={{ padding: '10px 16px', textAlign: 'center' }}>
-                        <input type="checkbox" checked={p[cap]} onChange={() => togglePerm(k, cap)}
+                        <input type="checkbox" checked={p[cap]} onChange={() => togglePerm(department, k, cap)}
                           style={{ cursor: 'pointer', width: 18, height: 18, accentColor: C.green }} />
                       </td>
                     ))}
                     <td style={{ padding: '10px 16px', textAlign: 'center' }}>
-                      <button onClick={() => toggleAllForScreen(k)}
+                      <button onClick={() => toggleAllForScreen(department, k)}
                         style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 99, border: '1px solid #EBEBEB', background: C.white, color: C.slate, cursor: 'pointer', fontFamily: 'Figtree' }}>
                         All
                       </button>
@@ -400,7 +421,7 @@ function UserPermissionsEditor({ user, onBack, onRefresh }: UserPermissionsEdito
       ))}
 
       <div style={{ background: C.honeydew, color: C.green, borderRadius: 10, padding: '10px 14px', fontSize: 11, fontWeight: 600 }}>
-        Edit / Delete imply View. Turning View off clears the other two. A user can sign in to a department when at least one of its screens is viewable.
+        Edit / Delete imply View. Turning View off clears the other two. Each department is controlled independently — the same shared screen (e.g. Customers) can be on in one department and off in another. A user can sign in to a department when at least one of its screens is viewable.
       </div>
     </div>
   );
@@ -511,8 +532,3 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function emptyMatrix(keys: ScreenKey[]): Record<ScreenKey, ScreenCap> {
-  const m = {} as Record<ScreenKey, ScreenCap>;
-  for (const k of keys) m[k] = { can_view: false, can_edit: false, can_delete: false };
-  return m;
-}
