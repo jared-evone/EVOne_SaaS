@@ -83,7 +83,8 @@ export interface WorkOrderForm {
   label: string;              // display, e.g. "EV Charger Installation Report (1 of 2)"
   values?: FormValues;
   reportFileName?: string;    // Other instances: manually-uploaded PDF
-  reportPdfBase64?: string;
+  reportPdfUrl?: string;      // permanent Storage URL for the uploaded report
+  reportPdfBase64?: string;   // legacy inline PDF (pre-Storage work orders)
 }
 
 export interface FormResponse {
@@ -96,6 +97,8 @@ export interface FormResponse {
 export interface WorkOrder {
   id: string;
   title: string;
+  category?: string | null;    // optional admin-managed grouping (tsd_work_order_categories)
+  instructions?: string | null; // optional PIC note shown to the technician (multi-line)
   customerId: string | null;   // link to Customer registry (preferred)
   customer: string;            // denormalised name for display + legacy
   address: string;
@@ -137,6 +140,10 @@ interface Store {
   customers: Customer[];
   getTemplate(id: string): FormTemplate | undefined;
   getCustomer(id: string | null | undefined): Customer | undefined;
+  /** Lazy-load the FULL work order (incl. photo/PDF blobs) into the store. The
+   *  list loads a light projection; call this before opening a work order so its
+   *  form values are present. Resolves once the row is merged. */
+  loadWorkOrderDetail(workOrderId: string): Promise<void>;
 
   // technician actions
   pickUp(workOrderId: string, technicianName: string): void;
@@ -150,6 +157,12 @@ interface Store {
   // admin actions
   createWorkOrder(input: Omit<WorkOrder, 'id' | 'status' | 'response'>): void;
   reassign(workOrderId: string, technicianName: string | null): void;
+  /** Change the assignee without disturbing an in-flight status (submitted/
+   *  reviewed/completed stay put); only the open⇄assigned pair tracks assignment. */
+  setAssignee(workOrderId: string, technicianName: string | null): void;
+  renameWorkOrder(workOrderId: string, title: string): void;
+  setWorkOrderCategory(workOrderId: string, category: string | null): void;
+  setWorkOrderInstructions(workOrderId: string, instructions: string | null): void;
   reschedule(workOrderId: string, date: string): void;
   deleteWorkOrder(workOrderId: string): void;
   saveTemplate(template: FormTemplate): void;
@@ -162,6 +175,15 @@ interface Store {
 
 const StoreContext = createContext<Store | null>(null);
 
+// A row has "full" detail once its form values / legacy inline PDFs are loaded —
+// as opposed to the light list projection where they're stripped. Used so a
+// background list refetch never downgrades an open (hydrated) work order.
+function formsAreFull(w: WorkOrder): boolean {
+  return (w.forms ?? []).some(
+    (f) => (f.values && Object.keys(f.values).length > 0) || !!f.reportPdfBase64,
+  );
+}
+
 export function WorkOrderProvider({ children }: { children: ReactNode }) {
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>(INITIAL_WORK_ORDERS);
   const [templates, setTemplates] = useState<FormTemplate[]>(INITIAL_TEMPLATES);
@@ -173,16 +195,35 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let live = true;
 
-    const loadAll = async () => {
-      const [tpl, wo, cust] = await Promise.all([
-        supabase.from('tsd_form_templates').select('template'),
-        supabase.from('tsd_work_orders').select('data'),
-        supabase.from('tsd_customers').select('data'),
-      ]);
-      if (!live) return;
-      if (tpl.data) setTemplates(tpl.data.map((r) => (r as { template: FormTemplate }).template));
-      if (wo.data) setWorkOrders(wo.data.map((r) => (r as { data: WorkOrder }).data));
-      if (cust.data) setCustomers(cust.data.map((r) => (r as { data: Customer }).data));
+    // Fire the three loads independently so each list/dropdown paints as soon as
+    // its own (small) payload lands — templates + customers no longer wait behind
+    // the work-order fetch. Work orders come back as a LIGHT projection (photos /
+    // report PDFs stripped server-side); full detail is lazy-loaded per row when a
+    // work order is opened, via loadWorkOrderDetail.
+    const loadAll = () => {
+      supabase.from('tsd_form_templates').select('template').then(({ data }) => {
+        if (live && data) setTemplates(data.map((r) => (r as { template: FormTemplate }).template));
+      });
+      supabase.rpc('tsd_work_orders_list').then(({ data, error }) => {
+        if (!live) return;
+        if (error) { console.error('load work orders failed', error); return; }
+        if (!Array.isArray(data)) return;
+        const light = data as unknown as WorkOrder[];
+        // The list is a LIGHT projection (form values / photos stripped). If a row
+        // is already loaded full in memory (an open report), keep its full forms —
+        // otherwise a background refetch would blank out the open work order until
+        // the next page reload. Metadata (title/status/…) still refreshes.
+        setWorkOrders((prev) => {
+          const byId = new Map(prev.map((w) => [w.id, w]));
+          return light.map((lr) => {
+            const ex = byId.get(lr.id);
+            return ex && formsAreFull(ex) ? { ...lr, forms: ex.forms, response: ex.response } : lr;
+          });
+        });
+      });
+      supabase.from('tsd_customers').select('data').then(({ data }) => {
+        if (live && data) setCustomers(data.map((r) => (r as { data: Customer }).data));
+      });
     };
 
     const refetchWorkOrder = async (id: string) => {
@@ -239,6 +280,18 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
         }
       });
   };
+  // Merge only the changed top-level fields server-side (data || patch), so a
+  // metadata edit never overwrites the full row — the in-memory copy is a light
+  // projection with photo/PDF blobs stripped, and a whole-blob upsert would wipe
+  // them. Use this for every mutation that ISN'T rewriting form contents.
+  const patchWorkOrder = (id: string, patch: Record<string, unknown>) => {
+    supabase.rpc('tsd_work_order_patch', { p_id: id, p_patch: patch }).then(({ error }) => {
+      if (error) {
+        console.error('patch work order failed', error);
+        alert(`Saving to the server failed — your changes are NOT synced yet.\n\n${error.message}`);
+      }
+    });
+  };
   const persistCustomer = (c: Customer) => {
     supabase
       .from('tsd_customers')
@@ -255,13 +308,19 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
     getTemplate: (id) => templates.find((t) => t.id === id),
     getCustomer: (id) => (id ? customers.find((c) => c.id === id) : undefined),
 
+    loadWorkOrderDetail: async (id) => {
+      const { data } = await supabase.from('tsd_work_orders').select('data').eq('id', id).maybeSingle();
+      if (!data) return;
+      const wo = (data as { data: WorkOrder }).data;
+      setWorkOrders((ws) => (ws.some((w) => w.id === wo.id) ? ws.map((w) => (w.id === wo.id ? wo : w)) : [wo, ...ws]));
+    },
+
     pickUp: (id, tech) =>
       setWorkOrders((ws) =>
         ws.map((w) => {
           if (w.id !== id || w.status !== 'open') return w;
-          const next: WorkOrder = { ...w, status: 'assigned', assignedTo: tech };
-          persistWorkOrder(next);
-          return next;
+          patchWorkOrder(id, { status: 'assigned', assignedTo: tech });
+          return { ...w, status: 'assigned', assignedTo: tech };
         }),
       ),
 
@@ -300,9 +359,8 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
       setWorkOrders((ws) =>
         ws.map((w) => {
           if (w.id !== id) return w;
-          const next: WorkOrder = { ...w, status: 'completed' };
-          persistWorkOrder(next);
-          return next;
+          patchWorkOrder(id, { status: 'completed' });
+          return { ...w, status: 'completed' };
         }),
       ),
 
@@ -317,9 +375,9 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
       setWorkOrders((ws) =>
         ws.map((w) => {
           if (w.id !== id) return w;
-          const next: WorkOrder = { ...w, assignedTo: tech, status: tech ? 'assigned' : 'open' };
-          persistWorkOrder(next);
-          return next;
+          const status: WorkOrderStatus = tech ? 'assigned' : 'open';
+          patchWorkOrder(id, { assignedTo: tech, status });
+          return { ...w, assignedTo: tech, status };
         }),
       ),
 
@@ -327,9 +385,48 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
       setWorkOrders((ws) =>
         ws.map((w) => {
           if (w.id !== id) return w;
-          const next: WorkOrder = { ...w, scheduledDate: date };
-          persistWorkOrder(next);
-          return next;
+          patchWorkOrder(id, { scheduledDate: date });
+          return { ...w, scheduledDate: date };
+        }),
+      ),
+
+    setAssignee: (id, tech) =>
+      setWorkOrders((ws) =>
+        ws.map((w) => {
+          if (w.id !== id) return w;
+          // Preserve any progressed status; only the open⇄assigned pair reflects
+          // whether a technician is on it. Editing a submitted job never resets it.
+          const status: WorkOrderStatus =
+            w.status === 'open' || w.status === 'assigned' ? (tech ? 'assigned' : 'open') : w.status;
+          patchWorkOrder(id, { assignedTo: tech, status });
+          return { ...w, assignedTo: tech, status };
+        }),
+      ),
+
+    renameWorkOrder: (id, title) =>
+      setWorkOrders((ws) =>
+        ws.map((w) => {
+          if (w.id !== id) return w;
+          patchWorkOrder(id, { title });
+          return { ...w, title };
+        }),
+      ),
+
+    setWorkOrderCategory: (id, category) =>
+      setWorkOrders((ws) =>
+        ws.map((w) => {
+          if (w.id !== id) return w;
+          patchWorkOrder(id, { category });
+          return { ...w, category };
+        }),
+      ),
+
+    setWorkOrderInstructions: (id, instructions) =>
+      setWorkOrders((ws) =>
+        ws.map((w) => {
+          if (w.id !== id) return w;
+          patchWorkOrder(id, { instructions });
+          return { ...w, instructions };
         }),
       ),
 
@@ -372,9 +469,8 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
       setWorkOrders((ws) =>
         ws.map((w) => {
           if (w.customerId !== customer.id) return w;
-          const next: WorkOrder = { ...w, customer: customer.name, address: customer.address };
-          persistWorkOrder(next);
-          return next;
+          patchWorkOrder(w.id, { customer: customer.name, address: customer.address });
+          return { ...w, customer: customer.name, address: customer.address };
         }),
       );
     },

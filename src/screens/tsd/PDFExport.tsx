@@ -31,6 +31,7 @@ Font.register({
 import { C } from '../../theme';
 import { isOverlay, pagesOf } from './OverlayForm';
 import { buildImagePdf } from './imagePdf';
+import { fetchToDataUrl, isStoredImageUrl } from '../../lib/formMedia';
 import type { FormField, FormTemplate, FormValues, OverlayPage, WorkOrder, WorkOrderForm } from '../../workOrderStore';
 
 // ─── Brand tokens scoped to react-pdf (no media queries / no `var`) ──
@@ -279,16 +280,24 @@ function downscaleDataUrl(src: string, maxW: number, quality: number): Promise<{
   });
 }
 
-function loadImage(src: string): Promise<HTMLImageElement | null> {
+async function loadImage(src: string): Promise<HTMLImageElement | null> {
+  // A stored photo is now an http(s) URL; fetch it to a data URL first so drawing
+  // it to a canvas doesn't taint the canvas (canvas.toDataURL would then throw).
+  let resolved = src;
+  if (/^https?:\/\//i.test(src)) {
+    const dataUrl = await fetchToDataUrl(src);
+    if (!dataUrl) return null;
+    resolved = dataUrl;
+  }
+  if (!/^data:image\//i.test(resolved)) return null;
   return new Promise((resolve) => {
-    if (!/^data:image\//i.test(src) && !/^https?:\/\//i.test(src)) { resolve(null); return; }
     let done = false;
     const finish = (r: HTMLImageElement | null) => { if (!done) { done = true; resolve(r); } };
     const timer = setTimeout(() => finish(null), 12000);
     const img = new Image();
     img.onload = () => { clearTimeout(timer); finish(img); };
     img.onerror = () => { clearTimeout(timer); finish(null); };
-    img.src = src;
+    img.src = resolved;
   });
 }
 
@@ -445,10 +454,15 @@ export async function preparePdfExport(
       if (!f.values || (t && isOverlay(t))) return f; // overlay values are baked in
       const out: FormValues = { ...f.values };
       for (const [k, v] of Object.entries(f.values)) {
-        if (typeof v === 'string' && /^data:image\//i.test(v)) {
-          const small = await downscaleDataUrl(v, 1000, 0.7);
-          if (small) out[k] = small.src;
-        }
+        if (typeof v !== 'string') continue;
+        // Stored photos are http URLs — fetch to a data URL so react-pdf embeds
+        // them reliably (and we can shrink them). Legacy inline data URLs shrink
+        // directly.
+        let dataUrl = /^data:image\//i.test(v) ? v : null;
+        if (!dataUrl && isStoredImageUrl(v)) dataUrl = await fetchToDataUrl(v);
+        if (!dataUrl) continue;
+        const small = await downscaleDataUrl(dataUrl, 1000, 0.7);
+        out[k] = small ? small.src : dataUrl;
       }
       return { ...f, values: out };
     }),

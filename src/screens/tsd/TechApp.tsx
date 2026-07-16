@@ -14,8 +14,8 @@ import {
 import { OverlayFormRenderer, isOverlay } from './OverlayForm';
 import { usePermissions } from '../../permissions';
 import { supabase } from '../../lib/supabase';
-import { compressImage } from '../../lib/compressImage';
-import { Power, Calendar, User, Camera, Search, ChevronDown, Navigation } from 'lucide-react';
+import { uploadFormPhoto, uploadFormPdf } from '../../lib/formMedia';
+import { Power, Calendar, User, Camera, Search, ChevronDown, Navigation, ClipboardList } from 'lucide-react';
 import { googleMapsDirections, hasNavTarget } from '../../lib/navLinks';
 
 interface TechAppProps {
@@ -47,8 +47,25 @@ export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
     return () => { cancelled = true; };
   }, [isAdmin]);
 
+  // Jobs list is a light projection (no photo/PDF blobs). Pull the full job when
+  // one is opened, and mount the form only once its saved values are present.
+  const [hydratedId, setHydratedId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!activeId) { setHydratedId(null); return; }
+    let ok = true;
+    void store.loadWorkOrderDetail(activeId).then(() => { if (ok) setHydratedId(activeId); });
+    return () => { ok = false; };
+  }, [activeId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const active = activeId ? store.workOrders.find((w) => w.id === activeId) : null;
   if (active) {
+    if (hydratedId !== active.id) {
+      return (
+        <div style={{ minHeight: '60vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.slate, fontSize: 14 }}>
+          Loading job…
+        </div>
+      );
+    }
     return (
       <TechFillFormView
         workOrder={active}
@@ -389,6 +406,12 @@ function WorkOrderCard({
           )}
         </div>
       )}
+      {wo.instructions && (
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 12, color: '#B07D00', background: '#FFF8E1', border: '1px solid #F3E4B0', borderRadius: 8, padding: '6px 10px', lineHeight: 1.4 }}>
+          <ClipboardList size={12} strokeWidth={2.25} style={{ flexShrink: 0, marginTop: 2 }} />
+          <span style={{ overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', whiteSpace: 'pre-wrap' }}>{wo.instructions}</span>
+        </div>
+      )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 11, color: C.slate, display: 'inline-flex', alignItems: 'center', gap: 4 }}><Calendar size={11} strokeWidth={2} /> {wo.scheduledDate}</span>
         {assignee !== undefined && (
@@ -583,30 +606,38 @@ export function openBase64Pdf(base64: string, filename: string) {
 export function OtherFormCard({ inst, disabled, onUpload, onRemove }: {
   inst: WorkOrderForm;
   disabled: boolean;
-  onUpload: (name: string, base64: string) => void;
+  onUpload: (name: string, url: string) => void;
   onRemove: () => void;
 }) {
+  const [uploading, setUploading] = useState(false);
   const read = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    const reader = new FileReader();
-    reader.onloadend = () => onUpload(file.name, String(reader.result).split(',')[1] ?? '');
-    reader.readAsDataURL(file);
+    setUploading(true);
+    uploadFormPdf(file)
+      .then((url) => onUpload(file.name, url))
+      .catch(() => alert('Could not upload the report — please check your connection and try again.'))
+      .finally(() => setUploading(false));
+  };
+  const hasReport = !!(inst.reportPdfUrl || inst.reportPdfBase64);
+  const openReport = () => {
+    if (inst.reportPdfUrl) window.open(inst.reportPdfUrl, '_blank', 'noopener,noreferrer');
+    else if (inst.reportPdfBase64) openBase64Pdf(inst.reportPdfBase64, inst.reportFileName ?? 'report.pdf');
   };
   return (
     <div style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ fontSize: 13, color: C.slate }}>Non-templated — upload the PDF report for this job.</div>
-      {inst.reportPdfBase64 ? (
+      {hasReport ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <button onClick={() => openBase64Pdf(inst.reportPdfBase64!, inst.reportFileName ?? 'report.pdf')}
+          <button onClick={openReport}
             style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 8, padding: '9px 16px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
             ⬇ {inst.reportFileName ?? 'Download report PDF'}
           </button>
           {!disabled && (
             <div style={{ display: 'flex', gap: 8 }}>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-                Replace<input type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} onChange={read} />
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: uploading ? 'default' : 'pointer', opacity: uploading ? 0.6 : 1 }}>
+                {uploading ? 'Uploading…' : 'Replace'}<input type="file" accept="application/pdf,.pdf" disabled={uploading} style={{ display: 'none' }} onChange={read} />
               </label>
               <button type="button" onClick={onRemove} style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Remove</button>
             </div>
@@ -615,9 +646,9 @@ export function OtherFormCard({ inst, disabled, onUpload, onRemove }: {
       ) : disabled ? (
         <div style={{ fontSize: 13, color: '#B45309' }}>No report PDF attached.</div>
       ) : (
-        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '18px', borderRadius: 10, border: '1.5px dashed #CBD5DD', background: '#F9F9F9', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-          ⬆ Upload PDF report
-          <input type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} onChange={read} />
+        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '18px', borderRadius: 10, border: '1.5px dashed #CBD5DD', background: '#F9F9F9', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: uploading ? 'default' : 'pointer', opacity: uploading ? 0.6 : 1 }}>
+          ⬆ {uploading ? 'Uploading…' : 'Upload PDF report'}
+          <input type="file" accept="application/pdf,.pdf" disabled={uploading} style={{ display: 'none' }} onChange={read} />
         </label>
       )}
     </div>
@@ -643,15 +674,15 @@ function TechFillFormView({
 
   const setField = (i: number, id: string, val: string | boolean) =>
     setForms((fs) => fs.map((f, idx) => (idx === i ? { ...f, values: { ...(f.values ?? {}), [id]: val } } : f)));
-  const setReport = (i: number, name: string, base64: string) =>
-    setForms((fs) => fs.map((f, idx) => (idx === i ? { ...f, reportFileName: name || undefined, reportPdfBase64: base64 || undefined } : f)));
+  const setReport = (i: number, name: string, url: string) =>
+    setForms((fs) => fs.map((f, idx) => (idx === i ? { ...f, reportFileName: name || undefined, reportPdfUrl: url || undefined, reportPdfBase64: undefined } : f)));
 
   const missingRequired = useMemo(() => {
     const out: string[] = [];
     for (const inst of forms) {
       const tpl = store.getTemplate(inst.templateId);
       if (!tpl) {
-        if (!inst.reportPdfBase64) out.push(`${inst.label}: PDF report`);
+        if (!inst.reportPdfBase64 && !inst.reportPdfUrl) out.push(`${inst.label}: PDF report`);
         continue;
       }
       // container groups contribute their children, not themselves
@@ -699,6 +730,14 @@ function TechFillFormView({
               <Navigation size={14} strokeWidth={2.25} /> Navigate
             </button>
           )}
+        </div>
+      )}
+      {workOrder.instructions && (
+        <div style={{ background: '#FFF8E1', border: '1px solid #F3E4B0', borderRadius: 12, padding: '12px 14px', marginBottom: 16 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: '#B07D00', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <ClipboardList size={12} strokeWidth={2.25} /> Instructions from office
+          </div>
+          <div style={{ fontSize: 13, color: '#1a1a1a', marginTop: 5, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{workOrder.instructions}</div>
         </div>
       )}
       {forms.map((inst, i) => {
@@ -1193,6 +1232,7 @@ function FieldRow({
   chargerCustomerId?: string | null;
 }) {
   const value = values[field.id];
+  const [uploading, setUploading] = useState(false);
   if (field.type === 'section') {
     return (
       <div
@@ -1268,9 +1308,11 @@ function FieldRow({
       const file = e.target.files?.[0];
       e.target.value = '';
       if (!file) return;
-      compressImage(file)
-        .then((dataUrl) => onChange(photoKey, dataUrl))
-        .catch(() => alert('Could not read that photo — please try another image.'));
+      setUploading(true);
+      uploadFormPhoto(file)
+        .then((url) => onChange(photoKey, url))
+        .catch(() => alert('Could not upload that photo — please check your connection and try again.'))
+        .finally(() => setUploading(false));
     };
     return (
       <div style={{ border: `1px solid ${checked ? C.green : '#EBEBEB'}`, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 12, background: C.white }}>
@@ -1300,9 +1342,9 @@ function FieldRow({
           ) : disabled ? (
             <div style={{ padding: '16px', textAlign: 'center', color: C.slate, fontSize: 12, background: '#F9F9F9', borderRadius: 10, border: '1px dashed #EBEBEB' }}>No photo</div>
           ) : (
-            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '16px', borderRadius: 10, border: '1.5px dashed #CBD5DD', background: '#F9F9F9', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-              <Camera size={16} strokeWidth={2.25} /> Take or upload photo
-              <input type="file" accept="image/*" style={{ display: 'none' }} onChange={readGroupPhoto} />
+            <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '16px', borderRadius: 10, border: '1.5px dashed #CBD5DD', background: '#F9F9F9', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: uploading ? 'default' : 'pointer', opacity: uploading ? 0.6 : 1 }}>
+              <Camera size={16} strokeWidth={2.25} /> {uploading ? 'Uploading…' : 'Take or upload photo'}
+              <input type="file" accept="image/*" disabled={uploading} style={{ display: 'none' }} onChange={readGroupPhoto} />
             </label>
           )}
         </div>
@@ -1323,9 +1365,11 @@ function FieldRow({
       const file = e.target.files?.[0];
       e.target.value = '';
       if (!file) return;
-      compressImage(file)
-        .then((dataUrl) => onChange(field.id, dataUrl))
-        .catch(() => alert('Could not read that photo — please try another image.'));
+      setUploading(true);
+      uploadFormPhoto(file)
+        .then((url) => onChange(field.id, url))
+        .catch(() => alert('Could not upload that photo — please check your connection and try again.'))
+        .finally(() => setUploading(false));
     };
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -1352,9 +1396,9 @@ function FieldRow({
         ) : disabled ? (
           <div style={{ padding: '20px', textAlign: 'center', color: C.slate, fontSize: 12, background: '#F9F9F9', borderRadius: 10, border: '1px dashed #EBEBEB' }}>No photo</div>
         ) : (
-          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '18px', borderRadius: 10, border: '1.5px dashed #CBD5DD', background: '#F9F9F9', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-            <Camera size={16} strokeWidth={2.25} /> Take or upload photo
-            <input type="file" accept="image/*" style={{ display: 'none' }} onChange={readPhoto} />
+          <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '18px', borderRadius: 10, border: '1.5px dashed #CBD5DD', background: '#F9F9F9', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: uploading ? 'default' : 'pointer', opacity: uploading ? 0.6 : 1 }}>
+            <Camera size={16} strokeWidth={2.25} /> {uploading ? 'Uploading…' : 'Take or upload photo'}
+            <input type="file" accept="image/*" disabled={uploading} style={{ display: 'none' }} onChange={readPhoto} />
           </label>
         )}
       </div>

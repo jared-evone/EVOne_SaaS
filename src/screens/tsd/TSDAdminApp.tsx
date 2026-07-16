@@ -295,7 +295,7 @@ export function WorkOrdersAdmin() {
         <table style={{ width: '100%', minWidth: 760, borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ background: C.seasalt }}>
-              {['Ref', 'Title', 'Customer', 'Form', 'Tech', 'Date', 'Priority', 'Status'].map((h) => (
+              {['Ref', 'Title', 'Category', 'Customer', 'Form', 'Tech', 'Date', 'Priority', 'Status'].map((h) => (
                 <th
                   key={h}
                   style={{ padding: '11px 14px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB' }}
@@ -318,6 +318,11 @@ export function WorkOrdersAdmin() {
                 >
                   <td style={{ padding: '11px 14px', fontWeight: 700, color: C.green }}>{w.id}</td>
                   <td style={{ padding: '11px 14px', fontWeight: 600, color: '#1a1a1a' }}>{w.title}</td>
+                  <td style={{ padding: '11px 14px' }}>
+                    {w.category
+                      ? <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: C.honeydew, color: C.green, whiteSpace: 'nowrap' }}>{w.category}</span>
+                      : <span style={{ color: C.slate }}>—</span>}
+                  </td>
                   <td style={{ padding: '11px 14px', color: '#1a1a1a' }}>{w.customer}</td>
                   <td style={{ padding: '11px 14px', color: C.slate }}>{(() => {
                     const counts = new Map<string, number>();
@@ -399,12 +404,21 @@ function WorkOrderModal({
   onClose: () => void;
 }) {
   const store = useWorkOrderStore();
-  const { can } = usePermissions();
+  const { can, isAdmin } = usePermissions();
   const canDelete = can('tsd_workorders', 'can_delete');
+  const canEdit = can('tsd_workorders', 'can_edit');
   const isNew = mode === 'new';
+  const fieldsLocked = !isNew && !canEdit;
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [categories, setCategories] = useState<string[]>([]);
+  const [manageCategories, setManageCategories] = useState(false);
+  const loadCategories = () =>
+    supabase.from('tsd_work_order_categories').select('name').order('name')
+      .then(({ data }) => setCategories(((data as { name: string }[]) ?? []).map((r) => r.name)));
+  useEffect(() => { void loadCategories(); }, []);
   const [form, setForm] = useState({
-    title: workOrder?.title ?? '',
+    category: workOrder?.category ?? null as string | null,
+    instructions: workOrder?.instructions ?? '',
     customerId: workOrder?.customerId ?? null,   // charger-registry entry id
     customer: workOrder?.customer ?? '',
     siteId: null as string | null,
@@ -502,6 +516,10 @@ function WorkOrderModal({
 
   const canCreate = !!form.customerId && (selectedEntry?.source === 'cpo' || !!form.siteId) && totalForms > 0;
 
+  // Titles aren't hand-typed — they're always "Category - Customer" (or just the
+  // customer when no category is set).
+  const derivedTitle = ((form.category ? `${form.category} - ` : '') + (form.customer || '')).trim();
+
   const handleSave = () => {
     if (isNew) {
       if (!canCreate) return;
@@ -520,7 +538,9 @@ function WorkOrderModal({
         }
       }
       store.createWorkOrder({
-        title: form.title || 'Untitled work order',
+        title: derivedTitle || 'Untitled work order',
+        category: form.category,
+        instructions: form.instructions.trim() || null,
         customerId: form.customerId,
         customer: form.customer,
         address: form.address,
@@ -530,7 +550,14 @@ function WorkOrderModal({
         assignedTo: form.assignedTo,
       });
     } else if (workOrder) {
-      store.reassign(workOrder.id, form.assignedTo);
+      // Reassign without resetting an in-flight status back to "assigned".
+      if ((form.assignedTo ?? null) !== (workOrder.assignedTo ?? null)) store.setAssignee(workOrder.id, form.assignedTo);
+      if (canEdit) {
+        if (derivedTitle && derivedTitle !== workOrder.title) store.renameWorkOrder(workOrder.id, derivedTitle);
+        if ((form.category ?? null) !== (workOrder.category ?? null)) store.setWorkOrderCategory(workOrder.id, form.category ?? null);
+        const instr = form.instructions.trim() || null;
+        if (instr !== (workOrder.instructions ?? null)) store.setWorkOrderInstructions(workOrder.id, instr);
+      }
     }
     onClose();
   };
@@ -571,13 +598,28 @@ function WorkOrderModal({
         </div>
 
         <FormRow label="Title">
-          <input
-            value={form.title}
-            onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
-            placeholder="e.g. 7kW Wallbox install"
-            disabled={!isNew}
-            style={inputStyle(!isNew)}
-          />
+          <div style={{ ...inputStyle(true), display: 'flex', alignItems: 'center', color: derivedTitle ? '#1a1a1a' : C.slate }}>
+            {derivedTitle || 'Set automatically from Category – Customer'}
+          </div>
+        </FormRow>
+        <FormRow label="Category">
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div style={{ flex: 1 }}>
+              <BrandSelect
+                value={form.category ?? ''}
+                options={[{ value: '', label: '— No category —' }, ...categories.map((c) => ({ value: c, label: c }))]}
+                onChange={(v) => setForm((f) => ({ ...f, category: v || null }))}
+                disabled={fieldsLocked}
+                placeholder="— No category —"
+              />
+            </div>
+            {isAdmin && (
+              <button type="button" onClick={() => setManageCategories(true)}
+                style={{ padding: '9px 14px', borderRadius: 10, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                Manage
+              </button>
+            )}
+          </div>
         </FormRow>
         <FormRow label="Customer (Charger Registry / CPO)">
           {isNew ? (
@@ -679,6 +721,16 @@ function WorkOrderModal({
             </div>
           )}
         </FormRow>
+        <FormRow label="Instructions for technician (optional)">
+          <textarea
+            value={form.instructions}
+            onChange={(e) => setForm((f) => ({ ...f, instructions: e.target.value }))}
+            placeholder="e.g. Call the site contact on arrival. Bring the 32A adaptor. Photograph the meter before and after."
+            disabled={fieldsLocked}
+            rows={4}
+            style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box', resize: 'vertical', lineHeight: 1.5, background: fieldsLocked ? C.seasalt : C.white, color: fieldsLocked ? C.slate : '#1a1a1a' }}
+          />
+        </FormRow>
         <FormRow label="Assigned technician">
           <TechnicianSelect
             value={form.assignedTo}
@@ -758,11 +810,108 @@ function WorkOrderModal({
                   cursor: blocked ? 'default' : 'pointer',
                 }}
               >
-                {isNew ? 'Create work order' : 'Save assignment'}
+                {isNew ? 'Create work order' : 'Save changes'}
               </button>
             );
           })()}
         </div>
+      </div>
+      {manageCategories && (
+        <ManageCategoriesModal
+          categories={categories}
+          onClose={() => setManageCategories(false)}
+          onChanged={async (renamed) => {
+            await loadCategories();
+            // Keep the current selection valid if it was renamed/removed.
+            if (renamed) setForm((f) => (f.category && renamed[f.category] !== undefined ? { ...f, category: renamed[f.category] } : f));
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Admin-managed list of work-order categories (tsd_work_order_categories).
+function ManageCategoriesModal({ categories, onClose, onChanged }: {
+  categories: string[];
+  onClose: () => void;
+  onChanged: (renamed?: Record<string, string | null>) => Promise<void>;
+}) {
+  const [newName, setNewName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+  const add = async () => {
+    const name = newName.trim();
+    if (!name || categories.includes(name)) { setNewName(''); return; }
+    setBusy(true);
+    await supabase.from('tsd_work_order_categories').insert({ name });
+    setNewName('');
+    await onChanged();
+    setBusy(false);
+  };
+  const rename = async (from: string) => {
+    const to = editName.trim();
+    setEditing(null);
+    if (!to || to === from || categories.includes(to)) return;
+    setBusy(true);
+    await supabase.from('tsd_work_order_categories').update({ name: to }).eq('name', from);
+    await onChanged({ [from]: to });
+    setBusy(false);
+  };
+  const remove = async (name: string) => {
+    setBusy(true);
+    setConfirmDelete(null);
+    await supabase.from('tsd_work_order_categories').delete().eq('name', name);
+    await onChanged({ [name]: null });
+    setBusy(false);
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ background: C.white, borderRadius: 20, width: 420, maxWidth: 'calc(100vw - 24px)', maxHeight: '80vh', overflowY: 'auto', padding: 24, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: C.green }}>Manage Categories</div>
+          <button onClick={onClose} style={{ border: 'none', background: '#F3F3F3', borderRadius: 8, width: 32, height: 32, cursor: 'pointer', fontSize: 16, color: C.slate }}>×</button>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="New category name"
+            onKeyDown={(e) => { if (e.key === 'Enter') void add(); }}
+            style={{ flex: 1, padding: '9px 12px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
+          <button onClick={add} disabled={busy || !newName.trim()}
+            style={{ padding: '9px 16px', borderRadius: 10, border: 'none', background: newName.trim() && !busy ? C.green : '#ccc', color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: newName.trim() && !busy ? 'pointer' : 'default' }}>Add</button>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {categories.length === 0 && <div style={{ fontSize: 12, color: C.slate, padding: '8px 2px' }}>No categories yet.</div>}
+          {categories.map((c) => (
+            <div key={c} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 10, border: '1px solid #EBEBEB' }}>
+              {editing === c ? (
+                <>
+                  <input value={editName} onChange={(e) => setEditName(e.target.value)} autoFocus
+                    onKeyDown={(e) => { if (e.key === 'Enter') void rename(c); if (e.key === 'Escape') setEditing(null); }}
+                    style={{ flex: 1, padding: '6px 10px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
+                  <button onClick={() => rename(c)} style={{ padding: '5px 12px', borderRadius: 8, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Save</button>
+                  <button onClick={() => setEditing(null)} style={{ padding: '5px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+                </>
+              ) : confirmDelete === c ? (
+                <>
+                  <span style={{ flex: 1, fontSize: 13, color: '#C0321A' }}>Delete "{c}"?</span>
+                  <button onClick={() => remove(c)} style={{ padding: '5px 12px', borderRadius: 8, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Delete</button>
+                  <button onClick={() => setConfirmDelete(null)} style={{ padding: '5px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+                </>
+              ) : (
+                <>
+                  <span style={{ flex: 1, fontSize: 13, color: '#1a1a1a' }}>{c}</span>
+                  <button onClick={() => { setEditing(c); setEditName(c); }} style={{ padding: '5px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Rename</button>
+                  <button onClick={() => setConfirmDelete(c)} style={{ padding: '5px 10px', borderRadius: 8, border: '1px solid #FDEAEA', background: C.white, color: '#C0321A', fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Delete</button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+        <div style={{ fontSize: 11, color: C.slate }}>Renaming updates the label shown here and on new selections. Existing work orders keep the name they were saved with.</div>
       </div>
     </div>
   );

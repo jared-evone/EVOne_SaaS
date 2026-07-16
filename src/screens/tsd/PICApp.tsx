@@ -2,8 +2,9 @@ import { useState, useEffect } from 'react';
 import { C } from '../../theme';
 import { supabase } from '../../lib/supabase';
 import { useIsMobile } from '../../lib/useIsMobile';
+import { usePermissions } from '../../permissions';
 import { Logo } from '../../components/Logo';
-import { Download as DownloadIcon, Power } from 'lucide-react';
+import { Download as DownloadIcon, Power, Trash2 } from 'lucide-react';
 import {
   DEMO_PIC,
   STATUS_COLORS,
@@ -107,6 +108,19 @@ export function PICReviewBoard() {
   const visible = tab === 'pending' ? pending : done;
   const [selectedId, setSelectedId] = useState<string | null>(pending[0]?.id ?? null);
   const selected = all.find((w) => w.id === selectedId) ?? null;
+
+  // The list is a light projection (no photo/PDF blobs). Pull the full report the
+  // moment a work order is selected, and only mount the editor once it's loaded.
+  // Tracked per-open (resets on every selection) so a background refetch can never
+  // leave us showing a stale/light report.
+  const [detailReadyId, setDetailReadyId] = useState<string | null>(null);
+  useEffect(() => {
+    setDetailReadyId(null);
+    if (!selectedId) return;
+    let ok = true;
+    void store.loadWorkOrderDetail(selectedId).then(() => { if (ok) setDetailReadyId(selectedId); });
+    return () => { ok = false; };
+  }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
   const switchTab = (t: 'pending' | 'completed') => {
     setTab(t);
     const list = t === 'pending' ? pending : done;
@@ -124,6 +138,22 @@ export function PICReviewBoard() {
     });
     return () => { cancelled = true; };
   }, []);
+
+  // Which work orders have already been pushed into CPO Chargers (each push writes
+  // a cpo_meter_readings row noting the source work order). Drives the "synced" tag
+  // and disables the push button so it can't be sent twice.
+  const [pushedIds, setPushedIds] = useState<Set<string>>(new Set());
+  const loadPushed = () => {
+    void supabase.from('cpo_meter_readings').select('notes').then(({ data }) => {
+      const ids = new Set<string>();
+      for (const r of (data ?? []) as { notes: string | null }[]) {
+        const m = /From work order (\S+)/.exec(r.notes ?? '');
+        if (m) ids.add(m[1]);
+      }
+      setPushedIds(ids);
+    });
+  };
+  useEffect(() => { loadPushed(); }, []);
 
   return (
     <div
@@ -183,6 +213,9 @@ export function PICReviewBoard() {
                 {!!w.customerId && cpoIds.has(w.customerId) && (
                   <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 99, background: '#E3F0FF', color: '#1A62C0', letterSpacing: '0.04em' }}>CPO</span>
                 )}
+                {pushedIds.has(w.id) && (
+                  <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 99, background: '#E4F3E3', color: '#1B512D', letterSpacing: '0.04em' }}>✓ CPO synced</span>
+                )}
                 <span
                   style={{
                     fontSize: 10,
@@ -197,7 +230,8 @@ export function PICReviewBoard() {
                   {sc.label}
                 </span>
               </div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{w.customer}</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{w.title || w.customer}</div>
+              <div style={{ fontSize: 12, color: C.slate }}>{w.customer}</div>
               <div style={{ fontSize: 11, color: C.slate }}>{w.product ? `${w.product} · ` : ''}{w.assignedTo ?? '—'}</div>
               {w.response?.submittedAt && (
                 <div style={{ fontSize: 10, color: C.slate, marginTop: 2 }}>
@@ -212,7 +246,13 @@ export function PICReviewBoard() {
       {/* Detail pane */}
       <div>
         {selected ? (
-          <PICReportEditor workOrder={selected} key={selected.id} />
+          detailReadyId === selected.id ? (
+            <PICReportEditor workOrder={selected} key={selected.id} alreadyPushed={pushedIds.has(selected.id)} onPushed={loadPushed} onDeleted={() => setSelectedId(null)} />
+          ) : (
+            <div style={{ background: C.white, borderRadius: 14, border: '1px dashed #EBEBEB', padding: '60px 24px', textAlign: 'center', color: C.slate, fontSize: 14 }}>
+              Loading report…
+            </div>
+          )
         ) : (
           <div
             style={{
@@ -233,8 +273,11 @@ export function PICReviewBoard() {
   );
 }
 
-function PICReportEditor({ workOrder }: { workOrder: WorkOrder }) {
+function PICReportEditor({ workOrder, alreadyPushed = false, onPushed, onDeleted }: { workOrder: WorkOrder; alreadyPushed?: boolean; onPushed?: () => void; onDeleted?: () => void }) {
   const store = useWorkOrderStore();
+  const { can } = usePermissions();
+  const canDelete = can('tsd_pic', 'can_delete');
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [forms, setForms] = useState<WorkOrderForm[]>(() => workOrder.forms.map((f) => ({ ...f, values: { ...(f.values ?? {}) } })));
   const [dirty, setDirty] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -256,6 +299,7 @@ function PICReportEditor({ workOrder }: { workOrder: WorkOrder }) {
 
   const handleSave = () => { store.amend(workOrder.id, forms, DEMO_PIC); setDirty(false); flash('Changes saved.'); };
   const handleApprove = () => { if (dirty) store.amend(workOrder.id, forms, DEMO_PIC); store.approve(workOrder.id); setDirty(false); flash('Report approved & marked completed.'); };
+  const handleDelete = () => { setConfirmDelete(false); store.deleteWorkOrder(workOrder.id); onDeleted?.(); };
 
   const hasTemplated = forms.some((f) => !!store.getTemplate(f.templateId));
 
@@ -298,6 +342,12 @@ function PICReportEditor({ workOrder }: { workOrder: WorkOrder }) {
           <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>{forms.length} form{forms.length === 1 ? '' : 's'} · {auditLine}</div>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          {canDelete && (
+            <button onClick={() => setConfirmDelete(true)} title="Delete this work order"
+              style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <Trash2 size={12} strokeWidth={2.25} /> Delete
+            </button>
+          )}
           {/* Export PDF only after the report is approved & completed. */}
           {hasTemplated && completed && (
             <button onClick={() => setPdfOpen(true)}
@@ -305,12 +355,17 @@ function PICReportEditor({ workOrder }: { workOrder: WorkOrder }) {
               <DownloadIcon size={12} strokeWidth={2.25} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }} /> Export PDF
             </button>
           )}
-          {isCpo && (
+          {isCpo && (alreadyPushed ? (
+            <span title="This reading has already been sent to CPO Chargers"
+              style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #E4F3E3', background: '#E4F3E3', color: '#1B512D', fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'default' }}>
+              ✓ Sent to CPO meter readings
+            </span>
+          ) : (
             <button onClick={() => setPushOpen(true)}
               style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #1A62C0', background: '#E3F0FF', color: '#1A62C0', fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
               → CPO meter readings
             </button>
-          )}
+          ))}
           {!completed && (
             <>
               <button onClick={handleSave} disabled={!dirty}
@@ -325,6 +380,19 @@ function PICReportEditor({ workOrder }: { workOrder: WorkOrder }) {
           )}
         </div>
       </div>
+
+      {confirmDelete && (
+        <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#C0321A' }}>Delete {workOrder.id}?</div>
+          <div style={{ fontSize: 12, color: '#C0321A' }}>This permanently removes the work order and its submitted report. This cannot be undone.</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => setConfirmDelete(false)}
+              style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #FDEAEA', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+            <button onClick={handleDelete}
+              style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Yes, delete</button>
+          </div>
+        </div>
+      )}
 
       {toast && (
         <div style={{ background: C.honeydew, color: C.green, borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{toast}</div>
@@ -359,8 +427,8 @@ function PICReportEditor({ workOrder }: { workOrder: WorkOrder }) {
             ) : (
               <div style={{ background: C.white, borderRadius: 14, padding: 20, border: '1px solid #EBEBEB', display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <div style={{ fontSize: 13, color: C.slate }}>Non-templated — uploaded PDF report.</div>
-                {inst.reportPdfBase64 ? (
-                  <button onClick={() => openBase64Pdf(inst.reportPdfBase64!, inst.reportFileName ?? 'report.pdf')}
+                {(inst.reportPdfUrl || inst.reportPdfBase64) ? (
+                  <button onClick={() => { if (inst.reportPdfUrl) window.open(inst.reportPdfUrl, '_blank', 'noopener,noreferrer'); else openBase64Pdf(inst.reportPdfBase64!, inst.reportFileName ?? 'report.pdf'); }}
                     style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '10px 18px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
                     <DownloadIcon size={13} strokeWidth={2.25} /> {inst.reportFileName ?? 'Download report PDF'}
                   </button>
@@ -390,7 +458,7 @@ function PICReportEditor({ workOrder }: { workOrder: WorkOrder }) {
           chargerCode={chargerCode} locationId={workOrder.customerId}
           prefillReading={prefillReading} prefillDate={workOrder.scheduledDate}
           prefillGunA={prefillGunA} prefillGunB={prefillGunB}
-          onClose={() => setPushOpen(false)} onDone={(msg) => { setPushOpen(false); flash(msg); }} />
+          onClose={() => setPushOpen(false)} onDone={(msg) => { setPushOpen(false); flash(msg); onPushed?.(); }} />
       )}
     </div>
   );

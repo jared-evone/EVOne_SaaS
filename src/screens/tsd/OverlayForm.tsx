@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { C } from '../../theme';
 import { FileText, Camera } from 'lucide-react';
-import { compressImage } from '../../lib/compressImage';
+import { uploadFormPhoto } from '../../lib/formMedia';
 import type {
   FieldType,
   FormField,
@@ -900,6 +900,7 @@ function OverlayInput({
   onChange: (v: string | boolean) => void;
   disabled: boolean;
 }) {
+  const [uploading, setUploading] = useState(false);
   const base: React.CSSProperties = {
     position: 'absolute',
     left: `${field.x ?? 0}%`,
@@ -969,9 +970,11 @@ function OverlayInput({
       const file = e.target.files?.[0];
       e.target.value = '';
       if (!file) return;
-      compressImage(file)
-        .then((dataUrl) => onChange(dataUrl))
-        .catch(() => alert('Could not read that photo — please try another image.'));
+      setUploading(true);
+      uploadFormPhoto(file)
+        .then((url) => onChange(url))
+        .catch(() => alert('Could not upload that photo — please check your connection and try again.'))
+        .finally(() => setUploading(false));
     };
     return (
       <div
@@ -996,8 +999,8 @@ function OverlayInput({
               color: C.slate,
             }}
           >
-            {!strVal && <Camera size={16} strokeWidth={2} />}
-            <input type="file" accept="image/*" style={{ display: 'none' }} onChange={readPhoto} />
+            {uploading ? <span style={{ fontSize: 10, fontWeight: 700 }}>Uploading…</span> : (!strVal && <Camera size={16} strokeWidth={2} />)}
+            <input type="file" accept="image/*" disabled={uploading} style={{ display: 'none' }} onChange={readPhoto} />
           </label>
         )}
       </div>
