@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git commit -m ' *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:5174/ http://localhost:5173/)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:5173/ http://localhost:5174/)",
+      "Bash(cat > *)",
+      "Bash(sed -n '780,790p' src/screens/CorporateCRM.tsx)",
+      "Bash(sed -n '1021,1031p' src/screens/CorporateCRM.tsx)",
+      "Bash(sed -n '1296,1306p' src/screens/CorporateCRM.tsx)",
+      "Bash(git -C /workspaces/EVOne_SaaS diff --stat)",
+      "Bash(grep -rln \"RM \\\\|'RM'\\\\|\\\\\"RM\\\\\"\\\\|RM\\\\${\" src/)",
+      "Bash(grep -rnoE \"\\(RM ?|MYR ?|S?\\\\\\\\\\\\$ ?\\)\\(\\\\{|[0-9]\\)\" src/)",
+      "Bash(grep -rnoE \"fmtRM|toFixed\\\\\\(2\\\\\\)|minimumFractionDigits|'\\\\\\\\\\\\$'|\\\\\"\\\\\\\\\\\\$\\\\\"|MYR|SGD|currency\" src/)",
+      "Bash(grep -rno 'S\\\\$' src/)",
+      "Bash(grep -rln 'S\\\\$' src/)",
+      "Bash(grep -rnoE \"\\\\\\\\\\\\$\\\\{|\\\\\\\\\\\\$[0-9]\" src/screens/CorporateInvoicing.tsx src/screens/ChargingRecords.tsx src/screens/CPOChargers.tsx src/screens/charging/)",
+      "Bash(grep -E \"\\\\\\\\\\\\$[0-9]\")",
+      "Bash(grep -n 'S\\\\$' src/screens/crm/PublicApplication.tsx src/components/OneMapAutocomplete.tsx)",
+      "Bash(grep -rno \"RM [0-9{$]\" src/)",
+      "Bash(grep -ivE \"RM [0-9{$]|RM '\")",
+      "Bash(sed -i 's/export const fmt\\\\$= /export const fmtMoney = /' src/screens/Sales.tsx)",
+      "Bash(sed -i 's/fmtRM/fmtMoney/g' src/screens/Sales.tsx src/screens/SalesManager.tsx)",
+      "Bash(grep -n \"fmtMoney\\\\|fmt\\\\$\" src/screens/Sales.tsx src/screens/SalesManager.tsx)",
+      "Bash(grep -rn \"fmt\\\\$\" src/)",
+      "Bash(grep -rn \"RM [0-9{$']\" src/)",
+      "mcp__claude_ai_Supabase__get_edge_function",
+      "Bash(git reset *)",
+      "Bash(git commit -q -m ' *)",
+      "Bash(git -C /workspaces/EVOne_SaaS status --short)",
+      "Bash(git -C /workspaces/EVOne_SaaS diff -- src/permissions.tsx src/App.tsx src/screens/Login.tsx)",
+      "Bash(git -C /workspaces/EVOne_SaaS diff src/permissions.tsx src/App.tsx)",
+      "Bash(git -C /workspaces/EVOne_SaaS diff src/screens/Login.tsx src/screens/SuperAdmin.tsx src/screens/tsd/TechniciansAdmin.tsx src/screens/SalesTeam.tsx)",
+      "Bash(git -C /workspaces/EVOne_SaaS diff -- src/screens/SuperAdmin.tsx src/screens/tsd/TechniciansAdmin.tsx src/screens/SalesTeam.tsx src/screens/charging/ChargingOverview.tsx)",
+      "Bash(git -C /workspaces/EVOne_SaaS show HEAD:src/screens/Settings.tsx)",
+      "Bash(git -C /workspaces/EVOne_SaaS show HEAD:src/permissions.tsx)"
+    ],
+    "additionalDirectories": [
+      "/tmp"
+    ]
+  }
+}

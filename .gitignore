@@ -13,3 +13,6 @@ vite.config.js
 .env
 .env.local
 .env.*.local
+
+# Claude Code machine-local settings
+.claude/settings.local.json
