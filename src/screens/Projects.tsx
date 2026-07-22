@@ -770,7 +770,7 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
     const chargerIds = siteRows.flatMap((st) => st.site_chargers.map((c) => c.id));
     if (chargerIds.length) {
       const { data: lr } = await supabase.from('charger_lta_records')
-        .select('charger_id, form_type, performed_at, invoice_path')
+        .select('id, charger_id, form_type, performed_at, invoice_path, period_n')
         .in('charger_id', chargerIds)
         .order('performed_at', { ascending: false });
       setLta((lr ?? []) as SiteLtaRow[]);
@@ -1224,8 +1224,8 @@ function OverviewTab({ project, customers, customer, contacts, sites, lta, onPic
     for (const c of site.site_chargers) {
       if (!c.form_1_path) form1Missing++;
       const e = byCharger.get(c.id) ?? { A: [], D: [] };
-      const performedA = e.A.map((r) => r.performed_at);
-      const performedD = e.D.map((r) => r.performed_at);
+      const performedA = e.A.map(toPerformed);
+      const performedD = e.D.map(toPerformed);
       if (ltaSchedule(ltaAnchor(c), formAMonths, performedA).overdueCount > 0) formADue++;
       if (!isResidential && ltaSchedule(ltaAnchor(c), 12, performedD).overdueCount > 0) formADue++;
       // Newest record (rows arrive newest-first) drives the "invoice missing" flag.
@@ -2067,19 +2067,19 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
   const [deleting, setDeleting] = useState(false);
 
   // All A/D inspection dates per charger — drives the due/missing chips on the cards.
-  const [ltaByCharger, setLtaByCharger] = useState<Map<string, { A: string[]; D: string[] }>>(new Map());
+  const [ltaByCharger, setLtaByCharger] = useState<Map<string, { A: LtaPerformed[]; D: LtaPerformed[] }>>(new Map());
   const chargerIdsKey = chargers.map((c) => c.id).sort().join(',');
   useEffect(() => {
     const ids = chargers.map((c) => c.id);
     if (!ids.length) { setLtaByCharger(new Map()); return; }
     let cancelled = false;
     void (async () => {
-      const { data } = await supabase.from('charger_lta_records').select('charger_id, form_type, performed_at').in('charger_id', ids);
+      const { data } = await supabase.from('charger_lta_records').select('id, charger_id, form_type, performed_at, period_n').in('charger_id', ids);
       if (cancelled) return;
-      const m = new Map<string, { A: string[]; D: string[] }>();
-      for (const r of (data ?? []) as Array<{ charger_id: string; form_type: 'A' | 'D'; performed_at: string }>) {
+      const m = new Map<string, { A: LtaPerformed[]; D: LtaPerformed[] }>();
+      for (const r of (data ?? []) as Array<{ id: string; charger_id: string; form_type: 'A' | 'D'; performed_at: string; period_n: number | null }>) {
         const e = m.get(r.charger_id) ?? { A: [], D: [] };
-        e[r.form_type].push(r.performed_at);
+        e[r.form_type].push(toPerformed(r));
         m.set(r.charger_id, e);
       }
       setLtaByCharger(m);
@@ -2366,10 +2366,18 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
   };
 
   const tone = warrantyTone(charger.warranty_end_date);
-  const performedA = ltaRecords.filter((r) => r.form_type === 'A').map((r) => r.performed_at);
-  const performedD = ltaRecords.filter((r) => r.form_type === 'D').map((r) => r.performed_at);
+  const performedA = ltaRecords.filter((r) => r.form_type === 'A').map(toPerformed);
+  const performedD = ltaRecords.filter((r) => r.form_type === 'D').map(toPerformed);
   const overrideA = resolveDueOverride(charger.form_a_override_date, charger.form_a_override_count, performedA.length);
   const overrideD = resolveDueOverride(charger.form_d_override_date, charger.form_d_override_count, performedD.length);
+  // Cycles already closed, per form type — so the picker can't double-book one.
+  const claimedByForm = (ft: LtaFormType): Map<number, string> => {
+    const ofType = ltaRecords.filter((r) => r.form_type === ft);
+    const { periodOf } = ltaAssignPeriods(ltaAnchor(charger), ft === 'A' ? formAMonths : 12, ofType.map(toPerformed));
+    const m = new Map<number, string>();
+    for (const [id, n] of periodOf) m.set(n, id);
+    return m;
+  };
   const schedA = ltaSchedule(ltaAnchor(charger), formAMonths, performedA);
   const schedD = ltaSchedule(ltaAnchor(charger), 12, performedD);
   const formADate = overrideA ?? schedA.nextDue;
@@ -2392,7 +2400,7 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
   // Lifecycle timeline — chronological top → bottom: procurement → installation
   // (Form 1) → registration → recurring Form A / Form D (latest done + next due).
   type TLAction = { label: string; onClick: () => void; tone: 'green' | 'amber' | 'plain' };
-  type TLNode = { dot: string; titleColor: string; title: string; date: string | null; subtitle: React.ReactNode; actions: TLAction[] };
+  type TLNode = { dot: string; titleColor: string; title: string; date: string | null; dateLabel?: string; subtitle: React.ReactNode; actions: TLAction[] };
   const GREEN = C.green, RED = '#C2410C', AMBER = '#F1B04C', PURPLE = '#6B21A8', BLACK = '#1a1a1a';
   const underContract = charger.has_maintenance_package;
   const dueColor = underContract ? RED : PURPLE;
@@ -2410,20 +2418,40 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
     const due = <>Next due {fmtDate(date)}{days != null && <> · {relDays(days)}</>}</>;
     return underContract ? due : <><span style={{ color: PURPLE, fontWeight: 700 }}>No contract</span> · {due}</>;
   };
-  const completedNode = (label: string, rec: LtaRecord): TLNode => ({
-    dot: rec.invoice_path ? GREEN : AMBER, titleColor: BLACK, title: `${label} — Completed`,
-    date: rec.performed_at, subtitle: inspectedSub(rec), actions: completedActions(rec),
-  });
-  const overdueNode = (label: string, due: string): TLNode => ({
-    dot: dueColor, titleColor: dueColor, title: `${label} — Overdue`, date: due,
-    subtitle: underContract
+  // How far off the schedule an inspection actually landed — the reason the
+  // performed date and the cycle's due date are shown side by side.
+  const cycleDrift = (performed: string, due: string): string | null => {
+    const p = new Date(performed + 'T00:00:00').getTime(), d = new Date(due + 'T00:00:00').getTime();
+    if (isNaN(p) || isNaN(d)) return null;
+    const days = Math.round((p - d) / 86400000);
+    if (days === 0) return 'on time';
+    return days > 0 ? `${days}d late` : `${Math.abs(days)}d early`;
+  };
+  const completedNode = (label: string, rec: LtaRecord, cycle: { n: number; due: string } | null): TLNode => {
+    const drift = cycle ? cycleDrift(rec.performed_at, cycle.due) : null;
+    return {
+      dot: rec.invoice_path ? GREEN : AMBER, titleColor: BLACK, title: `${label} — Completed`,
+      date: rec.performed_at, dateLabel: 'Performed',
+      subtitle: (
+        <>
+          {cycle && <>Cycle {cycle.n} · due {fmtDate(cycle.due)}{drift && <> · <span style={{ fontWeight: 700, color: drift === 'on time' ? C.green : C.slate }}>{drift}</span></>}{rec.period_n ? <span style={{ fontWeight: 700, color: C.green }}> · mapped manually</span> : null}<br /></>}
+          {inspectedSub(rec)}
+        </>
+      ),
+      actions: completedActions(rec),
+    };
+  };
+  const overdueNode = (label: string, due: string, n: number): TLNode => ({
+    dot: dueColor, titleColor: dueColor, title: `${label} — Overdue`, date: due, dateLabel: 'Due',
+    subtitle: <>Cycle {n} · {underContract
       ? <span style={{ color: dueColor, fontWeight: 700 }}>Not performed</span>
-      : <><span style={{ color: PURPLE, fontWeight: 700 }}>No contract</span> · <span style={{ color: dueColor, fontWeight: 700 }}>Not performed</span></>,
+      : <><span style={{ color: PURPLE, fontWeight: 700 }}>No contract</span> · <span style={{ color: dueColor, fontWeight: 700 }}>Not performed</span></>}</>,
     actions: [],
   });
-  const dueNode = (label: string, ft: LtaFormType, date: string | null, days: number | null): TLNode => ({
+  const dueNode = (label: string, ft: LtaFormType, date: string | null, days: number | null, n: number | null): TLNode => ({
     dot: dueColor, titleColor: dueColor, title: `${label} — Due`, date: null,
-    subtitle: dueSubtitle(date, days), actions: [{ label: 'Add →', onClick: () => setAddingForm(ft), tone: 'plain' }],
+    subtitle: <>{n ? <>Cycle {n} · </> : null}{dueSubtitle(date, days)}</>,
+    actions: [{ label: 'Add →', onClick: () => setAddingForm(ft), tone: 'plain' }],
   });
   // Every node carries a sort value (ms since epoch) so Form A & Form D interleave
   // strictly by date rather than being grouped. Form A wins same-date ties (+0.2 > +0.1).
@@ -2439,23 +2467,29 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
 
   // Build the recurring nodes for one form type: one entry per scheduled period
   // (Completed or Overdue · not performed) + the upcoming Due, each dated for sorting.
-  const formEntries = (label: string, ft: LtaFormType, sched: LtaScheduleResult, dueDate: string | null, dueDays: number | null): TLEntry[] => {
+  const formEntries = (label: string, ft: LtaFormType, intervalMonths: number, sched: LtaScheduleResult, dueDate: string | null, dueDays: number | null): TLEntry[] => {
     const eps = ft === 'A' ? 0.2 : 0.1;
-    const recByDate = new Map(ltaRecords.filter((r) => r.form_type === ft).map((r) => [r.performed_at, r] as const));
+    // Look the record up by the cycle it satisfies, not by date — a manual
+    // mapping means the two can disagree.
+    const ofType = ltaRecords.filter((r) => r.form_type === ft);
+    const { periodOf } = ltaAssignPeriods(ltaAnchor(charger), intervalMonths, ofType.map(toPerformed));
+    const recByPeriod = new Map<number, LtaRecord>();
+    for (const r of ofType) { const n = periodOf.get(r.id); if (n != null) recByPeriod.set(n, r); }
     const out: TLEntry[] = [];
     for (const p of sched.periods) {
       const dm = parseMs(p.performedAt ?? p.due);
       const sort = (isNaN(dm) ? regSort : dm) + eps;
       if (p.performedAt) {
-        const rec = recByDate.get(p.performedAt);
-        out.push({ node: rec ? completedNode(label, rec)
-          : { dot: GREEN, titleColor: BLACK, title: `${label} — Completed`, date: p.performedAt, subtitle: 'Inspected', actions: [] }, sort });
+        const rec = recByPeriod.get(p.n);
+        out.push({ node: rec ? completedNode(label, rec, { n: p.n, due: p.due })
+          : { dot: GREEN, titleColor: BLACK, title: `${label} — Completed`, date: p.performedAt, dateLabel: 'Performed', subtitle: <>Cycle {p.n} · due {fmtDate(p.due)}<br />Inspected</>, actions: [] }, sort });
       } else {
-        out.push({ node: overdueNode(label, p.due), sort });
+        out.push({ node: overdueNode(label, p.due, p.n), sort });
       }
     }
     const dm = parseMs(dueDate);
-    out.push({ node: dueNode(label, ft, dueDate, dueDays), sort: (isNaN(dm) ? FAR_FUTURE : dm) + eps });
+    const nextN = sched.periods.length ? sched.periods[sched.periods.length - 1].n + 1 : 1;
+    out.push({ node: dueNode(label, ft, dueDate, dueDays, dueDate ? nextN : null), sort: (isNaN(dm) ? FAR_FUTURE : dm) + eps });
     return out;
   };
 
@@ -2467,8 +2501,8 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
         ? { dot: GREEN, titleColor: BLACK, title: 'Installation + Form 1', date: null, subtitle: 'Form 1 attached', actions: [{ label: 'View', onClick: () => void openForm1('view'), tone: 'green' }] }
         : { dot: RED, titleColor: RED, title: 'Installation + Form 1', date: null, subtitle: 'Form 1 pending upload', actions: [{ label: 'Upload →', onClick: () => setAddingForm1(true), tone: 'plain' }] }, sort: installSort },
     { node: { dot: charger.turn_on_date ? GREEN : RED, titleColor: charger.turn_on_date ? BLACK : RED, title: 'Registration', date: charger.turn_on_date, subtitle: charger.turn_on_date ? 'Charger commissioned' : 'Registration date not set', actions: [] }, sort: regSort },
-    ...formEntries('Form A', 'A', schedA, formADate, formA),
-    ...(!isResidential ? formEntries('Form D', 'D', schedD, formDDate, formD) : []),
+    ...formEntries('Form A', 'A', formAMonths, schedA, formADate, formA),
+    ...(!isResidential ? formEntries('Form D', 'D', 12, schedD, formDDate, formD) : []),
   ];
   // Newest-at-top: sort by date descending.
   entries.sort((a, b) => b.sort - a.sort);
@@ -2510,6 +2544,7 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
     <>
     {addingForm && (
       <AddLtaRecordModal charger={charger} siteName={siteName} formType={addingForm}
+        intervalMonths={addingForm === 'A' ? formAMonths : 12} claimedBy={claimedByForm(addingForm)}
         onClose={() => setAddingForm(null)} onSaved={async () => { await refresh(); setAddingForm(null); }} />
     )}
     {addingInvoiceFor && (
@@ -2555,7 +2590,11 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
                   <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 700, color: n.titleColor }}>{n.title}</div>
-                      {n.date && <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>{fmtDate(n.date)}</div>}
+                      {n.date && (
+                        <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>
+                          {n.dateLabel && <span style={{ fontWeight: 700 }}>{n.dateLabel} </span>}{fmtDate(n.date)}
+                        </div>
+                      )}
                       <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>{n.subtitle}</div>
                     </div>
                     {n.actions.length > 0 && (
@@ -2666,14 +2705,17 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
 
 // Quick-add an LTA Form A/D record (with optional invoice) from the timeline,
 // without leaving the Details tab.
-function AddLtaRecordModal({ charger, siteName, formType, onClose, onSaved }: {
+function AddLtaRecordModal({ charger, siteName, formType, intervalMonths, claimedBy, onClose, onSaved }: {
   charger: SiteCharger;
   siteName: string;
   formType: LtaFormType;
+  intervalMonths: number;
+  claimedBy: Map<number, string>;
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
   const [date, setDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [periodN, setPeriodN] = useState<number | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [pendingInvoice, setPendingInvoice] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
@@ -2704,7 +2746,7 @@ function AddLtaRecordModal({ charger, siteName, formType, onClose, onSaved }: {
       invoice_filename = pendingInvoice.name;
     }
     const ins = await supabase.from('charger_lta_records').insert({
-      charger_id: charger.id, form_type: formType, performed_at: date, storage_path: path,
+      charger_id: charger.id, form_type: formType, performed_at: date, period_n: periodN, storage_path: path,
       filename: computeLtaFilename(formType, charger.asset_tag, date, siteName), invoice_path, invoice_filename,
     });
     setBusy(false);
@@ -2740,9 +2782,16 @@ function AddLtaRecordModal({ charger, siteName, formType, onClose, onSaved }: {
           <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
         </div>
         {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{error}</div>}
-        <div>
-          <FieldLabel>Performed on</FieldLabel>
-          <input type="date" value={date} disabled={busy} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle(), background: C.white }} />
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <FieldLabel>Performed on</FieldLabel>
+            <input type="date" value={date} disabled={busy} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle(), background: C.white }} />
+          </div>
+          <div>
+            <FieldLabel>Counts as</FieldLabel>
+            <LtaCyclePicker registration={ltaAnchor(charger)} intervalMonths={intervalMonths} date={date}
+              value={periodN} disabled={busy} claimedBy={claimedBy} recordId={null} onChange={setPeriodN} />
+          </div>
         </div>
         <div>
           <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>{`Form ${formType} PDF`} <span style={{ color: '#C0321A' }}>*</span></div>
@@ -2780,6 +2829,7 @@ interface LtaRecord {
   invoice_path: string | null;
   invoice_filename: string | null;
   invoice_sent_at: string | null;
+  period_n: number | null;
 }
 
 interface LtaEmailCustomer { name: string; email: string | null; type?: CustomerType }
@@ -2912,7 +2962,7 @@ function AddForm1Modal({ charger, siteName, onClose, onSaved }: {
 }
 
 // Lightweight LTA record used to flag overdue inspections / missing invoices per site.
-interface SiteLtaRow { charger_id: string; form_type: LtaFormType; performed_at: string; invoice_path: string | null; }
+interface SiteLtaRow { id: string; charger_id: string; form_type: LtaFormType; performed_at: string; invoice_path: string | null; period_n: number | null; }
 
 function LtaInspectionPanel({ charger, siteName, canEdit, canDelete, customer }: {
   charger: SiteCharger;
@@ -2947,9 +2997,9 @@ function LtaInspectionPanel({ charger, siteName, canEdit, canDelete, customer }:
           ? <>Upload completed Form A (24-month) inspection PDFs for <strong style={{ color: '#1a1a1a' }}>{charger.asset_tag}</strong>. Residential chargers do not require Form D. Each upload is dated for when the inspection was performed.</>
           : <>Upload completed Form A (6-month) and Form D (12-month) inspection PDFs for <strong style={{ color: '#1a1a1a' }}>{charger.asset_tag}</strong>. Each upload is dated for when the inspection was performed.</>}
       </div>
-      <LtaSection formType="A" title={isResidential ? 'Form A · 24-month inspection' : 'Form A · 6-month inspection'}  records={formA} charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} loading={loading} onChanged={refresh} />
+      <LtaSection formType="A" intervalMonths={isResidential ? 24 : 6} title={isResidential ? 'Form A · 24-month inspection' : 'Form A · 6-month inspection'}  records={formA} charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} loading={loading} onChanged={refresh} />
       {!isResidential && (
-        <LtaSection formType="D" title="Form D · 12-month inspection" records={formD} charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} loading={loading} onChanged={refresh} />
+        <LtaSection formType="D" intervalMonths={12} title="Form D · 12-month inspection" records={formD} charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} loading={loading} onChanged={refresh} />
       )}
     </div>
   );
@@ -3212,8 +3262,9 @@ function ContractCard({ years: years0, startDate: start0, turnOn, canEdit, isRes
   );
 }
 
-function LtaSection({ formType, title, records, charger, siteName, canEdit, canDelete, customer, loading, onChanged }: {
+function LtaSection({ formType, intervalMonths, title, records, charger, siteName, canEdit, canDelete, customer, loading, onChanged }: {
   formType: LtaFormType;
+  intervalMonths: number;
   title: string;
   records: LtaRecord[];
   charger: SiteCharger;
@@ -3226,6 +3277,7 @@ function LtaSection({ formType, title, records, charger, siteName, canEdit, canD
 }) {
   const [adding, setAdding] = useState(false);
   const [date, setDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [periodN, setPeriodN] = useState<number | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [pendingInvoice, setPendingInvoice] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
@@ -3238,6 +3290,7 @@ function LtaSection({ formType, title, records, charger, siteName, canEdit, canD
     setPendingFile(null);
     setPendingInvoice(null);
     setDate(new Date().toISOString().slice(0, 10));
+    setPeriodN(null);
     setError(null);
   };
 
@@ -3278,6 +3331,7 @@ function LtaSection({ formType, title, records, charger, siteName, canEdit, canD
       charger_id: charger.id,
       form_type:  formType,
       performed_at: date,
+      period_n: periodN,
       storage_path: path,
       filename: computeLtaFilename(formType, charger.asset_tag, date, siteName),
       invoice_path,
@@ -3299,6 +3353,13 @@ function LtaSection({ formType, title, records, charger, siteName, canEdit, canD
     return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   };
 
+  // Which cycle each logged inspection currently satisfies — a manual mapping
+  // wins its cycle, the rest fall where their date lands.
+  const registration = ltaAnchor(charger);
+  const { periodOf } = ltaAssignPeriods(registration, intervalMonths, records.map(toPerformed));
+  const claimedBy = new Map<number, string>();
+  for (const [id, n] of periodOf) claimedBy.set(n, id);
+
   const canSubmit = !!pendingFile && !!date && !busy;
 
   return (
@@ -3317,10 +3378,15 @@ function LtaSection({ formType, title, records, charger, siteName, canEdit, canD
 
       {adding && (
         <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '180px 1fr 1fr', gap: 10, alignItems: 'end' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '160px 190px 1fr 1fr', gap: 10, alignItems: 'end' }}>
             <div>
               <FieldLabel>Performed on</FieldLabel>
               <input type="date" value={date} onChange={(e) => setDate(e.target.value)} disabled={busy} style={{ ...inputStyle(), background: C.white }} />
+            </div>
+            <div>
+              <FieldLabel>Counts as</FieldLabel>
+              <LtaCyclePicker registration={registration} intervalMonths={intervalMonths} date={date}
+                value={periodN} disabled={busy} claimedBy={claimedBy} recordId={null} onChange={setPeriodN} />
             </div>
             <div>
               <FieldLabel>{`Form ${formType} PDF`}</FieldLabel>
@@ -3407,7 +3473,8 @@ function LtaSection({ formType, title, records, charger, siteName, canEdit, canD
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {records.map((r) => (
-            <LtaRecordRow key={r.id} record={r} displayName={computeLtaFilename(r.form_type, charger.asset_tag, r.performed_at, siteName)} charger={charger} siteName={siteName} customer={customer} canEdit={canEdit} canDelete={canDelete} onChanged={onChanged} />
+            <LtaRecordRow key={r.id} record={r} displayName={computeLtaFilename(r.form_type, charger.asset_tag, r.performed_at, siteName)} charger={charger} siteName={siteName} customer={customer} canEdit={canEdit} canDelete={canDelete} onChanged={onChanged}
+              registration={registration} intervalMonths={intervalMonths} assignedPeriod={periodOf.get(r.id) ?? null} claimedBy={claimedBy} />
           ))}
         </div>
       )}
@@ -3428,7 +3495,58 @@ async function storageFileBase64(bucket: string, path: string): Promise<string> 
   return btoa(binary);
 }
 
-function LtaRecordRow({ record, displayName, charger, siteName, customer, canEdit, canDelete, onChanged }: {
+// Which scheduled cycle an inspection counts for. Defaults to Auto (the cycle
+// the date falls in); pick a cycle explicitly when an inspection ran late and
+// should still close the previous one. Cycles already taken by another record
+// are shown but not selectable.
+function LtaCyclePicker({ registration, intervalMonths, date, value, disabled, claimedBy, recordId, compact, onChange }: {
+  registration: string | null;
+  intervalMonths: number;
+  date: string;
+  value: number | null;
+  disabled?: boolean;
+  claimedBy: Map<number, string>;
+  recordId: string | null;
+  compact?: boolean;
+  onChange: (n: number | null) => void;
+}) {
+  const auto = ltaAutoPeriod(registration, intervalMonths, date);
+  const options = ltaCycleOptions(registration, intervalMonths, value ?? auto ?? 1);
+  // The date's own cycle is already closed by another record — on Auto this
+  // inspection would count for nothing, so flag it rather than look settled.
+  const autoTaken = auto != null && claimedBy.has(auto) && claimedBy.get(auto) !== recordId;
+  const warn = value == null && (auto == null || autoTaken);
+  const tone = warn ? { fg: '#B07D00', bg: '#FFF8E1', border: '#FFF8E1' }
+    : value ? { fg: C.green, bg: C.honeydew, border: '#EBEBEB' }
+    : { fg: C.slate, bg: C.white, border: '#EBEBEB' };
+  const base: React.CSSProperties = compact
+    ? { padding: '4px 8px', borderRadius: 6, border: `1px solid ${tone.border}`, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, color: tone.fg, background: tone.bg, outline: 'none', cursor: disabled ? 'default' : 'pointer' }
+    : { ...inputStyle(), background: tone.bg, color: tone.fg, fontWeight: 700, cursor: disabled ? 'default' : 'pointer' };
+
+  if (!registration) {
+    return <div style={{ fontSize: 11, color: C.slate, fontStyle: 'italic', padding: compact ? 0 : '9px 0' }}>Set a registration date first</div>;
+  }
+  return (
+    <select value={value ?? ''} disabled={disabled}
+      title={value ? `Manually mapped to cycle ${value}`
+        : autoTaken ? `Cycle ${auto} is already closed by another record — this one counts for no cycle. Pick one explicitly.`
+        : `Auto — cycle ${auto ?? '—'} from the date performed`}
+      onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)} style={base}>
+      <option value="">{auto ? `Auto · cycle ${auto}${autoTaken ? ' · taken' : ''}` : 'Auto · no cycle'}</option>
+      {options.map((o) => {
+        const taken = claimedBy.get(o.n);
+        const mine = taken && taken === recordId;
+        return (
+          <option key={o.n} value={o.n} disabled={!!taken && !mine}>
+            Cycle {o.n} · due {fmtDate(o.due)}{taken && !mine ? ' · taken' : ''}
+          </option>
+        );
+      })}
+    </select>
+  );
+}
+
+function LtaRecordRow({ record, displayName, charger, siteName, customer, canEdit, canDelete, onChanged, registration, intervalMonths, assignedPeriod, claimedBy }: {
   record: LtaRecord;
   displayName: string;
   charger: SiteCharger;
@@ -3437,12 +3555,25 @@ function LtaRecordRow({ record, displayName, charger, siteName, customer, canEdi
   canEdit: boolean;
   canDelete: boolean;
   onChanged: () => Promise<void>;
+  registration: string | null;
+  intervalMonths: number;
+  assignedPeriod: number | null;
+  claimedBy: Map<number, string>;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [uploadingInvoice, setUploadingInvoice] = useState(false);
   const [emailing, setEmailing] = useState(false);
+  const [remapping, setRemapping] = useState(false);
   const invoiceInputRef = useRef<HTMLInputElement>(null);
+
+  const remapCycle = async (n: number | null) => {
+    setRemapping(true);
+    const { error } = await supabase.from('charger_lta_records').update({ period_n: n }).eq('id', record.id);
+    setRemapping(false);
+    if (error) { alert(`Could not change the cycle: ${error.message}`); return; }
+    await onChanged();
+  };
 
   const open = async (mode: 'view' | 'download') => {
     const { data } = await supabase.storage.from(CHARGER_FORMS_BUCKET)
@@ -3515,6 +3646,16 @@ function LtaRecordRow({ record, displayName, charger, siteName, customer, canEdi
           </div>
           <div style={{ fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</div>
         </div>
+        {canEdit ? (
+          <LtaCyclePicker compact registration={registration} intervalMonths={intervalMonths} date={record.performed_at}
+            value={record.period_n} disabled={remapping} claimedBy={claimedBy} recordId={record.id} onChange={(n) => void remapCycle(n)} />
+        ) : (
+          <span style={{ fontSize: 10, fontWeight: 700, whiteSpace: 'nowrap', padding: '3px 8px', borderRadius: 6, ...(assignedPeriod
+            ? { color: C.slate, background: C.seasalt, border: '1px solid #EBEBEB' }
+            : { color: '#B07D00', background: '#FFF8E1', border: '1px solid #FFF8E1' }) }}>
+            {assignedPeriod ? `Cycle ${assignedPeriod}` : 'No cycle'}
+          </span>
+        )}
         <button onClick={() => void open('view')} style={btnGhost}>View</button>
         <button onClick={() => void open('download')} style={{ ...btnGhost, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           <DownloadIcon size={11} strokeWidth={2.25} /> Download
@@ -4178,12 +4319,40 @@ function resolveDueOverride(overrideDate: string | null, overrideCount: number |
   return overrideDate && overrideCount === count ? overrideDate : null;
 }
 
+// One logged inspection. `period` is the manual cycle mapping (charger_lta_records
+// .period_n) — null means "work it out from the date".
+export interface LtaPerformed { key: string; date: string; period: number | null }
+
 interface LtaPeriod { n: number; due: string; performedAt: string | null }
 interface LtaScheduleResult {
   periods: LtaPeriod[];  // chronological (n ascending): every period up to & incl. the latest performed / past-due one
   nextDue: string | null; // earliest scheduled date ≥ today with no inspection in its window (forward-looking)
   overdueCount: number;    // past periods (due < today) with no inspection performed
 }
+
+// The cycle a date falls into on its own (the window match), for labelling the
+// "Auto" choice in the cycle picker.
+function ltaAutoPeriod(registration: string | null, intervalMonths: number, date: string): number | null {
+  if (!registration || !date) return null;
+  const reg = new Date(registration + 'T00:00:00');
+  const d = new Date(date + 'T00:00:00');
+  if (isNaN(reg.getTime()) || isNaN(d.getTime()) || d <= reg) return null;
+  for (let n = 1; n <= 600; n++) if (d <= ltaPeriodEnd(registration, intervalMonths, n)) return n;
+  return null;
+}
+
+// A window of cycles around `around`, each with its scheduled due date — the
+// options offered when re-mapping an inspection to a different cycle.
+function ltaCycleOptions(registration: string | null, intervalMonths: number, around: number): { n: number; due: string }[] {
+  if (!registration) return [];
+  const from = Math.max(1, around - 3);
+  const out: { n: number; due: string }[] = [];
+  for (let n = from; n <= around + 3; n++) out.push({ n, due: toYmd(ltaPeriodEnd(registration, intervalMonths, n)) });
+  return out;
+}
+
+const toPerformed = (r: { id: string; performed_at: string; period_n: number | null }): LtaPerformed =>
+  ({ key: r.id, date: r.performed_at, period: r.period_n });
 
 // LTA schedule anchor: the registration date, falling back to the procurement date when
 // registration hasn't been recorded yet — so the first Form A/D due still computes.
@@ -4197,24 +4366,56 @@ function ltaAnchor(c: { turn_on_date: string | null; procurement_date: string | 
 // actually falls in, leaving genuinely missed periods flagged overdue). The headline
 // `nextDue` is forward-looking: the next scheduled date from today, NOT a stale
 // overdue one — those live in `periods`/`overdueCount` for the timeline audit.
-function ltaSchedule(registration: string | null, intervalMonths: number, performedDates: string[]): LtaScheduleResult {
+function ltaPeriodEnd(registration: string, intervalMonths: number, n: number): Date {
+  const d = new Date(registration + 'T00:00:00');
+  d.setMonth(d.getMonth() + n * intervalMonths);
+  return d;
+}
+
+// Decide which cycle each inspection satisfies. A record with an explicit
+// `period` claims that cycle outright — that's how a late inspection still
+// counts for the cycle it was meant for. Everything else window-matches by date.
+// First claim wins a cycle; a loser falls back to auto-matching.
+export function ltaAssignPeriods(registration: string | null, intervalMonths: number, performed: LtaPerformed[]):
+  { byPeriod: Map<number, string>; periodOf: Map<string, number> } {
+  const byPeriod = new Map<number, string>();
+  const periodOf = new Map<string, number>();
+  if (!registration) return { byPeriod, periodOf };
+  const reg = new Date(registration + 'T00:00:00');
+  if (isNaN(reg.getTime())) return { byPeriod, periodOf };
+
+  const items = performed
+    .map((p) => ({ ...p, d: new Date(p.date + 'T00:00:00') }))
+    .filter((x) => !isNaN(x.d.getTime()) && x.d > reg)
+    .sort((a, b) => a.d.getTime() - b.d.getTime());
+
+  for (const x of items) {
+    if (x.period && x.period > 0 && !byPeriod.has(x.period)) {
+      byPeriod.set(x.period, toYmd(x.d));
+      periodOf.set(x.key, x.period);
+    }
+  }
+  for (const x of items) {
+    if (periodOf.has(x.key)) continue;
+    for (let n = 1; n <= 600; n++) {
+      if (x.d <= ltaPeriodEnd(registration, intervalMonths, n)) {
+        if (!byPeriod.has(n)) { byPeriod.set(n, toYmd(x.d)); periodOf.set(x.key, n); }
+        break;
+      }
+    }
+  }
+  return { byPeriod, periodOf };
+}
+
+function ltaSchedule(registration: string | null, intervalMonths: number, performed: LtaPerformed[]): LtaScheduleResult {
   const empty: LtaScheduleResult = { periods: [], nextDue: null, overdueCount: 0 };
   if (!registration) return empty;
   const reg = new Date(registration + 'T00:00:00');
   if (isNaN(reg.getTime())) return empty;
   const today = new Date(); today.setHours(0, 0, 0, 0);
-  const periodEnd = (n: number) => { const d = new Date(reg); d.setMonth(d.getMonth() + n * intervalMonths); return d; };
+  const periodEnd = (n: number) => ltaPeriodEnd(registration, intervalMonths, n);
 
-  const performed = performedDates
-    .map((d) => new Date(d + 'T00:00:00'))
-    .filter((d) => !isNaN(d.getTime()) && d > reg)
-    .sort((a, b) => a.getTime() - b.getTime());
-  const performedByPeriod = new Map<number, string>();
-  for (const p of performed) {
-    for (let n = 1; n <= 600; n++) {
-      if (p <= periodEnd(n)) { if (!performedByPeriod.has(n)) performedByPeriod.set(n, toYmd(p)); break; }
-    }
-  }
+  const { byPeriod: performedByPeriod } = ltaAssignPeriods(registration, intervalMonths, performed);
 
   const periods: LtaPeriod[] = [];
   let nextDue: string | null = null;
