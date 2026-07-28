@@ -3,7 +3,7 @@ import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
-import { Search, Mail, Pencil, FileText, Upload, Download as DownloadIcon, ChevronDown, X, MapPin, Navigation } from 'lucide-react';
+import { Search, Mail, Pencil, FileText, Upload, Download as DownloadIcon, ChevronDown, X, MapPin, Navigation, Trash2 } from 'lucide-react';
 import { OneMapAutocomplete } from '../components/OneMapAutocomplete';
 import { searchOneMap } from '../lib/onemap';
 import { googleMapsDirections, hasNavTarget } from '../lib/navLinks';
@@ -146,6 +146,15 @@ type StatusFilter = 'all' | ProjectStatus;
 // Registries are evenly split across these three for charger keying-in (deterministic
 // round-robin over a stable created-at order — see assigneeOf).
 const ASSIGNEES = ['Nay', 'Vivian', 'Yi Lin'] as const;
+
+// A registry's assignee, derived from its id so it's fixed to that registry and
+// unaffected by which other registries exist (deleting one won't re-label the
+// rest). Same id → same assignee, on every load and for every user.
+function assigneeForId(id: string): string {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (Math.imul(h, 31) + id.charCodeAt(i)) >>> 0;
+  return ASSIGNEES[h % ASSIGNEES.length];
+}
 const ASSIGNEE_COLORS: Record<string, { bg: string; color: string }> = {
   'Nay':    { bg: '#E3F0FF', color: '#1A62C0' },
   'Vivian': { bg: '#F0E8FF', color: '#6B21A8' },
@@ -170,11 +179,13 @@ export function ScreenProjects() {
   const [adding, setAdding]       = useState(false);
   const [importingInvoices, setImportingInvoices] = useState(false);
   const [viewingId, setViewingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const fetchAll = async () => {
     setLoading(true);
     const [{ data: ps, error: pErr }, { data: cs }, { data: siteData }, { data: chargerData }] = await Promise.all([
-      supabase.from('projects').select('*').order('created_at', { ascending: false }),
+      supabase.from('projects').select('*').order('created_at', { ascending: false }).order('id', { ascending: true }),
       supabase.from('customers').select('id, name, type').order('name'),
       supabase.from('project_sites').select('id, project_id'),
       supabase.from('site_chargers').select('site_id'),
@@ -200,13 +211,14 @@ export function ScreenProjects() {
 
   const customerById = (id: string | null) => id ? customers.find((c) => c.id === id) ?? null : null;
 
-  // Evenly split registries across the assignees, round-robin over a stable created-at order
-  // so each person owns ~1/3 and the assignment is the same on every load.
+  // Split registries across the assignees by hashing each registry's own id —
+  // NOT its position in the list. A positional round-robin re-labelled every row
+  // after a deleted one; keying off the id makes each registry's assignee its
+  // own, so deleting one never reshuffles the others. Distribution stays ~even
+  // across the id space, and it's identical on every load and for every user.
   const assigneeOf = useMemo(() => {
-    const ordered = [...projects].sort((a, b) =>
-      a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.id.localeCompare(b.id));
     const m = new Map<string, string>();
-    ordered.forEach((p, i) => m.set(p.id, ASSIGNEES[i % ASSIGNEES.length]));
+    for (const p of projects) m.set(p.id, assigneeForId(p.id));
     return m;
   }, [projects]);
 
@@ -266,6 +278,20 @@ export function ScreenProjects() {
         .eq('id', p.id);
     }
     await fetchAll();
+  };
+
+  // Directly delete a flagged registry (admin, from the list). Cascades to its
+  // sites, chargers, LTA records, warranty claims, files and their storage.
+  const deleteFlagged = async (p: Project) => {
+    setDeletingId(p.id);
+    setError(null);
+    const err = await deleteRegistryProject(p.id);
+    setDeletingId(null);
+    setConfirmDeleteId(null);
+    if (err) { setError(err); return; }
+    // Drop the row locally instead of refetching, so the table doesn't flash a
+    // full reload on every delete. The KPI counts derive from `projects`.
+    setProjects((ps) => ps.filter((x) => x.id !== p.id));
   };
 
   // Mark a registry as a special case with a remark, edit the remark, or clear it.
@@ -487,6 +513,26 @@ export function ScreenProjects() {
                           onChange={() => void toggleDeletionFlag(p)}
                           style={{ width: 16, height: 16, cursor: canEdit ? 'pointer' : 'default', accentColor: '#C0321A' }} />
                         {flagged && <span style={{ fontSize: 10, fontWeight: 700, color: '#C0321A', background: '#FDEAEA', padding: '2px 8px', borderRadius: 99, whiteSpace: 'nowrap' }}>To delete</span>}
+                        {flagged && canDelete && (
+                          confirmDeleteId === p.id ? (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                              <button onClick={() => void deleteFlagged(p)} disabled={deletingId === p.id}
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 8, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: deletingId === p.id ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>
+                                {deletingId === p.id ? 'Deleting…' : 'Confirm'}
+                              </button>
+                              <button onClick={() => setConfirmDeleteId(null)} disabled={deletingId === p.id}
+                                style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                                Cancel
+                              </button>
+                            </span>
+                          ) : (
+                            <button onClick={() => setConfirmDeleteId(p.id)}
+                              title={`Delete “${p.name}” and all its sites, chargers, forms and files. This cannot be undone.`}
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 8, border: '1px solid #FDEAEA', background: C.white, color: '#C0321A', fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                              <Trash2 size={11} strokeWidth={2.25} /> Delete
+                            </button>
+                          )
+                        )}
                       </div>
                     </td>
                     <td onClick={open} style={{ padding: '13px 16px', color: C.slate, fontSize: 12, whiteSpace: 'nowrap', cursor: 'pointer' }}>
@@ -649,6 +695,8 @@ interface SiteCharger {
   registration_code: string | null;
   procurement_date: string | null;
   turn_on_date: string | null;
+  lta_letter_date: string | null;
+  lta_letter_forms: LetterForms | null;
   form_a_next_date: string | null;
   form_d_next_date: string | null;
   form_a_override_date: string | null;
@@ -729,6 +777,29 @@ async function collectChargerStoragePaths(chargerIds: string[]): Promise<string[
   return paths;
 }
 
+// Delete a whole registry: its sites, chargers, LTA records, warranty claims and
+// project_files rows go via FK ON DELETE CASCADE, but storage objects don't
+// cascade — so clear them first to avoid orphans. Used by both the detail page
+// and the flagged-row delete in the list.
+async function deleteRegistryProject(projectId: string): Promise<string | null> {
+  const [{ data: siteRows }, { data: files }] = await Promise.all([
+    supabase.from('project_sites').select('lta_contract_path, site_chargers(id, form_1_path)').eq('project_id', projectId),
+    supabase.from('project_files').select('storage_path').eq('project_id', projectId),
+  ]);
+  const sites = (siteRows ?? []) as Array<{ lta_contract_path: string | null; site_chargers: Array<{ id: string; form_1_path: string | null }> }>;
+  const chargers = sites.flatMap((st) => st.site_chargers ?? []);
+  const chargerFormPaths = [
+    ...chargers.map((c) => c.form_1_path),
+    ...sites.map((st) => st.lta_contract_path),
+    ...(await collectChargerStoragePaths(chargers.map((c) => c.id))),
+  ].filter((x): x is string => !!x);
+  const projectFilePaths = ((files ?? []) as Array<{ storage_path: string | null }>).map((f) => f.storage_path).filter((x): x is string => !!x);
+  if (projectFilePaths.length) await supabase.storage.from(PROJECT_FILES_BUCKET).remove(projectFilePaths);
+  if (chargerFormPaths.length) await supabase.storage.from(CHARGER_FORMS_BUCKET).remove(chargerFormPaths);
+  const { error } = await supabase.from('projects').delete().eq('id', projectId);
+  return error ? error.message : null;
+}
+
 type DetailTabId = 'overview' | 'files' | `site:${string}`;
 
 function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }: {
@@ -802,24 +873,9 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
   const handleDelete = async () => {
     setDeleting(true);
     setDeleteError(null);
-    // Deleting the project cascade-deletes its sites, chargers, LTA records,
-    // warranty claims and project_files rows (FK ON DELETE CASCADE). Storage
-    // objects don't cascade, so clean them up first to avoid orphans.
-    const chargers = sites.flatMap((s) => s.site_chargers ?? []);
-    const chargerIds = chargers.map((c) => c.id);
-    // charger-forms bucket: Form 1 PDFs, site LTA contracts, LTA records (+invoices), warranty claims.
-    const chargerFormPaths: string[] = [
-      ...chargers.map((c) => c.form_1_path),
-      ...sites.map((s) => s.lta_contract_path),
-      ...(await collectChargerStoragePaths(chargerIds)),
-    ].filter((p): p is string => !!p);
-    const projectFilePaths = files.map((f) => f.storage_path).filter(Boolean);
-    if (projectFilePaths.length) await supabase.storage.from(PROJECT_FILES_BUCKET).remove(projectFilePaths);
-    if (chargerFormPaths.length) await supabase.storage.from(CHARGER_FORMS_BUCKET).remove(chargerFormPaths);
-
-    const { error } = await supabase.from('projects').delete().eq('id', projectId);
+    const err = await deleteRegistryProject(projectId);
     setDeleting(false);
-    if (error) { setDeleteError(error.message); return; }
+    if (err) { setDeleteError(err); return; }
     await onBack();
   };
 
@@ -1226,8 +1282,8 @@ function OverviewTab({ project, customers, customer, contacts, sites, lta, onPic
       const e = byCharger.get(c.id) ?? { A: [], D: [] };
       const performedA = e.A.map(toPerformed);
       const performedD = e.D.map(toPerformed);
-      if (ltaSchedule(ltaAnchor(c), formAMonths, performedA).overdueCount > 0) formADue++;
-      if (!isResidential && ltaSchedule(ltaAnchor(c), 12, performedD).overdueCount > 0) formADue++;
+      if (ltaSchedule(ltaScheduleBase(c, formAMonths, 'A'), formAMonths, performedA).overdueCount > 0) formADue++;
+      if (!isResidential && ltaSchedule(ltaScheduleBase(c, 12, 'D'), 12, performedD).overdueCount > 0) formADue++;
       // Newest record (rows arrive newest-first) drives the "invoice missing" flag.
       if (e.A[0] && !e.A[0].invoice_path) invoiceMissing++;
       if (!isResidential && e.D[0] && !e.D[0].invoice_path) invoiceMissing++;
@@ -2149,8 +2205,8 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
                 charger={ch}
                 selected={selectedId === ch.id}
                 flags={{
-                  formADue: ltaSchedule(ltaAnchor(ch), formAMonths, l.A).overdueCount > 0,
-                  formDDue: !isResidential && ltaSchedule(ltaAnchor(ch), 12, l.D).overdueCount > 0,
+                  formADue: ltaSchedule(ltaScheduleBase(ch, formAMonths, 'A'), formAMonths, l.A).overdueCount > 0,
+                  formDDue: !isResidential && ltaSchedule(ltaScheduleBase(ch, 12, 'D'), 12, l.D).overdueCount > 0,
                   form1Missing: !ch.form_1_path,
                 }}
                 onClick={() => setSelectedId(selectedId === ch.id ? null : ch.id)}
@@ -2233,6 +2289,8 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
             registration_code: editing.registration_code,
             procurement_date: editing.procurement_date,
             turn_on_date: editing.turn_on_date,
+            lta_letter_date: editing.lta_letter_date,
+            lta_letter_forms: editing.lta_letter_forms,
             form_a_next_date: editing.form_a_next_date,
             form_d_next_date: editing.form_d_next_date,
             warranty_start_date: editing.warranty_start_date,
@@ -2373,13 +2431,14 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
   // Cycles already closed, per form type — so the picker can't double-book one.
   const claimedByForm = (ft: LtaFormType): Map<number, string> => {
     const ofType = ltaRecords.filter((r) => r.form_type === ft);
-    const { periodOf } = ltaAssignPeriods(ltaAnchor(charger), ft === 'A' ? formAMonths : 12, ofType.map(toPerformed));
+    const interval = ft === 'A' ? formAMonths : 12;
+    const { periodOf } = ltaAssignPeriods(ltaScheduleBase(charger, interval, ft), interval, ofType.map(toPerformed));
     const m = new Map<number, string>();
     for (const [id, n] of periodOf) m.set(n, id);
     return m;
   };
-  const schedA = ltaSchedule(ltaAnchor(charger), formAMonths, performedA);
-  const schedD = ltaSchedule(ltaAnchor(charger), 12, performedD);
+  const schedA = ltaSchedule(ltaScheduleBase(charger, formAMonths, 'A'), formAMonths, performedA);
+  const schedD = ltaSchedule(ltaScheduleBase(charger, 12, 'D'), 12, performedD);
   const formADate = overrideA ?? schedA.nextDue;
   const formDDate = overrideD ?? schedD.nextDue;
   const formA = daysFromToday(formADate);
@@ -2472,7 +2531,7 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
     // Look the record up by the cycle it satisfies, not by date — a manual
     // mapping means the two can disagree.
     const ofType = ltaRecords.filter((r) => r.form_type === ft);
-    const { periodOf } = ltaAssignPeriods(ltaAnchor(charger), intervalMonths, ofType.map(toPerformed));
+    const { periodOf } = ltaAssignPeriods(ltaScheduleBase(charger, intervalMonths, ft), intervalMonths, ofType.map(toPerformed));
     const recByPeriod = new Map<number, LtaRecord>();
     for (const r of ofType) { const n = periodOf.get(r.id); if (n != null) recByPeriod.set(n, r); }
     const out: TLEntry[] = [];
@@ -2501,6 +2560,15 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
         ? { dot: GREEN, titleColor: BLACK, title: 'Installation + Form 1', date: null, subtitle: 'Form 1 attached', actions: [{ label: 'View', onClick: () => void openForm1('view'), tone: 'green' }] }
         : { dot: RED, titleColor: RED, title: 'Installation + Form 1', date: null, subtitle: 'Form 1 pending upload', actions: [{ label: 'Upload →', onClick: () => setAddingForm1(true), tone: 'plain' }] }, sort: installSort },
     { node: { dot: charger.turn_on_date ? GREEN : RED, titleColor: charger.turn_on_date ? BLACK : RED, title: 'Registration', date: charger.turn_on_date, subtitle: charger.turn_on_date ? 'Charger commissioned' : 'Registration date not set', actions: [] }, sort: regSort },
+    ...(charger.lta_letter_date ? [{
+      node: { dot: C.opal, titleColor: C.opal, title: 'LTA Inspection Letter', date: charger.lta_letter_date, dateLabel: 'Due by', subtitle: (() => {
+        const f = isResidential ? 'A' : (charger.lta_letter_forms ?? 'both');
+        const which = f === 'both' ? 'Form A & D' : 'Form A';
+        return <span style={{ fontWeight: 700, color: C.opal }}>{which} due by this date</span>;
+      })(), actions: [] } as TLNode,
+      // Sit just after Registration so it reads as the scheduling anchor.
+      sort: (parseMs(charger.lta_letter_date) || regSort) + 0.05,
+    }] : []),
     ...formEntries('Form A', 'A', formAMonths, schedA, formADate, formA),
     ...(!isResidential ? formEntries('Form D', 'D', 12, schedD, formDDate, formD) : []),
   ];
@@ -2635,6 +2703,16 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
           {sectionHeader('Registration & Form 1')}
           <KV label="Procurement Date" value={fmtDate(charger.procurement_date) ?? 'Not recorded'} muted={!charger.procurement_date} />
           <KV label="Registration Date" value={fmtDate(charger.turn_on_date) ?? 'Not recorded'} muted={!charger.turn_on_date} />
+          <KV label="LTA Letter Date" value={fmtDate(charger.lta_letter_date) ?? 'Not recorded'} muted={!charger.lta_letter_date} />
+          {charger.lta_letter_date && (() => {
+            const f = isResidential ? 'A' : (charger.lta_letter_forms ?? 'both');
+            const which = f === 'both' ? 'Form A & D' : 'Form A';
+            return (
+              <div style={{ fontSize: 10.5, fontWeight: 700, color: C.green, background: C.honeydew, borderRadius: 6, padding: '5px 8px', lineHeight: 1.4 }}>
+                {which} due on the LTA letter date
+              </div>
+            );
+          })()}
           {charger.form_1_path ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <FileText size={14} strokeWidth={1.8} color={C.green} style={{ flexShrink: 0 }} />
@@ -2730,7 +2808,9 @@ function AddLtaRecordModal({ charger, siteName, formType, intervalMonths, claime
     if (!date) { setError('Pick the inspection date first.'); return; }
     const todayStr = new Date().toISOString().slice(0, 10);
     if (date > todayStr) { setError('Inspection date can’t be in the future.'); return; }
-    if (charger.turn_on_date && date <= charger.turn_on_date) { setError('Inspection date must be after the registration date.'); return; }
+    // A real inspection can't predate the charger existing.
+    const floor = ltaExistFloor(charger);
+    if (floor && date <= floor) { setError('Inspection date must be after the registration date.'); return; }
     setBusy(true);
     const friendly = computeLtaFilename(formType, charger.asset_tag, date, siteName);
     const path = `lta/${charger.id}/${crypto.randomUUID()}/${pathSafe(friendly)}`;
@@ -2789,7 +2869,7 @@ function AddLtaRecordModal({ charger, siteName, formType, intervalMonths, claime
           </div>
           <div>
             <FieldLabel>Counts as</FieldLabel>
-            <LtaCyclePicker registration={ltaAnchor(charger)} intervalMonths={intervalMonths} date={date}
+            <LtaCyclePicker registration={ltaScheduleBase(charger, intervalMonths, formType)} intervalMonths={intervalMonths} date={date}
               value={periodN} disabled={busy} claimedBy={claimedBy} recordId={null} onChange={setPeriodN} />
           </div>
         </div>
@@ -2816,6 +2896,7 @@ function AddLtaRecordModal({ charger, siteName, formType, intervalMonths, claime
 // ── LTA Inspection panel ─────────────────────────────────────────
 
 type LtaFormType = 'A' | 'D';
+type LetterForms = 'A' | 'D' | 'both';
 
 interface LtaRecord {
   id: string;
@@ -3355,7 +3436,7 @@ function LtaSection({ formType, intervalMonths, title, records, charger, siteNam
 
   // Which cycle each logged inspection currently satisfies — a manual mapping
   // wins its cycle, the rest fall where their date lands.
-  const registration = ltaAnchor(charger);
+  const registration = ltaScheduleBase(charger, intervalMonths, formType);
   const { periodOf } = ltaAssignPeriods(registration, intervalMonths, records.map(toPerformed));
   const claimedBy = new Map<number, string>();
   for (const [id, n] of periodOf) claimedBy.set(n, id);
@@ -4354,9 +4435,40 @@ function ltaCycleOptions(registration: string | null, intervalMonths: number, ar
 const toPerformed = (r: { id: string; performed_at: string; period_n: number | null }): LtaPerformed =>
   ({ key: r.id, date: r.performed_at, period: r.period_n });
 
-// LTA schedule anchor: the registration date, falling back to the procurement date when
-// registration hasn't been recorded yet — so the first Form A/D due still computes.
-function ltaAnchor(c: { turn_on_date: string | null; procurement_date: string | null }): string | null {
+// LTA inspections alternate every 6 months: Form A, then Form A & D, then A, …
+// The letter's expiry date is cycle 1's due date. Form A is always due on it.
+// Form D lands on it only when the letter is an "A & D" inspection; if the letter
+// is Form-A-only, Form D falls on the NEXT inspection, one Form-A interval later.
+const FORM_A_INTERVAL = 6; // commercial Form A cadence (months); Form D only exists commercial
+function ltaLetterCycle1(c: { lta_letter_date?: string | null; lta_letter_forms?: LetterForms | null }, ft: LtaFormType): string | null {
+  const letter = c.lta_letter_date;
+  if (!letter) return null;
+  if (ft === 'A') return letter;
+  // Form D:
+  if ((c.lta_letter_forms ?? 'both') === 'both') return letter;
+  const d = new Date(letter + 'T00:00:00');
+  if (isNaN(d.getTime())) return null;
+  d.setMonth(d.getMonth() + FORM_A_INTERVAL);
+  return toYmd(d);
+}
+
+// The base the schedule counts from: periodEnd(n) = base + n × interval, so cycle
+// 1's due date is base + interval. With a letter, cycle 1's due date is fixed
+// (ltaLetterCycle1) so we back the base off one interval to land on it. Without a
+// letter, anchor on registration (then procurement) — first form one interval later.
+function ltaScheduleBase(c: { lta_letter_date?: string | null; lta_letter_forms?: LetterForms | null; turn_on_date: string | null; procurement_date: string | null }, intervalMonths: number, ft: LtaFormType): string | null {
+  const cycle1 = ltaLetterCycle1(c, ft);
+  if (cycle1) {
+    const d = new Date(cycle1 + 'T00:00:00');
+    if (!isNaN(d.getTime())) { d.setMonth(d.getMonth() - intervalMonths); return toYmd(d); }
+  }
+  return c.turn_on_date ?? c.procurement_date ?? null;
+}
+
+// The earliest date a real inspection can have — when the charger physically
+// exists. Used to validate new records (not the letter date, which is only a
+// scheduling due date; an inspection may legitimately predate it).
+function ltaExistFloor(c: { turn_on_date: string | null; procurement_date: string | null }): string | null {
   return c.turn_on_date ?? c.procurement_date;
 }
 
@@ -4397,12 +4509,17 @@ export function ltaAssignPeriods(registration: string | null, intervalMonths: nu
   }
   for (const x of items) {
     if (periodOf.has(x.key)) continue;
-    for (let n = 1; n <= 600; n++) {
-      if (x.d <= ltaPeriodEnd(registration, intervalMonths, n)) {
-        if (!byPeriod.has(n)) { byPeriod.set(n, toYmd(x.d)); periodOf.set(x.key, n); }
-        break;
-      }
+    // Cycle whose due date is closest to when it was performed, among those not
+    // already taken. Search a window around the arithmetically-nearest cycle.
+    const monthsFromBase = (x.d.getFullYear() - reg.getFullYear()) * 12 + (x.d.getMonth() - reg.getMonth());
+    const nIdeal = Math.max(1, Math.round(monthsFromBase / intervalMonths));
+    let best = -1, bestDist = Infinity;
+    for (let n = Math.max(1, nIdeal - 6); n <= nIdeal + 6; n++) {
+      if (byPeriod.has(n)) continue;
+      const dist = Math.abs(ltaPeriodEnd(registration, intervalMonths, n).getTime() - x.d.getTime());
+      if (dist < bestDist) { bestDist = dist; best = n; }
     }
+    if (best > 0) { byPeriod.set(best, toYmd(x.d)); periodOf.set(x.key, best); }
   }
   return { byPeriod, periodOf };
 }
@@ -4515,6 +4632,8 @@ interface ChargerFormData {
   registration_code: string | null;
   procurement_date: string | null;
   turn_on_date: string | null;
+  lta_letter_date: string | null;
+  lta_letter_forms: LetterForms | null;
   form_a_next_date: string | null;
   form_d_next_date: string | null;
   warranty_start_date: string | null;
@@ -4527,7 +4646,7 @@ interface ChargerFormData {
 function blankCharger(): ChargerFormData {
   return {
     asset_tag: '', brand_model: null, registration_code: null, procurement_date: null,
-    turn_on_date: null, form_a_next_date: null, form_d_next_date: null,
+    turn_on_date: null, lta_letter_date: null, lta_letter_forms: null, form_a_next_date: null, form_d_next_date: null,
     warranty_start_date: null, warranty_end_date: null,
     form_1_path: null, form_1_filename: null,
     notes: null,
@@ -4611,17 +4730,23 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
   const handleSave = async () => {
     setSaving(true);
     const turnOn = form.turn_on_date || null;
-    // The LTA schedule anchors on the registration date, or the procurement date when
-    // registration isn't set yet, so the first Form A/D still computes.
-    const anchor = turnOn || form.procurement_date || null;
+    const letter = form.lta_letter_date || null;
+    // Residential has no Form D, so a letter can only be about Form A there.
+    const letterForms: LetterForms | null = letter ? (isResidential ? 'A' : (form.lta_letter_forms ?? 'both')) : null;
+    // Next Form A/D from the schedule BASE (see ltaScheduleBase): when the letter
+    // covers a form, cycle 1's due date IS the letter date; otherwise it's one
+    // interval after registration/procurement.
+    const forSchedule = { ...form, lta_letter_date: letter, lta_letter_forms: letterForms };
     await onSave({
       asset_tag:               form.asset_tag.trim(),
       brand_model:             form.brand_model && form.brand_model.trim() ? form.brand_model.trim() : null,
       registration_code:       form.registration_code && form.registration_code.trim() ? form.registration_code.trim() : null,
       procurement_date:        form.procurement_date || null,
       turn_on_date:            turnOn,
-      form_a_next_date:        nextCycleDate(anchor, isResidential ? 24 : 6),
-      form_d_next_date:        isResidential ? null : nextCycleDate(anchor, 12),
+      lta_letter_date:         letter,
+      lta_letter_forms:        letterForms,
+      form_a_next_date:        nextCycleDate(ltaScheduleBase(forSchedule, isResidential ? 24 : 6, 'A'), isResidential ? 24 : 6),
+      form_d_next_date:        isResidential ? null : nextCycleDate(ltaScheduleBase(forSchedule, 12, 'D'), 12),
       // Warranty starts on the registration date; the end is editable (defaults to start + years).
       warranty_start_date:     turnOn ? turnOn : null,
       warranty_end_date:       form.warranty_end_date || null,
@@ -4640,6 +4765,9 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
     onClose();
   };
 
+  // Next Form A/D (auto) preview — mirrors the real schedule (letter date = the
+  // first due date, else one interval after registration/procurement).
+  const nextAuto = (interval: number, ft: LtaFormType) => nextCycleDate(ltaScheduleBase(form, interval, ft), interval);
   const canSave = form.asset_tag.trim().length > 0 && !saving;
 
   return (
@@ -4715,16 +4843,58 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
               style={{ ...inputStyle(), background: C.white }} />
             <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
               {isResidential
-                ? <>Residential chargers need only <strong>Form A every 24 months</strong> from the registration date — no Form D. The system always shows the <strong>next upcoming</strong> date.</>
-                : <>Form A repeats every <strong>6 months</strong>, Form D every <strong>12 months</strong> from the registration date. The system always shows the <strong>next upcoming</strong> date so cold calls stay on track.</>}
+                ? <>Residential chargers need only <strong>Form A every 24 months</strong> — no Form D. The system always shows the <strong>next upcoming</strong> date.</>
+                : <>Form A repeats every <strong>6 months</strong>, Form D every <strong>12 months</strong>. The system always shows the <strong>next upcoming</strong> date so cold calls stay on track.</>}
             </div>
           </div>
+          <div>
+            <FieldLabel>LTA Inspection Letter Date</FieldLabel>
+            <input type="date" value={form.lta_letter_date ?? ''}
+              onChange={(e) => {
+                const v = e.target.value || null;
+                // Default the letter to both forms when first set; clear the
+                // choice when the date is removed.
+                setForm((f) => ({ ...f, lta_letter_date: v, lta_letter_forms: v ? (f.lta_letter_forms ?? (isResidential ? 'A' : 'both')) : null }));
+              }}
+              style={{ ...inputStyle(), background: C.white }} />
+            <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
+              The <strong>expiry date</strong> on LTA's inspection letter — the date the inspection must be performed by. <strong>When set, this is the due date of the form(s) it covers</strong> (below), overriding the registration schedule. Leave blank to schedule from the registration date.
+            </div>
+          </div>
+          {form.lta_letter_date && !isResidential && (
+            <div>
+              <FieldLabel>This inspection is</FieldLabel>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {([['A', 'Form A'], ['both', 'Form A & D']] as const).map(([val, label]) => {
+                  const on = (form.lta_letter_forms ?? 'both') === val;
+                  return (
+                    <button key={val} type="button" onClick={() => set('lta_letter_forms', val)}
+                      style={{ flex: 1, padding: '8px 12px', borderRadius: 10, border: `1px solid ${on ? C.green : '#EBEBEB'}`, background: on ? C.green : C.white, color: on ? C.white : C.slate, fontFamily: 'Figtree', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
+                Inspections alternate every 6 months. The next one is auto-calculated from the letter date: <strong>{(form.lta_letter_forms ?? 'both') === 'A' ? 'Form A now → Form A & D in 6 months' : 'Form A & D now → Form A in 6 months'}</strong>.
+              </div>
+            </div>
+          )}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
-            <ReadOnlyField label="Next Form A (auto)" value={fmtDate(nextCycleDate(form.turn_on_date || form.procurement_date, isResidential ? 24 : 6))}  placeholder="Set registration or procurement date" />
+            <ReadOnlyField label="Next Form A (auto)" value={fmtDate(nextAuto(isResidential ? 24 : 6, 'A'))}  placeholder="Set a letter, registration or procurement date" />
             {!isResidential && (
-              <ReadOnlyField label="Next Form D (auto)" value={fmtDate(nextCycleDate(form.turn_on_date || form.procurement_date, 12))} placeholder="Set registration or procurement date" />
+              <ReadOnlyField label="Next Form D (auto)" value={fmtDate(nextAuto(12, 'D'))} placeholder="Set a letter, registration or procurement date" />
             )}
           </div>
+          {form.lta_letter_date && (
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.green, background: C.honeydew, borderRadius: 8, padding: '7px 10px', lineHeight: 1.5 }}>
+              {(() => {
+                const f = isResidential ? 'A' : (form.lta_letter_forms ?? 'both');
+                const which = f === 'both' ? 'Form A & D' : 'Form A';
+                return <>{which} due on the LTA letter date ({fmtDate(form.lta_letter_date)}); later inspections auto-follow the 6-month alternation.</>;
+              })()}
+            </div>
+          )}
         </div>
 
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
