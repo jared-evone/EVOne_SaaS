@@ -103,6 +103,7 @@ export interface WorkOrder {
   instructions?: string | null; // optional PIC note shown to the technician (multi-line)
   customerId: string | null;   // link to Customer registry (preferred)
   customer: string;            // denormalised name for display + legacy
+  site?: string | null;        // denormalised site name (project_site / CPO location)
   address: string;
   product?: string;
   scheduledDate: string;
@@ -387,7 +388,10 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
 
     createWorkOrder: (input) => {
       const id = `WO-2026-${String(Date.now()).slice(-4)}`;
-      const wo: WorkOrder = { id, status: 'open', response: null, ...input };
+      // open = unassigned, assigned = a technician is on it. Derive from the
+      // initial assignment so a WO created with a tech opens as "assigned".
+      const status: WorkOrderStatus = assigneesOf(input).length ? 'assigned' : 'open';
+      const wo: WorkOrder = { id, status, response: null, ...input };
       setWorkOrders((ws) => [wo, ...ws]);
       persistWorkOrder(wo);
     },
@@ -396,7 +400,10 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
       setWorkOrders((ws) =>
         ws.map((w) => {
           if (w.id !== id) return w;
-          const status: WorkOrderStatus = techs.length ? 'assigned' : 'open';
+          // open⟺assigned only tracks assignment; a progressed status
+          // (submitted/reviewed/completed) is never reversed by reassigning.
+          const status: WorkOrderStatus =
+            w.status === 'open' || w.status === 'assigned' ? (techs.length ? 'assigned' : 'open') : w.status;
           patchWorkOrder(id, { assignedTo: techs, status });
           return { ...w, assignedTo: techs, status };
         }),

@@ -400,9 +400,21 @@ async function flattenOverlayPage(
         const im = await loadImage(val);
         if (im) drawContain(ctx, im, fx, fy, fw, fh);
       } else if (f.type === 'signature' && typed) {
-        // Typed signature — draw it in the same script face shown on screen.
-        const fontPx = f.fontSize ? (f.fontSize / 100) * h : Math.max(8, Math.min(fh * 0.62, 15));
-        drawWrappedText(ctx, typed, fx, fy, fw, fh, fontPx, SIGNATURE_FONT);
+        // Typed signature — match the on-screen size (≈60% of the field height,
+        // no low cap) so a large field shows a large signature. Draw it as one
+        // centred line, shrinking only if the name is too wide to fit the box.
+        let fontPx = f.fontSize ? (f.fontSize / 100) * h : fh * 0.6;
+        ctx.save();
+        ctx.font = `${fontPx}px ${SIGNATURE_FONT}`;
+        const tw = ctx.measureText(typed).width;
+        const maxW = Math.max(1, fw - 6);
+        if (tw > maxW) fontPx = Math.max(8, fontPx * (maxW / tw));
+        ctx.font = `${fontPx}px ${SIGNATURE_FONT}`;
+        ctx.fillStyle = '#1a1a1a';
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'center';
+        ctx.fillText(typed, fx + fw / 2, fy + fh / 2);
+        ctx.restore();
       }
     } else if (typeof val === 'string' && val.trim()) {
       // Explicit size = % of page height (matches the on-screen cqh units); else auto-fit the box.

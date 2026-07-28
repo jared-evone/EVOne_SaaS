@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { C } from '../../theme';
 import { Logo } from '../../components/Logo';
-import { Search, Power, ChevronDown, Copy, CopyPlus, QrCode } from 'lucide-react';
+import { Search, Power, ChevronDown, ChevronUp, ChevronsUpDown, Copy, CopyPlus, QrCode } from 'lucide-react';
 import { useIsMobile } from '../../lib/useIsMobile';
 import { supabase } from '../../lib/supabase';
 import { usePermissions } from '../../permissions';
@@ -205,18 +205,68 @@ export function TSDAdminApp({ onBack, onSignOut }: TSDAdminAppProps) {
 // Work Orders admin
 // ─────────────────────────────────────────────────────────────────
 
+// Priority / status rank for sorting (most urgent / earliest-in-workflow first).
+const PRIORITY_RANK: Record<string, number> = { high: 0, normal: 1, low: 2 };
+const STATUS_RANK: Record<WorkOrderStatus, number> = {
+  open: 0, assigned: 1, in_progress: 2, submitted: 3, reviewed: 4, completed: 5,
+};
+
+type SortKey = 'id' | 'title' | 'category' | 'customer' | 'form' | 'tech' | 'scheduledDate' | 'priority' | 'status';
+type SortDir = 'asc' | 'desc';
+
 export function WorkOrdersAdmin() {
   const store = useWorkOrderStore();
   const [statusFilter, setStatusFilter] = useState<'all' | WorkOrderStatus>('all');
   const [search, setSearch] = useState('');
   const [modal, setModal] = useState<'new' | WorkOrder | null>(null);
+  // Default: newest scheduled date first. Click a header to re-sort.
+  const [sortKey, setSortKey] = useState<SortKey>('scheduledDate');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
 
-  const visible = store.workOrders.filter(
-    (w) =>
-      (statusFilter === 'all' || w.status === statusFilter) &&
-      (w.customer.toLowerCase().includes(search.toLowerCase()) ||
-        w.id.toLowerCase().includes(search.toLowerCase())),
-  );
+  const formLabel = (w: WorkOrder): string => {
+    const counts = new Map<string, number>();
+    for (const f of w.forms) {
+      const n = f.templateId === OTHER_FORM_ID ? 'Other (PDF)' : (store.getTemplate(f.templateId)?.name ?? 'Form');
+      counts.set(n, (counts.get(n) ?? 0) + 1);
+    }
+    return [...counts.entries()].map(([n, c]) => (c > 1 ? `${c}× ${n}` : n)).join(', ');
+  };
+
+  // Comparable value per column — numbers sort numerically, strings naturally.
+  const sortValue = (w: WorkOrder, key: SortKey): string | number => {
+    switch (key) {
+      case 'priority': return PRIORITY_RANK[w.priority] ?? 1;
+      case 'status':   return STATUS_RANK[w.status] ?? 0;
+      case 'category': return w.category ?? '';
+      case 'form':     return formLabel(w);
+      case 'tech':     return assigneesLabel(w, '');
+      default:         return (w[key] ?? '') as string;
+    }
+  };
+
+  const toggleSort = (key: SortKey) => {
+    if (key === sortKey) { setSortDir((d) => (d === 'asc' ? 'desc' : 'asc')); return; }
+    setSortKey(key);
+    // Sensible first direction: dates & rank columns lead with the "top" end.
+    setSortDir(key === 'scheduledDate' ? 'desc' : 'asc');
+  };
+
+  const visible = store.workOrders
+    .filter(
+      (w) =>
+        (statusFilter === 'all' || w.status === statusFilter) &&
+        (w.customer.toLowerCase().includes(search.toLowerCase()) ||
+          w.id.toLowerCase().includes(search.toLowerCase()) ||
+          (w.site ?? '').toLowerCase().includes(search.toLowerCase()) ||
+          (w.address ?? '').toLowerCase().includes(search.toLowerCase())),
+    )
+    .sort((a, b) => {
+      const av = sortValue(a, sortKey), bv = sortValue(b, sortKey);
+      const cmp = typeof av === 'number' && typeof bv === 'number'
+        ? av - bv
+        : String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' });
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
 
   const countBy = (s: WorkOrderStatus) =>
     store.workOrders.filter((w) => w.status === s).length;
@@ -298,14 +348,27 @@ export function WorkOrdersAdmin() {
         <table style={{ width: '100%', minWidth: 760, borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ background: C.seasalt }}>
-              {['Ref', 'Title', 'Category', 'Customer', 'Form', 'Tech', 'Date', 'Priority', 'Status'].map((h) => (
-                <th
-                  key={h}
-                  style={{ padding: '11px 14px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB' }}
-                >
-                  {h}
-                </th>
-              ))}
+              {([
+                ['Ref', 'id'], ['Title', 'title'], ['Category', 'category'], ['Customer / Site', 'customer'],
+                ['Form', 'form'], ['Tech', 'tech'], ['Date', 'scheduledDate'], ['Priority', 'priority'], ['Status', 'status'],
+              ] as [string, SortKey][]).map(([h, key]) => {
+                const active = sortKey === key;
+                return (
+                  <th
+                    key={h}
+                    onClick={() => toggleSort(key)}
+                    title={`Sort by ${h}`}
+                    style={{ padding: '11px 14px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: active ? C.green : C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
+                  >
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                      {h}
+                      {active
+                        ? (sortDir === 'asc' ? <ChevronUp size={13} strokeWidth={2.5} /> : <ChevronDown size={13} strokeWidth={2.5} />)
+                        : <ChevronsUpDown size={12} strokeWidth={2} style={{ opacity: 0.4 }} />}
+                    </span>
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
@@ -326,16 +389,15 @@ export function WorkOrdersAdmin() {
                       ? <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: C.honeydew, color: C.green, whiteSpace: 'nowrap' }}>{w.category}</span>
                       : <span style={{ color: C.slate }}>—</span>}
                   </td>
-                  <td style={{ padding: '11px 14px', color: '#1a1a1a' }}>{w.customer}</td>
-                  <td style={{ padding: '11px 14px', color: C.slate }}>{(() => {
-                    const counts = new Map<string, number>();
-                    for (const f of w.forms) {
-                      const n = f.templateId === OTHER_FORM_ID ? 'Other (PDF)' : (store.getTemplate(f.templateId)?.name ?? 'Form');
-                      counts.set(n, (counts.get(n) ?? 0) + 1);
-                    }
-                    const s = [...counts.entries()].map(([n, c]) => (c > 1 ? `${c}× ${n}` : n)).join(', ');
-                    return s || '—';
-                  })()}</td>
+                  <td style={{ padding: '11px 14px', maxWidth: 280 }}>
+                    <div style={{ color: '#1a1a1a', fontWeight: 600 }}>{w.customer}</div>
+                    {w.site?.trim() && w.site.trim() !== w.customer.trim() && (
+                      <div style={{ fontSize: 11, color: C.slate, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={w.address || w.site}>
+                        {w.site}
+                      </div>
+                    )}
+                  </td>
+                  <td style={{ padding: '11px 14px', color: C.slate }}>{formLabel(w) || '—'}</td>
                   <td style={{ padding: '11px 14px', color: C.slate }}>{assigneesLabel(w, '—')}</td>
                   <td style={{ padding: '11px 14px', color: C.slate }}>{w.scheduledDate}</td>
                   <td style={{ padding: '11px 14px' }}>
@@ -425,6 +487,7 @@ function WorkOrderModal({
     customerId: workOrder?.customerId ?? null,   // charger-registry entry id
     customer: workOrder?.customer ?? '',
     siteId: null as string | null,
+    site: workOrder?.site ?? '',
     address: workOrder?.address ?? '',
     // New work orders default to today (local date) for quicker entry.
     scheduledDate: workOrder?.scheduledDate ?? new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10),
@@ -483,12 +546,12 @@ function WorkOrderModal({
     const p = registry.find((r) => r.id === entryId);
     if (!p) return;
     if (p.source === 'cpo') {
-      // CPO location → no site/charger step; the location's address fills straight away.
-      setForm((f) => ({ ...f, customerId: p.id, customer: p.name, siteId: null, address: p.address ?? p.name }));
+      // CPO location → no site/charger step; the location IS the site.
+      setForm((f) => ({ ...f, customerId: p.id, customer: p.name, siteId: null, site: p.name, address: p.address ?? p.name }));
       setSites([]);
       return;
     }
-    setForm((f) => ({ ...f, customerId: p.id, customer: p.name, siteId: null, address: '' }));
+    setForm((f) => ({ ...f, customerId: p.id, customer: p.name, siteId: null, site: '', address: '' }));
     setSites([]);
     setSitesLoading(true);
     const { data } = await supabase.from('project_sites').select('id, name, address, notes').eq('project_id', p.id).order('position').order('created_at');
@@ -504,7 +567,7 @@ function WorkOrderModal({
     const { unit } = splitUnit(s.notes);
     const base = s.address || s.name;
     const address = unit && !base.includes(unit) ? `${base}, ${unit}` : base;
-    setForm((f) => ({ ...f, siteId: s.id, address }));
+    setForm((f) => ({ ...f, siteId: s.id, site: s.name, address }));
   };
 
   // Technicians come from the shared technicians table — managed in the Technicians tab.
@@ -546,6 +609,7 @@ function WorkOrderModal({
         instructions: form.instructions.trim() || null,
         customerId: form.customerId,
         customer: form.customer,
+        site: form.site || null,
         address: form.address,
         scheduledDate: form.scheduledDate,
         priority: form.priority,
