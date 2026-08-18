@@ -73,6 +73,55 @@ This app uses **custom auth** (the `app_users` table), wrapped so the database c
 
 **Migrations:** apply schema/policy changes via the Supabase MCP `apply_migration` (DDL); use `execute_sql` only for reads/data. Domain data must be Supabase-backed — no in-memory-only stores for anything that must persist or be shared.
 
+## Work order data safety — read before touching `workOrderStore` or the TSD form views
+
+**This module has already lost data once.** A whole-blob write ran against a
+*light* (photo-stripped) work order and overwrote the saved `forms[].values`
+of five work orders. The photos were base64-only at the time and were
+unrecoverable. Everything below exists to stop that happening again — do not
+work around any of it.
+
+**Why the risk exists.** `tsd_work_orders.data` is one jsonb blob holding the
+whole work order, including every form's answers. The list view deliberately
+loads a *light projection* with photo/PDF blobs stripped (a full load is ~14 MB).
+So an in-memory work order is either **light** (forms present, values stripped)
+or **hydrated** (real values). Writing a light row back to the server destroys
+the answers.
+
+**The four rules:**
+
+1. **Metadata edits go through `patchWorkOrder`** — assignee, status, title,
+   category, instructions, schedule. It calls the `tsd_work_order_patch` RPC,
+   which merges server-side (`data = data || patch`), so untouched fields —
+   including `forms` — are never rewritten. This is always safe on a light row.
+2. **Only `saveDraft` / `submit` / `amend` / `createWorkOrder` write the whole
+   blob**, and they must be handed *hydrated* forms by the caller. Don't add a
+   fifth whole-blob writer without a very good reason.
+3. **Hydrate before you render an editor.** `loadWorkOrderDetail(id)` pulls the
+   full row; the editor must not mount until it resolves. Both callers gate on
+   this — `hydratedId === active.id` in [TechApp](src/screens/tsd/TechApp.tsx),
+   `detailReadyId === selected.id` in [PICApp](src/screens/tsd/PICApp.tsx). A form
+   that mounts on a light row will save emptiness over real answers.
+4. **A background refetch must not clobber a hydrated row.** The list loader
+   merges with `formsAreFull()` in [workOrderStore](src/workOrderStore.tsx) —
+   keep that check when touching the load path.
+
+**New media goes to Storage, never into the blob.** Use `uploadFormPhoto` /
+`uploadFormPdf` from [lib/formMedia.ts](src/lib/formMedia.ts); the value stored in
+the form is a public URL. Readers accept both that and legacy inline base64, so
+never "clean up" the base64 branch — older work orders still rely on it.
+
+**Recovery.** Applied by [db/tsd_backup_and_history.sql](db/tsd_backup_and_history.sql),
+in a `backup` schema that is not API-exposed:
+
+- `backup.tsd_work_orders_history` — a trigger keeps the **previous** value of
+  every work order on each UPDATE/DELETE, so a bad write is reversible. No-op
+  writes aren't recorded.
+- `backup.tsd_snapshot('label')` — takes a labelled point-in-time copy of the
+  work orders + form templates. **Run one before any risky data change.**
+
+Restore recipes are in the comments at the bottom of that SQL file.
+
 ## Brand tokens — use these, don't hardcode
 
 All brand colours come from [src/theme.ts](src/theme.ts) via the `C` object. Never write `#2A9A47` in a component file — write `C.green`.
@@ -249,6 +298,12 @@ import { Download } from 'lucide-react';
 ## File / directory conventions
 
 ```
+db/                         SQL of record for schema/policy changes applied via
+                            the Supabase MCP — charger_projects.sql,
+                            site_chargers_lta_letter_date.sql,
+                            tsd_backup_and_history.sql. Keep these in sync when
+                            you apply a migration, so a fresh environment can be
+                            rebuilt from the repo alone.
 src/
   theme.ts                  brand tokens (C)
   data.ts                   demo/static data used by a few legacy screens
@@ -258,12 +313,19 @@ src/
   App.tsx                   permission-gated screen routing only — no UI here
   styles.css                global reset + scrollbar; do not grow
   assets/                   brand PNGs (evone-logo, eve-logo, goparkin-logo, sp-logo)
-  lib/                      supabase.ts (client), onemap.ts (SG geocoder)
+  lib/                      supabase.ts (client), onemap.ts (SG geocoder),
+                            formMedia.ts (TSD photo/PDF → Storage),
+                            compressImage.ts, navLinks.ts (Google Maps directions),
+                            ltaEmail.ts, useIsMobile.ts, zip.ts, version.ts
   components/               KPICard, Badge, NavItem, Logo, BrandLogo,
-                            charts, ChargerLocationMap, OneMapAutocomplete
+                            charts, ChargerLocationMap, OneMapAutocomplete,
+                            SearchSelect (brand searchable dropdown),
+                            TechAvatar, AvatarCropper
   screens/
     Overview.tsx, Invoices.tsx, Customers.tsx, Projects.tsx, …
                             one file per top-level screen; export `ScreenFoo`
+    Projects.tsx            Charger Registry — sites, chargers, LTA inspection
+                            schedule (Form A/D), warranty. The biggest screen.
     Login.tsx               department picker + email/password sign-in
     Settings.tsx, DBHealth.tsx
                             in-app admin (Users & Permissions matrix + DB health)
@@ -271,6 +333,11 @@ src/
     crm/                    Corporate CRM onboarding —
                             AccountOpening (admin) + PublicApplication (customer)
     portal/                 customer-facing invoice / statement portal
+    projmgmt/               ChargerProjects.tsx — the Charger Registry "Projects"
+                            module (pm department only): per-project lifecycle
+                            with stage-tagged documents, sectioned build
+                            checklist with sub-tasks, reusable project types
+                            (lifecycle + checklist pairs), dated note log
     tsd/                    Technical Service Dept. workflow:
                             TechApp.tsx      (mobile-style tech app +
                                               shared FormPaper / FormHeader /
@@ -278,6 +345,7 @@ src/
                             PICApp.tsx       (review queue + editable PDF view,
                                               exports PICReviewBoard)
                             TSDAdminApp.tsx  (Work Orders + FormBuilder)
+                            TechniciansAdmin.tsx
                             OverlayForm.tsx, PDFExport.tsx
 ```
 
