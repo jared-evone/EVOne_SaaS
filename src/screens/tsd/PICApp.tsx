@@ -637,9 +637,21 @@ function PushToCpoModal({ workOrder, forms, getTemplate, chargerCode, locationId
       if (!ch) { setBusy(false); setError(`Couldn't find charger "${chargerCode}" in CPO Chargers.`); return; }
       const chargerId = ch.id;
 
-      // 2. Render the work-order form to a PDF blob (overlay forms are assembled
-      //    from flattened page images so they don't freeze the tab).
-      const blob = await generateWorkOrderPdf(workOrder, forms, getTemplate);
+      // 2. Render the work-order form to a PDF blob. Overlay and structured forms
+      //    use different renderers and CANNOT share one document — forcing both
+      //    through react-pdf hangs the tab. This upload takes a single PDF, so a
+      //    mixed work order sends the structured report (the meter-reading
+      //    evidence this push is about); the overlay pages stay available from
+      //    Export PDF.
+      const isOverlayForm = (f: WorkOrderForm) => {
+        const t = getTemplate(f.templateId);
+        return !!t && isOverlay(t);
+      };
+      const structured = forms.filter((f) => !isOverlayForm(f));
+      const overlayOnly = forms.filter(isOverlayForm);
+      const mixed = structured.length > 0 && overlayOnly.length > 0;
+      const pdfForms = mixed ? structured : forms;
+      const blob = await generateWorkOrderPdf(workOrder, pdfForms, getTemplate);
 
       // 3. Upload it to the CPO reading storage, then 4. insert the reading (roll back on failure).
       const pdf_path = `chargers/${chargerId}/readings/${crypto.randomUUID()}.pdf`;
@@ -659,7 +671,9 @@ function PushToCpoModal({ workOrder, forms, getTemplate, chargerCode, locationId
       if (insErr) { await supabase.storage.from(CPO_BUCKET).remove([pdf_path]); setBusy(false); setError(insErr.message); return; }
 
       setBusy(false);
-      onDone(`Reading sent to CPO Chargers · ${chargerCode}.`);
+      onDone(mixed
+        ? `Reading sent to CPO Chargers · ${chargerCode}. Attached the structured report only — use Export PDF for the overlay pages.`
+        : `Reading sent to CPO Chargers · ${chargerCode}.`);
     } catch (e) {
       setBusy(false);
       setError(e instanceof Error ? e.message : 'Failed to send the reading.');

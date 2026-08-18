@@ -31,6 +31,7 @@ Font.register({
 import { C } from '../../theme';
 import { isOverlay, pagesOf, SIGNATURE_FONT } from './OverlayForm';
 import { buildImagePdf } from './imagePdf';
+import { createZipBlob } from '../../lib/zip';
 import { fetchToDataUrl, isStoredImageUrl } from '../../lib/formMedia';
 import { assigneesLabel } from '../../workOrderStore';
 import type { FormField, FormTemplate, FormValues, OverlayPage, WorkOrder, WorkOrderForm } from '../../workOrderStore';
@@ -577,17 +578,18 @@ export async function generateWorkOrderPdf(
     return blob;
   }
 
-  // MIXED work order (overlay forms + a structured one). buildImagePdf can't be
-  // used because the structured form needs real react-pdf layout, so the baked
-  // overlay pages have to go through react-pdf — the one thing its browser
-  // renderer is pathologically slow at (it hangs the tab, which is what made
-  // previewing a mixed work order look like a crash).
+  // Reaching here with baked overlay pages means a MIXED set (overlay +
+  // structured) was requested as one document. That cannot be rendered well:
+  // the structured form needs react-pdf layout, and react-pdf's browser renderer
+  // hangs the tab on overlay page images — which is exactly what made previewing
+  // a mixed work order look like a crash.
   //
-  // Shrink them to the same budget structured photos already use, which react-pdf
-  // handles routinely. Full-resolution pages are still used for overlay-only
-  // exports above, where buildImagePdf embeds them verbatim.
+  // Callers must therefore split by kind (PDFPreviewModal previews one form at a
+  // time and downloads each kind as its own file). This shrink is only a
+  // last-resort guard so a future caller degrades instead of freezing.
   const baked = new Map(prepared.baked);
   if (baked.size) {
+    console.warn(`[pdf] ${workOrder.id}: overlay + structured forms requested in one document — render them separately instead (see PDFPreviewModal).`);
     const t = performance.now();
     const totalPages = [...baked.values()].reduce((n, ps) => n + ps.length, 0);
     const maxW = overlayWidthForReactPdf(totalPages);
@@ -1000,137 +1002,211 @@ export function PDFPreviewModal({
   getTemplate,
   onClose,
 }: PDFPreviewModalProps) {
-  // Generate the PDF blob EXACTLY ONCE on open, then show it in a plain <iframe>
-  // (the browser's native PDF viewer). This avoids react-pdf's PDFViewer, which
-  // re-generates the document on every render — with an unstable getTemplate
-  // that becomes an infinite regeneration loop that freezes the tab.
+  // A work order can hold overlay forms AND a structured one. Those two need
+  // different renderers, and forcing both through react-pdf hangs the tab — so a
+  // mixed set is never rendered as one document. Instead: preview ONE form at a
+  // time (always fast), and download a tick-box selection, split by renderer.
+  const isOverlayForm = (f: WorkOrderForm) => {
+    const t = getTemplate(f.templateId);
+    return !!t && isOverlay(t);
+  };
+
+  const multi = forms.length > 1;
+  const [picked, setPicked] = useState<Set<string>>(() => new Set(forms.map((f) => f.id)));
+  // null = show the chooser. Single-form work orders skip straight to the preview.
+  const [previewId, setPreviewId] = useState<string | null>(multi ? null : (forms[0]?.id ?? null));
+
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [stage, setStage] = useState('Starting…');
-
-  useEffect(() => {
-    let cancelled = false;
-    let url: string | null = null;
-    // Yield to the browser so the current stage text actually paints before the
-    // next (possibly blocking) step — so a frozen screen shows WHERE it stuck.
-    const paint = () => new Promise((r) => setTimeout(r, 30));
-    (async () => {
-      try {
-        console.log('[pdf] export started');
-        setStage('Rendering the form…');
-        await paint();
-        const blob = await generateWorkOrderPdf(workOrder, forms, getTemplate);
-        if (cancelled) return;
-        url = URL.createObjectURL(blob);
-        setBlobUrl(url);
-      } catch (err) {
-        console.error('[pdf] export failed', err);
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      }
-    })();
-    return () => {
-      cancelled = true;
-      if (url) URL.revokeObjectURL(url);
-    };
-    // Generate once on open — deps intentionally empty (getTemplate isn't stable).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadNote, setDownloadNote] = useState<string | null>(null);
 
   const fileBase = `${workOrder.id} ${workOrder.customer}`
     .replace(/[\\/:*?"<>|]/g, '')
     .replace(/\s+/g, '_');
-  const fileName = `${fileBase}.pdf`;
+  const safeName = (s: string) => s.replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, '_').slice(0, 60);
 
-  const handleDownload = () => {
-    if (!blobUrl) return;
+  // Preview the selected form on its own — one form is by definition one kind,
+  // so this always takes a renderer that can cope.
+  useEffect(() => {
+    if (!previewId) { setBlobUrl(null); return; }
+    const form = forms.find((f) => f.id === previewId);
+    if (!form) return;
+    let cancelled = false;
+    let url: string | null = null;
+    const paint = () => new Promise((r) => setTimeout(r, 30));
+    setBlobUrl(null);
+    setError(null);
+    (async () => {
+      try {
+        setStage('Rendering the form…');
+        await paint();
+        const blob = await generateWorkOrderPdf(workOrder, [form], getTemplate);
+        if (cancelled) return;
+        url = URL.createObjectURL(blob);
+        setBlobUrl(url);
+      } catch (err) {
+        console.error('[pdf] preview failed', err);
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => { cancelled = true; if (url) URL.revokeObjectURL(url); };
+    // getTemplate isn't stable; regenerate only when the chosen form changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewId]);
+
+  const saveBlob = (blob: Blob, name: string) => {
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = blobUrl;
-    a.download = fileName;
+    a.href = url;
+    a.download = name;
     a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
   };
 
+  // Download the ticked forms. Overlay and structured forms are rendered
+  // separately (each group is safe on its own) and zipped when both are present.
+  const handleDownloadSelected = async () => {
+    const chosen = forms.filter((f) => picked.has(f.id));
+    if (!chosen.length) return;
+    setDownloading(true);
+    setDownloadNote(null);
+    try {
+      const overlayForms = chosen.filter(isOverlayForm);
+      const structuredForms = chosen.filter((f) => !isOverlayForm(f));
+      const jobs: { forms: WorkOrderForm[]; suffix: string }[] = [];
+      if (overlayForms.length) jobs.push({ forms: overlayForms, suffix: overlayForms.length === 1 ? safeName(overlayForms[0].label) : 'forms' });
+      if (structuredForms.length) jobs.push({ forms: structuredForms, suffix: structuredForms.length === 1 ? safeName(structuredForms[0].label) : 'report' });
+
+      const out: { name: string; blob: Blob }[] = [];
+      for (const job of jobs) {
+        setStage(`Rendering ${job.suffix}…`);
+        const blob = await generateWorkOrderPdf(workOrder, job.forms, getTemplate);
+        out.push({ name: `${fileBase}_${job.suffix}.pdf`, blob });
+      }
+
+      if (out.length === 1) {
+        saveBlob(out[0].blob, jobs.length === 1 && chosen.length === forms.length ? `${fileBase}.pdf` : out[0].name);
+        setDownloadNote('Downloaded.');
+      } else {
+        const files = await Promise.all(out.map(async (o) => ({ name: o.name, data: new Uint8Array(await o.blob.arrayBuffer()) })));
+        saveBlob(createZipBlob(files), `${fileBase}.zip`);
+        setDownloadNote(`Downloaded ${out.length} PDFs as a zip — overlay and structured forms can't share one file.`);
+      }
+    } catch (err) {
+      console.error('[pdf] download failed', err);
+      setDownloadNote(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const toggle = (id: string) =>
+    setPicked((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+
+  const btnGhost: React.CSSProperties = {
+    padding: '8px 14px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.22)',
+    background: 'transparent', color: C.white, fontFamily: 'Figtree', fontSize: 12,
+    fontWeight: 600, cursor: 'pointer',
+  };
+
+  const previewForm = previewId ? forms.find((f) => f.id === previewId) ?? null : null;
+
   return (
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(20,20,20,0.86)',
-        zIndex: 2000,
-        display: 'flex',
-        flexDirection: 'column',
-      }}
-    >
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(20,20,20,0.86)', zIndex: 2000, display: 'flex', flexDirection: 'column' }}>
       {/* Action bar */}
-      <div
-        style={{
-          background: '#1a1a1a',
-          padding: '14px 24px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          color: C.white,
-          flexShrink: 0,
-          flexWrap: 'wrap',
-        }}
-      >
+      <div style={{ background: '#1a1a1a', padding: '14px 24px', display: 'flex', alignItems: 'center', gap: 12, color: C.white, flexShrink: 0, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: '-0.01em' }}>
-            PDF Preview
+            {previewForm ? `Preview · ${previewForm.label}` : 'Export PDF'}
           </div>
           <div style={{ fontSize: 11, opacity: 0.7 }}>
             {workOrder.id} · {workOrder.customer} · {forms.length} form{forms.length === 1 ? '' : 's'}
           </div>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.6)', marginRight: 6 }}>
-            Rendered with @react-pdf/renderer · preview = download
-          </span>
-          <button
-            onClick={onClose}
-            style={{
-              padding: '8px 14px',
-              borderRadius: 8,
-              border: '1px solid rgba(255,255,255,0.22)',
-              background: 'transparent',
-              color: C.white,
-              fontFamily: 'Figtree',
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
-          >
-            Close
-          </button>
-          <button
-            onClick={handleDownload}
-            disabled={!blobUrl}
-            style={{
-              padding: '8px 18px',
-              borderRadius: 8,
-              border: 'none',
-              background: !blobUrl ? '#7BB985' : C.green,
-              color: C.white,
-              fontFamily: 'Figtree',
-              fontSize: 13,
-              fontWeight: 700,
-              cursor: !blobUrl ? 'default' : 'pointer',
-            }}
-          >
-            <DownloadIcon size={12} strokeWidth={2.25} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }}/> Download PDF
-          </button>
+          {previewForm && multi && (
+            <button onClick={() => setPreviewId(null)} style={btnGhost}>← All forms</button>
+          )}
+          <button onClick={onClose} style={btnGhost}>Close</button>
+          {previewForm && (
+            <button
+              onClick={() => {
+                // The previewed blob is already rendered — just save it.
+                if (!blobUrl) return;
+                const a = document.createElement('a');
+                a.href = blobUrl;
+                a.download = `${fileBase}_${safeName(previewForm.label)}.pdf`;
+                a.click();
+              }}
+              disabled={!blobUrl}
+              style={{ padding: '8px 18px', borderRadius: 8, border: 'none', background: !blobUrl ? '#7BB985' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: !blobUrl ? 'default' : 'pointer' }}
+            >
+              <DownloadIcon size={12} strokeWidth={2.25} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }} /> Download this form
+            </button>
+          )}
         </div>
       </div>
 
-      {/* PDF viewer */}
-      <div
-        style={{
-          flex: 1,
-          background: '#3a3a3a',
-          padding: 16,
-          overflow: 'hidden',
-        }}
-      >
-        {error ? (
+      {/* Body: chooser, or the single-form preview */}
+      <div style={{ flex: 1, background: '#3a3a3a', padding: 16, overflow: 'auto' }}>
+        {!previewForm ? (
+          <div style={{ maxWidth: 640, margin: '0 auto', background: C.white, borderRadius: 14, padding: 22, display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: C.green }}>Choose what to export</div>
+              <div style={{ fontSize: 12, color: C.slate, marginTop: 4, lineHeight: 1.5 }}>
+                This work order has {forms.length} forms. Preview them one at a time, or tick the ones you want and download.
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {forms.map((f) => {
+                const on = picked.has(f.id);
+                const overlay = isOverlayForm(f);
+                return (
+                  <div key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10, border: `1px solid ${on ? C.green : '#EBEBEB'}`, background: on ? C.honeydew : C.white }}>
+                    <input
+                      type="checkbox" checked={on} onChange={() => toggle(f.id)}
+                      style={{ width: 16, height: 16, accentColor: C.green, cursor: 'pointer', flexShrink: 0 }}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.label}</div>
+                      <div style={{ fontSize: 11, color: C.slate }}>{overlay ? 'Overlay form' : 'Structured report'}</div>
+                    </div>
+                    <button
+                      onClick={() => setPreviewId(f.id)}
+                      style={{ padding: '6px 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', flexShrink: 0 }}
+                    >
+                      Preview
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+
+            {downloadNote && (
+              <div style={{ fontSize: 11.5, color: C.slate, background: C.seasalt, borderRadius: 8, padding: '8px 10px', lineHeight: 1.5 }}>{downloadNote}</div>
+            )}
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <button
+                onClick={() => setPicked(picked.size === forms.length ? new Set() : new Set(forms.map((f) => f.id)))}
+                style={{ padding: '8px 14px', borderRadius: 10, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}
+              >
+                {picked.size === forms.length ? 'Clear all' : 'Select all'}
+              </button>
+              <button
+                onClick={() => void handleDownloadSelected()}
+                disabled={!picked.size || downloading}
+                style={{ marginLeft: 'auto', padding: '9px 20px', borderRadius: 10, border: 'none', background: !picked.size || downloading ? '#9DC7A6' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: !picked.size || downloading ? 'default' : 'pointer' }}
+              >
+                <DownloadIcon size={12} strokeWidth={2.25} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }} />
+                {downloading ? `${stage}` : `Download ${picked.size} selected`}
+              </button>
+            </div>
+          </div>
+        ) : error ? (
           <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.white, fontSize: 13, opacity: 0.85, textAlign: 'center', padding: 24 }}>
             <div style={{ maxWidth: 420 }}>
               <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>Couldn’t generate the PDF</div>
@@ -1140,7 +1216,7 @@ export function PDFPreviewModal({
         ) : !blobUrl ? (
           <div style={{ height: '100%', display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'center', justifyContent: 'center', color: C.white, fontSize: 13, opacity: 0.85 }}>
             <div>{stage}</div>
-            <div style={{ fontSize: 11, opacity: 0.6 }}>If this stays stuck, tell support which step it stopped on.</div>
+            <div style={{ fontSize: 11, opacity: 0.6 }}>Rendering one form at a time keeps this fast.</div>
           </div>
         ) : (
           <iframe
