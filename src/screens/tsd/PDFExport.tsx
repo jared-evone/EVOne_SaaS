@@ -341,24 +341,59 @@ function drawCross(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.restore();
 }
 
-function drawWrappedText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, w: number, h: number, fontPx: number, fontFamily = 'Figtree, Arial, sans-serif') {
-  ctx.save();
-  ctx.fillStyle = '#1a1a1a';
-  ctx.font = `${fontPx}px ${fontFamily}`;
-  ctx.textBaseline = 'top';
-  const lineH = fontPx * 1.22;
-  const words = text.split(/\s+/);
-  const lines: string[] = [];
-  let line = '';
-  for (const word of words) {
-    const test = line ? `${line} ${word}` : word;
-    if (ctx.measureText(test).width > w - 4 && line) { lines.push(line); line = word; }
-    else line = test;
+// Split text into lines that fit `maxW` at the ctx's current font. Honours
+// explicit newlines, and hard-breaks a single word that is itself too wide
+// (a long URL / part number) instead of letting it run past the box.
+function wrapToWidth(ctx: CanvasRenderingContext2D, text: string, maxW: number): string[] {
+  const out: string[] = [];
+  for (const para of text.split(/\r?\n/)) {
+    const words = para.split(/\s+/).filter(Boolean);
+    if (!words.length) { out.push(''); continue; }
+    let line = '';
+    for (const word of words) {
+      const test = line ? `${line} ${word}` : word;
+      if (ctx.measureText(test).width <= maxW) { line = test; continue; }
+      if (line) { out.push(line); line = ''; }
+      if (ctx.measureText(word).width <= maxW) { line = word; continue; }
+      // Word alone overflows — break it across lines by character.
+      let chunk = '';
+      for (const ch of word) {
+        if (chunk && ctx.measureText(chunk + ch).width > maxW) { out.push(chunk); chunk = ch; }
+        else chunk += ch;
+      }
+      line = chunk;
+    }
+    if (line) out.push(line);
   }
-  if (line) lines.push(line);
-  const maxLines = Math.max(1, Math.floor(h / lineH));
-  let ty = y + Math.max(1, (h - Math.min(lines.length, maxLines) * lineH) / 2);
-  for (let i = 0; i < lines.length && i < maxLines; i++) { ctx.fillText(lines[i], x + 2, ty); ty += lineH; }
+  return out;
+}
+
+// Draw text inside a field box. Text is wrapped, and if it still doesn't fit the
+// box height the font shrinks until it does — so a long remark is never silently
+// truncated (the old behaviour dropped every line past the first that fit) and
+// never spills outside its cell. The box is clipped as a final guarantee.
+function drawWrappedText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, w: number, h: number, fontPx: number, fontFamily = 'Figtree, Arial, sans-serif') {
+  const maxW = Math.max(1, w - 4);
+  const MIN_PX = 5;
+  let size = Math.max(MIN_PX, fontPx);
+  let lines: string[] = [];
+  for (;;) {
+    ctx.font = `${size}px ${fontFamily}`;
+    lines = wrapToWidth(ctx, text, maxW);
+    if (lines.length * (size * 1.22) <= h || size <= MIN_PX) break;
+    size = Math.max(MIN_PX, size - 0.5);
+  }
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.clip();
+  ctx.fillStyle = '#1a1a1a';
+  ctx.font = `${size}px ${fontFamily}`;
+  ctx.textBaseline = 'top';
+  const lineH = size * 1.22;
+  let ty = y + Math.max(1, (h - lines.length * lineH) / 2);
+  for (const ln of lines) { ctx.fillText(ln, x + 2, ty); ty += lineH; }
   ctx.restore();
 }
 

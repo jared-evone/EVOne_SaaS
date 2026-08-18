@@ -1054,6 +1054,7 @@ function OverlayInput({
       <textarea
         value={strVal}
         disabled={disabled}
+        maxLength={fieldTextCapacity(field).maxChars}
         onChange={(e) => onChange(e.target.value)}
         placeholder={field.label}
         style={{
@@ -1066,9 +1067,38 @@ function OverlayInput({
           padding: '4px 6px',
           resize: 'none',
           outline: 'none',
-          lineHeight: 1.4,
+          lineHeight: 1.22,
+          overflowY: 'auto',
           color: '#1a1a1a',
         }}
+      />
+    );
+  }
+
+  // A box tall enough for several lines must WRAP on screen exactly as the PDF
+  // does, otherwise a long remark looks like one runaway line here and a neat
+  // paragraph in the export. Single-line boxes keep the plain input.
+  const cap = fieldTextCapacity(field);
+  const commonText: React.CSSProperties = {
+    ...base,
+    background: 'rgba(255,255,255,0.85)',
+    border: `1px solid ${disabled ? 'transparent' : '#DADADA'}`,
+    borderRadius: 4,
+    fontFamily: 'Figtree',
+    fontSize: textFont ?? 12,
+    outline: 'none',
+    color: '#1a1a1a',
+  };
+
+  if (cap.lines > 1) {
+    return (
+      <textarea
+        value={strVal}
+        disabled={disabled}
+        maxLength={cap.maxChars}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={field.label}
+        style={{ ...commonText, padding: '2px 6px', resize: 'none', lineHeight: 1.22, overflowY: 'auto' }}
       />
     );
   }
@@ -1078,19 +1108,10 @@ function OverlayInput({
       type="text"
       value={strVal}
       disabled={disabled}
+      maxLength={cap.maxChars}
       onChange={(e) => onChange(e.target.value)}
       placeholder={field.label}
-      style={{
-        ...base,
-        background: 'rgba(255,255,255,0.85)',
-        border: `1px solid ${disabled ? 'transparent' : '#DADADA'}`,
-        borderRadius: 4,
-        fontFamily: 'Figtree',
-        fontSize: textFont ?? 12,
-        padding: '2px 6px',
-        outline: 'none',
-        color: '#1a1a1a',
-      }}
+      style={{ ...commonText, padding: '2px 6px' }}
     />
   );
 }
@@ -1149,6 +1170,37 @@ function OverlaySignature({
       }}
     />
   );
+}
+
+// How much text a field box can hold, and whether it is tall enough to wrap.
+//
+// Geometry is in page-percent: `height`/`width` are % of the page, and an
+// explicit `fontSize` is % of page HEIGHT (the cqh unit used for rendering).
+// A4 is 210×297, so one page-width unit is 0.707 page-height units — that's what
+// converts the width into the same space as the font size.
+const PAGE_ASPECT = 210 / 297;
+// Smallest size the exported PDF will shrink to before text would get unreadable.
+const MIN_READABLE_FONT_PCT = 1.2;
+
+export function fieldTextCapacity(field: { width?: number; height?: number; fontSize?: number }) {
+  const h = field.height ?? 5;
+  const w = field.width ?? 10;
+  // Mirror the exporter's auto-size exactly: ≈62% of the box height, but clamped
+  // to 8–15px on its ~1980px-tall A4 canvas (see flattenOverlayPage). Without the
+  // 15px cap a tall box would look like one giant line instead of a paragraph.
+  const PCT = (px: number) => (px / 1980) * 100;
+  const font = field.fontSize ?? Math.min(Math.max(h * 0.62, PCT(8)), PCT(15));
+  const lines = Math.max(1, Math.floor(h / (font * 1.22)));
+  // At the shrink floor, how many lines/chars could still fit.
+  const minLines = Math.max(1, Math.floor(h / (MIN_READABLE_FONT_PCT * 1.22)));
+  const charsPerLine = Math.max(4, Math.floor((w * PAGE_ASPECT) / (MIN_READABLE_FONT_PCT * 0.5)));
+  return {
+    /** Lines at the field's normal size — >1 means it should wrap. */
+    lines,
+    /** Generous character ceiling: what still fits once the PDF shrinks to its
+     *  floor. Reasonable prose never hits this; it only stops runaway input. */
+    maxChars: minLines * charsPerLine,
+  };
 }
 
 // ── Convenience: which kind is this template? ────────────────────
