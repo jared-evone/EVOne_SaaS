@@ -4,10 +4,12 @@ import { supabase } from '../../lib/supabase';
 import { useIsMobile } from '../../lib/useIsMobile';
 import { usePermissions } from '../../permissions';
 import { Logo } from '../../components/Logo';
-import { Download as DownloadIcon, Power, Trash2 } from 'lucide-react';
+import { Download as DownloadIcon, Power, Trash2, Search, X } from 'lucide-react';
+import { SearchSelect } from '../../components/SearchSelect';
 import {
   DEMO_PIC,
   STATUS_COLORS,
+  assigneesLabel,
   useWorkOrderStore,
   type WorkOrder,
   type WorkOrderForm,
@@ -162,8 +164,11 @@ export function PICReviewBoard() {
   const [fThisMonth, setFThisMonth] = useState(false);
   const [fCpo, setFCpo] = useState(false);
   const [fSynced, setFSynced] = useState(false);
+  // Free-text search + an exact company picker. Both apply to either tab.
+  const [search, setSearch] = useState('');
+  const [company, setCompany] = useState('');
   const [page, setPage] = useState(1);
-  useEffect(() => { setPage(1); }, [tab, fThisMonth, fCpo, fSynced]);
+  useEffect(() => { setPage(1); }, [tab, fThisMonth, fCpo, fSynced, search, company]);
 
   const thisMonth = (() => {
     const d = new Date();
@@ -172,12 +177,37 @@ export function PICReviewBoard() {
   const woDate = (w: WorkOrder) => w.response?.submittedAt || w.scheduledDate || '';
   const isCpoWo = (w: WorkOrder) => !!w.customerId && cpoIds.has(w.customerId);
 
-  const filtered = tab === 'completed'
+  // Everything a reviewer might recognise a job by — ref, company, site, title,
+  // technician, category, submitted date.
+  const haystack = (w: WorkOrder) =>
+    [w.id, w.customer, w.site ?? '', w.title, assigneesLabel(w, ''), w.category ?? '', woDate(w)]
+      .join(' ')
+      .toLowerCase();
+
+  const tabList = tab === 'completed' ? done : pending;
+  const q = search.trim().toLowerCase();
+  const matchesSearch = (w: WorkOrder) => !q || haystack(w).includes(q);
+  const matchesCompany = (w: WorkOrder) => !company || w.customer === company;
+
+  // Company options come from the current tab, so every choice yields results.
+  const companyOptions = (() => {
+    const counts = new Map<string, number>();
+    for (const w of tabList) if (w.customer) counts.set(w.customer, (counts.get(w.customer) ?? 0) + 1);
+    return [
+      { value: '', label: 'All companies' },
+      ...[...counts.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([name, n]) => ({ value: name, label: name, sub: `${n} report${n === 1 ? '' : 's'}` })),
+    ];
+  })();
+
+  const filtered = (tab === 'completed'
     ? done.filter((w) =>
         (!fThisMonth || woDate(w).startsWith(thisMonth)) &&
         (!fCpo || isCpoWo(w)) &&
         (!fSynced || pushedIds.has(w.id)))
-    : pending;
+    : pending
+  ).filter((w) => matchesSearch(w) && matchesCompany(w));
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PER_PAGE));
   const safePage = Math.min(page, totalPages);
@@ -201,6 +231,41 @@ export function PICReviewBoard() {
             </button>
           ))}
         </div>
+        {/* Search: free text over ref / company / site / title / tech, plus an
+            exact company picker for a long customer list. */}
+        <div style={{ position: 'relative' }}>
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search ref, company, site, tech…"
+            style={{ width: '100%', padding: '8px 30px 8px 32px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12.5, outline: 'none', background: C.white, boxSizing: 'border-box' }}
+          />
+          <span style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: C.slate, display: 'inline-flex' }}>
+            <Search size={13} />
+          </span>
+          {search && (
+            <button onClick={() => setSearch('')} title="Clear search"
+              style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', width: 18, height: 18, borderRadius: 99, border: 'none', background: '#F3F3F3', color: C.slate, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}>
+              <X size={11} strokeWidth={2.5} />
+            </button>
+          )}
+        </div>
+        <SearchSelect
+          value={company}
+          options={companyOptions}
+          onChange={setCompany}
+          placeholder="All companies"
+          emptyText="No matching company"
+        />
+        {(search || company) && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: C.slate, fontWeight: 600 }}>
+            <span>{filtered.length} match{filtered.length === 1 ? '' : 'es'}</span>
+            <button onClick={() => { setSearch(''); setCompany(''); }}
+              style={{ marginLeft: 'auto', padding: '3px 10px', borderRadius: 99, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+              Clear filters
+            </button>
+          </div>
+        )}
         {tab === 'completed' && (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {([
@@ -227,9 +292,11 @@ export function PICReviewBoard() {
               border: '1px dashed #EBEBEB',
             }}
           >
-            {tab === 'pending'
-              ? 'No reports waiting for review.'
-              : (fThisMonth || fCpo || fSynced) ? 'No completed reports match these filters.' : 'No completed reports yet.'}
+            {(search || company)
+              ? 'No reports match your search.'
+              : tab === 'pending'
+                ? 'No reports waiting for review.'
+                : (fThisMonth || fCpo || fSynced) ? 'No completed reports match these filters.' : 'No completed reports yet.'}
           </div>
         )}
         {visible.map((w) => {
@@ -276,7 +343,7 @@ export function PICReviewBoard() {
               </div>
               <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{w.title || w.customer}</div>
               <div style={{ fontSize: 12, color: C.slate }}>{w.customer}</div>
-              <div style={{ fontSize: 11, color: C.slate }}>{w.product ? `${w.product} · ` : ''}{w.assignedTo ?? '—'}</div>
+              <div style={{ fontSize: 11, color: C.slate }}>{w.product ? `${w.product} · ` : ''}{assigneesLabel(w, '—')}</div>
               {w.response?.submittedAt && (
                 <div style={{ fontSize: 10, color: C.slate, marginTop: 2 }}>
                   Submitted {w.response.submittedAt}
