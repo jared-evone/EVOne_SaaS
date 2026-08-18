@@ -32,6 +32,7 @@ import { C } from '../../theme';
 import { isOverlay, pagesOf, SIGNATURE_FONT } from './OverlayForm';
 import { buildImagePdf } from './imagePdf';
 import { fetchToDataUrl, isStoredImageUrl } from '../../lib/formMedia';
+import { assigneesLabel } from '../../workOrderStore';
 import type { FormField, FormTemplate, FormValues, OverlayPage, WorkOrder, WorkOrderForm } from '../../workOrderStore';
 
 // ─── Brand tokens scoped to react-pdf (no media queries / no `var`) ──
@@ -544,6 +545,17 @@ export async function preparePdfExport(
   return { forms: lightForms, getTemplate, baked };
 }
 
+// Widest a baked overlay page is handed to react-pdf at (mixed exports only).
+// react-pdf's browser renderer degrades with TOTAL pixels, not page count, so the
+// budget is shared: a 2-page form keeps ~120 DPI, while a 7-page one drops to
+// ~85 DPI rather than hanging the tab. Overlay-only exports bypass react-pdf
+// entirely (buildImagePdf) and keep full resolution.
+function overlayWidthForReactPdf(pageCount: number): number {
+  if (pageCount <= 2) return 1000;
+  if (pageCount <= 4) return 850;
+  return 700;
+}
+
 // Single entry point for producing a work-order PDF blob. Overlay-only exports
 // (which freeze react-pdf's browser renderer) are assembled directly from the
 // baked page images; anything with a structured form still uses react-pdf.
@@ -565,8 +577,36 @@ export async function generateWorkOrderPdf(
     return blob;
   }
 
+  // MIXED work order (overlay forms + a structured one). buildImagePdf can't be
+  // used because the structured form needs real react-pdf layout, so the baked
+  // overlay pages have to go through react-pdf — the one thing its browser
+  // renderer is pathologically slow at (it hangs the tab, which is what made
+  // previewing a mixed work order look like a crash).
+  //
+  // Shrink them to the same budget structured photos already use, which react-pdf
+  // handles routinely. Full-resolution pages are still used for overlay-only
+  // exports above, where buildImagePdf embeds them verbatim.
+  const baked = new Map(prepared.baked);
+  if (baked.size) {
+    const t = performance.now();
+    const totalPages = [...baked.values()].reduce((n, ps) => n + ps.length, 0);
+    const maxW = overlayWidthForReactPdf(totalPages);
+    let before = 0, after = 0;
+    for (const [formId, pages] of baked) {
+      const shrunk: BakedPage[] = [];
+      for (const p of pages) {
+        before += p.src.length;
+        const small = await downscaleDataUrl(p.src, maxW, 0.7);
+        shrunk.push(small ? { src: small.src, w: small.w, h: small.h } : p);
+        after += (small ? small.src : p.src).length;
+      }
+      baked.set(formId, shrunk);
+    }
+    console.log(`[pdf] mixed export: shrank ${totalPages} overlay pages to ${maxW}px wide, ${Math.round(before / 1024)}KB → ${Math.round(after / 1024)}KB in ${Math.round(performance.now() - t)}ms`);
+  }
+
   return pdf(
-    <WorkOrderDocument workOrder={workOrder} forms={prepared.forms} getTemplate={prepared.getTemplate} baked={prepared.baked} />,
+    <WorkOrderDocument workOrder={workOrder} forms={prepared.forms} getTemplate={prepared.getTemplate} baked={baked} />,
   ).toBlob();
 }
 
@@ -627,7 +667,7 @@ export function WorkOrderDocument({
                 <Text style={styles.metaLine}><Text style={styles.metaLabel}>Ref: </Text>{workOrder.id}</Text>
                 <Text style={styles.metaLine}><Text style={styles.metaLabel}>Customer: </Text>{workOrder.customer}</Text>
                 <Text style={styles.metaLine}><Text style={styles.metaLabel}>Scheduled: </Text>{workOrder.scheduledDate}</Text>
-                <Text style={styles.metaLine}><Text style={styles.metaLabel}>Technician: </Text>{workOrder.assignedTo ?? '—'}</Text>
+                <Text style={styles.metaLine}><Text style={styles.metaLabel}>Technician: </Text>{assigneesLabel(workOrder, '—')}</Text>
               </View>
             </View>
 
