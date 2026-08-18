@@ -5,11 +5,12 @@ import { useIsMobile } from '../../lib/useIsMobile';
 import { usePermissions } from '../../permissions';
 import { Logo } from '../../components/Logo';
 import { Download as DownloadIcon, Power, Trash2, Search, X } from 'lucide-react';
-import { SearchSelect } from '../../components/SearchSelect';
+import { FilterSelect, selectionCount, type FilterGroup, type FilterSelection } from '../../components/FilterSelect';
 import {
   DEMO_PIC,
   STATUS_COLORS,
   assigneesLabel,
+  assigneesOf,
   useWorkOrderStore,
   type WorkOrder,
   type WorkOrderForm,
@@ -161,14 +162,12 @@ export function PICReviewBoard() {
 
   // Completed can grow without bound, so it gets filter pills + paging. Each pill
   // is an independent toggle; combining them narrows further.
-  const [fThisMonth, setFThisMonth] = useState(false);
-  const [fCpo, setFCpo] = useState(false);
-  const [fSynced, setFSynced] = useState(false);
-  // Free-text search + an exact company picker. Both apply to either tab.
+  // Everything narrows through two controls: a free-text box and one grouped
+  // multi-select. Values within a group are OR'd, groups are AND'd.
   const [search, setSearch] = useState('');
-  const [company, setCompany] = useState('');
+  const [filters, setFilters] = useState<FilterSelection>({});
   const [page, setPage] = useState(1);
-  useEffect(() => { setPage(1); }, [tab, fThisMonth, fCpo, fSynced, search, company]);
+  useEffect(() => { setPage(1); }, [tab, search, filters]);
 
   const thisMonth = (() => {
     const d = new Date();
@@ -187,27 +186,55 @@ export function PICReviewBoard() {
   const tabList = tab === 'completed' ? done : pending;
   const q = search.trim().toLowerCase();
   const matchesSearch = (w: WorkOrder) => !q || haystack(w).includes(q);
-  const matchesCompany = (w: WorkOrder) => !company || w.customer === company;
 
-  // Company options come from the current tab, so every choice yields results.
-  const companyOptions = (() => {
-    const counts = new Map<string, number>();
-    for (const w of tabList) if (w.customer) counts.set(w.customer, (counts.get(w.customer) ?? 0) + 1);
-    return [
-      { value: '', label: 'All companies' },
-      ...[...counts.entries()]
-        .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([name, n]) => ({ value: name, label: name, sub: `${n} report${n === 1 ? '' : 's'}` })),
-    ];
-  })();
+  // Facet values, each derived from the CURRENT tab so no option is a dead end.
+  const countBy = (pick: (w: WorkOrder) => string[]) => {
+    const m = new Map<string, number>();
+    for (const w of tabList) for (const v of pick(w)) if (v) m.set(v, (m.get(v) ?? 0) + 1);
+    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  };
+  const asOptions = (rows: [string, number][]) =>
+    rows.map(([v, n]) => ({ value: v, label: v, sub: String(n) }));
 
-  const filtered = (tab === 'completed'
-    ? done.filter((w) =>
-        (!fThisMonth || woDate(w).startsWith(thisMonth)) &&
-        (!fCpo || isCpoWo(w)) &&
-        (!fSynced || pushedIds.has(w.id)))
-    : pending
-  ).filter((w) => matchesSearch(w) && matchesCompany(w));
+  const groups: FilterGroup[] = [
+    {
+      key: 'type', label: 'Charger type',
+      options: [
+        { value: 'cpo', label: 'CPO', sub: String(tabList.filter(isCpoWo).length) },
+        { value: 'non_cpo', label: 'Non-CPO', sub: String(tabList.filter((w) => !isCpoWo(w)).length) },
+      ],
+    },
+    ...(tab === 'completed' ? [{
+      key: 'sync', label: 'CPO sync',
+      options: [
+        { value: 'synced', label: 'Synced', sub: String(tabList.filter((w) => pushedIds.has(w.id)).length) },
+        { value: 'not_synced', label: 'Not synced', sub: String(tabList.filter((w) => !pushedIds.has(w.id)).length) },
+      ],
+    } as FilterGroup] : []),
+    {
+      key: 'date', label: 'Date',
+      options: [{ value: 'this_month', label: 'This month', sub: String(tabList.filter((w) => woDate(w).startsWith(thisMonth)).length) }],
+    },
+    { key: 'tech',     label: 'Technician', options: asOptions(countBy((w) => assigneesOf(w))) },
+    { key: 'category', label: 'Category',   options: asOptions(countBy((w) => [w.category ?? ''])) },
+    { key: 'company',  label: 'Company',    options: asOptions(countBy((w) => [w.customer])) },
+  ].filter((g) => g.options.length > 0);
+
+  // OR within a group, AND across groups.
+  const anyOf = (key: string, test: (v: string) => boolean) => {
+    const vs = filters[key];
+    return !vs?.length || vs.some(test);
+  };
+  const matchesFilters = (w: WorkOrder) =>
+    anyOf('type',     (v) => (v === 'cpo' ? isCpoWo(w) : !isCpoWo(w))) &&
+    anyOf('sync',     (v) => (v === 'synced' ? pushedIds.has(w.id) : !pushedIds.has(w.id))) &&
+    anyOf('date',     () => woDate(w).startsWith(thisMonth)) &&
+    anyOf('tech',     (v) => assigneesOf(w).includes(v)) &&
+    anyOf('category', (v) => (w.category ?? '') === v) &&
+    anyOf('company',  (v) => w.customer === v);
+
+  const filtered = tabList.filter((w) => matchesSearch(w) && matchesFilters(w));
+  const activeFilters = selectionCount(filters);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PER_PAGE));
   const safePage = Math.min(page, totalPages);
@@ -250,34 +277,14 @@ export function PICReviewBoard() {
             </button>
           )}
         </div>
-        <SearchSelect
-          value={company}
-          options={companyOptions}
-          onChange={setCompany}
-          placeholder="All companies"
-          emptyText="No matching company"
-        />
-        {(search || company) && (
+        <FilterSelect groups={groups} selected={filters} onChange={setFilters} placeholder="All reports" />
+        {(search || activeFilters > 0) && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: C.slate, fontWeight: 600 }}>
             <span>{filtered.length} match{filtered.length === 1 ? '' : 'es'}</span>
-            <button onClick={() => { setSearch(''); setCompany(''); }}
+            <button onClick={() => { setSearch(''); setFilters({}); }}
               style={{ marginLeft: 'auto', padding: '3px 10px', borderRadius: 99, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
-              Clear filters
+              Clear all
             </button>
-          </div>
-        )}
-        {tab === 'completed' && (
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {([
-              ['This month', fThisMonth, setFThisMonth],
-              ['CPO', fCpo, setFCpo],
-              ['Synced', fSynced, setFSynced],
-            ] as const).map(([label, on, set]) => (
-              <button key={label} onClick={() => set(!on)}
-                style={{ padding: '5px 12px', borderRadius: 99, border: `1px solid ${on ? C.green : '#EBEBEB'}`, background: on ? C.green : C.white, color: on ? C.white : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                {label}
-              </button>
-            ))}
           </div>
         )}
         {filtered.length === 0 && (
@@ -292,11 +299,11 @@ export function PICReviewBoard() {
               border: '1px dashed #EBEBEB',
             }}
           >
-            {(search || company)
+            {(search || activeFilters > 0)
               ? 'No reports match your search.'
               : tab === 'pending'
                 ? 'No reports waiting for review.'
-                : (fThisMonth || fCpo || fSynced) ? 'No completed reports match these filters.' : 'No completed reports yet.'}
+                : 'No completed reports yet.'}
           </div>
         )}
         {visible.map((w) => {
