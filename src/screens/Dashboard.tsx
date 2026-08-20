@@ -155,13 +155,6 @@ export function ScreenDashboard() {
 
   return (
     <div style={{ padding: 28, display: 'flex', flexDirection: 'column', gap: 20, overflowY: 'auto' }}>
-      <div>
-        <div style={{ fontSize: 18, fontWeight: 700, color: C.green, letterSpacing: '-0.02em' }}>Dashboard</div>
-        <div style={{ fontSize: 12, color: C.slate, marginTop: 4 }}>
-          Operational snapshot across every project — chargers, sites, and warranty health.
-        </div>
-      </div>
-
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14 }}>
         <KPICard label="Projects"          value={totalProjects.toString()}     accent sub={`${activeProjects} active`} />
         <KPICard label="Sites"             value={totalSites.toString()}        sub={`${sitesWithCoords.length} mapped`} />
