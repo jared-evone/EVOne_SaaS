@@ -8,19 +8,26 @@ import { Search, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Handshake, F
 
 // ── Types ─────────────────────────────────────────────────────────
 
-// 'Long-term' is a tender submission that may take years to convert. It is a
-// parked record, NOT active pipeline: it's deliberately excluded from pipeline
-// value, open quotes and win rate (those check Draft/Sent/Won/Lost explicitly,
-// here and in SalesManager), so a multi-year lead can't flatter this month's
-// numbers. It is also not "decided", so it carries no outcome date.
-export type QuoteStatus = 'Draft' | 'Sent' | 'Won' | 'Long-term' | 'Lost';
-export const QUOTE_STATUSES: QuoteStatus[] = ['Draft', 'Sent', 'Won', 'Long-term', 'Lost'];
+// Two PARKED statuses record leads that shouldn't be chased right now:
+//   'Long-term' — a tender submission that may take years to convert.
+//   'On hold'   — the customer has paused it; not for current follow-up.
+// Neither is active pipeline: both are deliberately excluded from pipeline value,
+// open quotes and win rate (those test Draft/Sent/Won/Lost explicitly, here and in
+// SalesManager), so a parked lead can't flatter this month's numbers. Neither is
+// "decided" either, so they carry no outcome date.
+export type QuoteStatus = 'Draft' | 'Sent' | 'Won' | 'Long-term' | 'On hold' | 'Lost';
+export const QUOTE_STATUSES: QuoteStatus[] = ['Draft', 'Sent', 'Won', 'Long-term', 'On hold', 'Lost'];
+
+// The parked statuses SHARE one board column (switchable in its header) rather
+// than each taking a column — six columns would crowd the board.
+export const PARKED_STATUSES = ['Long-term', 'On hold'] as const satisfies readonly QuoteStatus[];
 
 export const QUOTE_STATUS_COLORS: Record<QuoteStatus, { bg: string; color: string }> = {
   Draft:       { bg: '#F3F3F3', color: '#767B77' },
   Sent:        { bg: '#E3F0FF', color: '#1A62C0' },
   Won:         { bg: '#E4F3E3', color: '#1B512D' },
   'Long-term': { bg: '#F0E8FF', color: '#6B21A8' },
+  'On hold':   { bg: '#FFF0E0', color: '#B45309' },
   Lost:        { bg: '#FDEAEA', color: '#C0321A' },
 };
 
@@ -445,6 +452,11 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
 }) {
   const [dragOver, setDragOver] = useState<QuoteStatus | null>(null);
   const [pages, setPages] = useState<Record<string, number>>({});
+  // The board is five columns wide. The fourth is a single "parked" slot that
+  // shows either Long-term or On hold — switched from its own header, so both
+  // statuses are reachable without a sixth column crowding the board.
+  const [parked, setParked] = useState<QuoteStatus>('Long-term');
+  const SLOTS = ['Draft', 'Sent', 'Won', 'parked', 'Lost'] as const;
   const PER_PAGE = 5;
   // Every card is the SAME height and every column reserves a full page of slots,
   // so nothing reflows when a card has notes, a long name, or when paging lands on
@@ -455,8 +467,10 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
 
   return (
     <div style={{ overflowX: 'auto' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${QUOTE_STATUSES.length}, minmax(230px, 1fr))`, gap: 12, minWidth: QUOTE_STATUSES.length * 230 + (QUOTE_STATUSES.length - 1) * 12 }}>
-        {QUOTE_STATUSES.map((status) => {
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${SLOTS.length}, minmax(230px, 1fr))`, gap: 12, minWidth: SLOTS.length * 230 + (SLOTS.length - 1) * 12 }}>
+        {SLOTS.map((slot) => {
+          const isParkedSlot = slot === 'parked';
+          const status: QuoteStatus = isParkedSlot ? parked : (slot as QuoteStatus);
           const col = quotes.filter((q) => q.status === status);
           const colValue = col.reduce((s, q) => s + Number(q.total), 0);
           const sc = QUOTE_STATUS_COLORS[status];
@@ -466,7 +480,7 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
           const pageCol = col.slice(page * PER_PAGE, page * PER_PAGE + PER_PAGE);
           const setPage = (p: number) => setPages((prev) => ({ ...prev, [status]: Math.max(0, Math.min(totalPages - 1, p)) }));
           return (
-            <div key={status}
+            <div key={slot}
               onDragOver={canEdit ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dragOver !== status) setDragOver(status); } : undefined}
               onDragLeave={canEdit ? () => setDragOver((d) => (d === status ? null : d)) : undefined}
               onDrop={canEdit ? (e) => {
@@ -481,9 +495,33 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                 border: `1.5px solid ${isTarget ? C.green : 'transparent'}`,
                 borderRadius: 14, padding: 10, display: 'flex', flexDirection: 'column', gap: 10,
               }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 4px' }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: sc.color, background: sc.bg, padding: '3px 10px', borderRadius: 99 }}>{status}</span>
-                <span style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>{col.length}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 4px' }}>
+                {isParkedSlot ? (
+                  // Both parked statuses are shown with their counts, so the hidden
+                  // one is still visible at a glance; clicking switches the column.
+                  PARKED_STATUSES.map((ps) => {
+                    const on = ps === parked;
+                    const pc = QUOTE_STATUS_COLORS[ps];
+                    const n = quotes.filter((q) => q.status === ps).length;
+                    return (
+                      <button key={ps} onClick={() => setParked(ps)} title={`Show ${ps} quotes`}
+                        style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px', borderRadius: 99,
+                          border: `1px solid ${on ? pc.color : '#E0E5E9'}`,
+                          background: on ? pc.bg : 'transparent',
+                          color: on ? pc.color : C.slate,
+                          fontFamily: 'Figtree', fontSize: 11.5, fontWeight: 700, cursor: 'pointer',
+                        }}>
+                        {ps}<span style={{ opacity: on ? 0.75 : 0.6 }}>{n}</span>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: sc.color, background: sc.bg, padding: '3px 10px', borderRadius: 99 }}>{status}</span>
+                    <span style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>{col.length}</span>
+                  </>
+                )}
                 <span style={{ marginLeft: 'auto', fontSize: 11, color: C.slate, fontWeight: 600 }}>{fmtMoney(colValue)}</span>
               </div>
               {/* Fixed-height slot list — holds PER_PAGE cards whether or not they exist */}
