@@ -2805,8 +2805,8 @@ function AddLtaRecordModal({ charger, siteName, formType, intervalMonths, claime
 
 // ── LTA Inspection panel ─────────────────────────────────────────
 
-type LtaFormType = 'A' | 'D';
-type LetterForms = 'A' | 'D' | 'both';
+export type LtaFormType = 'A' | 'D';
+export type LetterForms = 'A' | 'D' | 'both';
 
 interface LtaRecord {
   id: string;
@@ -4545,7 +4545,7 @@ function ltaCycleOptions(registration: string | null, intervalMonths: number, ar
   return out;
 }
 
-const toPerformed = (r: { id: string; performed_at: string; period_n: number | null }): LtaPerformed =>
+export const toPerformed = (r: { id: string; performed_at: string; period_n: number | null }): LtaPerformed =>
   ({ key: r.id, date: r.performed_at, period: r.period_n });
 
 // LTA inspections alternate every 6 months: Form A, then Form A & D, then A, …
@@ -4569,7 +4569,7 @@ function ltaLetterCycle1(c: { lta_letter_date?: string | null; lta_letter_forms?
 // 1's due date is base + interval. With a letter, cycle 1's due date is fixed
 // (ltaLetterCycle1) so we back the base off one interval to land on it. Without a
 // letter, anchor on registration (then procurement) — first form one interval later.
-function ltaScheduleBase(c: { lta_letter_date?: string | null; lta_letter_forms?: LetterForms | null; turn_on_date: string | null; procurement_date: string | null }, intervalMonths: number, ft: LtaFormType): string | null {
+export function ltaScheduleBase(c: { lta_letter_date?: string | null; lta_letter_forms?: LetterForms | null; turn_on_date: string | null; procurement_date: string | null }, intervalMonths: number, ft: LtaFormType): string | null {
   const cycle1 = ltaLetterCycle1(c, ft);
   if (cycle1) {
     const d = new Date(cycle1 + 'T00:00:00');
@@ -4637,7 +4637,7 @@ export function ltaAssignPeriods(registration: string | null, intervalMonths: nu
   return { byPeriod, periodOf };
 }
 
-function ltaSchedule(registration: string | null, intervalMonths: number, performed: LtaPerformed[]): LtaScheduleResult {
+export function ltaSchedule(registration: string | null, intervalMonths: number, performed: LtaPerformed[]): LtaScheduleResult {
   const empty: LtaScheduleResult = { periods: [], nextDue: null, overdueCount: 0 };
   if (!registration) return empty;
   const reg = new Date(registration + 'T00:00:00');
