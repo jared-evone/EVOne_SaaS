@@ -446,6 +446,12 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
   const [dragOver, setDragOver] = useState<QuoteStatus | null>(null);
   const [pages, setPages] = useState<Record<string, number>>({});
   const PER_PAGE = 5;
+  // Every card is the SAME height and every column reserves a full page of slots,
+  // so nothing reflows when a card has notes, a long name, or when paging lands on
+  // a short last page. Overflowing text is clipped, never wrapped.
+  const CARD_H = 142;
+  const CARD_GAP = 10;
+  const LIST_H = PER_PAGE * CARD_H + (PER_PAGE - 1) * CARD_GAP;
 
   return (
     <div style={{ overflowX: 'auto' }}>
@@ -473,13 +479,15 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
               style={{
                 background: isTarget ? C.honeydew : C.seasalt,
                 border: `1.5px solid ${isTarget ? C.green : 'transparent'}`,
-                borderRadius: 14, padding: 10, display: 'flex', flexDirection: 'column', gap: 10, minHeight: 220,
+                borderRadius: 14, padding: 10, display: 'flex', flexDirection: 'column', gap: 10,
               }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 4px' }}>
                 <span style={{ fontSize: 12, fontWeight: 700, color: sc.color, background: sc.bg, padding: '3px 10px', borderRadius: 99 }}>{status}</span>
                 <span style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>{col.length}</span>
                 <span style={{ marginLeft: 'auto', fontSize: 11, color: C.slate, fontWeight: 600 }}>{fmtMoney(colValue)}</span>
               </div>
+              {/* Fixed-height slot list — holds PER_PAGE cards whether or not they exist */}
+              <div style={{ height: LIST_H, display: 'flex', flexDirection: 'column', gap: CARD_GAP, overflow: 'hidden' }}>
               {pageCol.map((q) => (
                 <button key={q.id}
                   draggable={canEdit}
@@ -488,6 +496,7 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                   style={{
                     textAlign: 'left', background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, padding: '12px 14px',
                     cursor: canEdit ? 'grab' : 'pointer', fontFamily: 'Figtree', display: 'flex', flexDirection: 'column', gap: 6,
+                    height: CARD_H, boxSizing: 'border-box', flexShrink: 0, overflow: 'hidden',
                   }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: C.slate }}>{q.ref}</span>
@@ -503,7 +512,7 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                     )}
                   </div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.customer_name}</div>
-                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap' }}>
                     <span style={{ fontSize: 14, fontWeight: 700, color: C.green }}>{fmtMoney(Number(q.total))}</span>
                     {(q.cost_items?.length ?? 0) > 0 && (() => {
                       const cost = (q.cost_items ?? []).reduce((s, c) => s + (Number(c.amount) || 0), 0);
@@ -517,17 +526,18 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                     <span style={{ marginLeft: 'auto', whiteSpace: 'nowrap', flexShrink: 0 }}>{q.quote_date}</span>
                   </div>
                   {q.notes && q.notes.trim() && (
-                    <div style={{ fontSize: 11, color: C.slate, background: C.seasalt, borderRadius: 8, padding: '6px 8px', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', lineHeight: 1.4 }}>
+                    <div title={q.notes} style={{ fontSize: 11, color: C.slate, background: C.seasalt, borderRadius: 8, padding: '6px 8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.4, flexShrink: 0 }}>
                       {q.notes}
                     </div>
                   )}
                 </button>
               ))}
               {col.length === 0 && (
-                <div style={{ padding: '18px 8px', textAlign: 'center', fontSize: 11, color: C.slate, border: '1px dashed #E0E5E9', borderRadius: 10 }}>
+                <div style={{ padding: '18px 8px', textAlign: 'center', fontSize: 11, color: C.slate, border: '1px dashed #E0E5E9', borderRadius: 10, flexShrink: 0 }}>
                   {canEdit ? 'Drop quotes here' : 'Empty'}
                 </div>
               )}
+              </div>
               {totalPages > 1 && (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginTop: 2 }}>
                   <button onClick={() => setPage(page - 1)} disabled={page === 0}
