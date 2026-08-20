@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
@@ -143,23 +143,6 @@ function SearchSelect({ value, options, onChange, disabled, placeholder }: {
 
 type StatusFilter = 'all' | ProjectStatus;
 
-// Registries are evenly split across these three for charger keying-in (deterministic
-// round-robin over a stable created-at order — see assigneeOf).
-const ASSIGNEES = ['Nay', 'Vivian', 'Yi Lin'] as const;
-
-// A registry's assignee, derived from its id so it's fixed to that registry and
-// unaffected by which other registries exist (deleting one won't re-label the
-// rest). Same id → same assignee, on every load and for every user.
-function assigneeForId(id: string): string {
-  let h = 0;
-  for (let i = 0; i < id.length; i++) h = (Math.imul(h, 31) + id.charCodeAt(i)) >>> 0;
-  return ASSIGNEES[h % ASSIGNEES.length];
-}
-const ASSIGNEE_COLORS: Record<string, { bg: string; color: string }> = {
-  'Nay':    { bg: '#E3F0FF', color: '#1A62C0' },
-  'Vivian': { bg: '#F0E8FF', color: '#6B21A8' },
-  'Yi Lin': { bg: '#FFF0E0', color: '#B45309' },
-};
 
 export function ScreenProjects() {
   const { can, isAdmin } = usePermissions();
@@ -174,8 +157,6 @@ export function ScreenProjects() {
   const [error, setError]         = useState<string | null>(null);
   const [search, setSearch]       = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [assigneeFilter, setAssigneeFilter] = useState<string>('all');
-  const [pendingTakeupOnly, setPendingTakeupOnly] = useState(false);
   const [adding, setAdding]       = useState(false);
   const [importingInvoices, setImportingInvoices] = useState(false);
   const [viewingId, setViewingId] = useState<string | null>(null);
@@ -209,38 +190,8 @@ export function ScreenProjects() {
 
   const customerById = (id: string | null) => id ? customers.find((c) => c.id === id) ?? null : null;
 
-  // Split registries across the assignees by hashing each registry's own id —
-  // NOT its position in the list. A positional round-robin re-labelled every row
-  // after a deleted one; keying off the id makes each registry's assignee its
-  // own, so deleting one never reshuffles the others. Distribution stays ~even
-  // across the id space, and it's identical on every load and for every user.
-  const assigneeOf = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const p of projects) m.set(p.id, assigneeForId(p.id));
-    return m;
-  }, [projects]);
-
-  // A registry is "pending take-up" (undone) when it has no chargers yet and
-  // nobody has claimed keying them in.
-  const isPendingTakeup = (p: Project) => (chargerCounts[p.id] ?? 0) === 0 && !p.charger_entry_claimed_at;
-
-  // How many pending take-ups each assignee still owns, so each person sees
-  // their own remaining workload on their filter chip.
-  const pendingByAssignee = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const p of projects) {
-      if (!isPendingTakeup(p)) continue;
-      const a = assigneeOf.get(p.id);
-      if (a) m.set(a, (m.get(a) ?? 0) + 1);
-    }
-    return m;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projects, chargerCounts, assigneeOf]);
-
   const visible = projects.filter((p) => {
     if (statusFilter !== 'all' && p.status !== statusFilter) return false;
-    if (assigneeFilter !== 'all' && assigneeOf.get(p.id) !== assigneeFilter) return false;
-    if (pendingTakeupOnly && !isPendingTakeup(p)) return false;
     if (!search) return true;
     const q = search.toLowerCase();
     const customerName = customerById(p.customer_id)?.name ?? '';
@@ -288,45 +239,6 @@ export function ScreenProjects() {
             </button>
           ))}
         </div>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {(['all', ...ASSIGNEES] as const).map((a) => {
-            const active = assigneeFilter === a;
-            const col = a !== 'all' ? ASSIGNEE_COLORS[a] : null;
-            // When filtering by pending take-up, surface each person's remaining count.
-            const remaining = a !== 'all' && pendingTakeupOnly ? (pendingByAssignee.get(a) ?? 0) : null;
-            return (
-              <button key={a} onClick={() => setAssigneeFilter(a)}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 99,
-                  border: `1px solid ${active ? (col?.color ?? C.green) : '#EBEBEB'}`,
-                  background: active ? (col?.bg ?? C.green) : C.white,
-                  color: active ? (col?.color ?? C.white) : C.slate,
-                  fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-                {a === 'all' ? 'All assignees' : a}
-                {remaining !== null && (
-                  <span style={{ fontSize: 11, fontWeight: 700, padding: '1px 7px', borderRadius: 99,
-                    background: active ? 'rgba(255,255,255,0.5)' : (col?.bg ?? C.seasalt),
-                    color: col?.color ?? C.slate }}>
-                    {remaining}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-        <button onClick={() => setPendingTakeupOnly((v) => !v)}
-          title="Show only registries still waiting to be taken up for charger entry"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 99,
-            border: `1px solid ${pendingTakeupOnly ? C.yellow : '#EBEBEB'}`,
-            background: pendingTakeupOnly ? C.yellow : C.white,
-            color: pendingTakeupOnly ? C.white : C.slate,
-            fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-          Pending take-up
-          <span style={{ fontSize: 11, fontWeight: 700, padding: '1px 7px', borderRadius: 99,
-            background: pendingTakeupOnly ? 'rgba(255,255,255,0.28)' : C.seasalt,
-            color: pendingTakeupOnly ? C.white : C.slate }}>
-            {projects.filter(isPendingTakeup).length}
-          </span>
-        </button>
         <div style={{ position: 'relative', width: 260 }}>
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search chargers…"
             style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
