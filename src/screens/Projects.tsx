@@ -1009,6 +1009,7 @@ function LinkedCustomerCard({ customer, contacts, hasLink, canEdit, onSaved }: {
     setBusy(false);
     setConfirmDelId(null);
     if (error) { setErr(error.message); return; }
+    setEditing(null);
     await onSaved();
   };
 
@@ -1068,14 +1069,32 @@ function LinkedCustomerCard({ customer, contacts, hasLink, canEdit, onSaved }: {
             <input autoFocus value={editing.name} placeholder="Name" onChange={(e) => setEditing({ ...editing, name: e.target.value })} style={miniInput} />
             <input value={editing.email} placeholder="Email" onChange={(e) => setEditing({ ...editing, email: e.target.value })} style={miniInput} />
             <input value={editing.phone} placeholder="Phone" onChange={(e) => setEditing({ ...editing, phone: e.target.value })} style={miniInput} />
-            <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-              <button type="button" onClick={() => setEditing(null)} disabled={busy}
-                style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
-              <button type="button" onClick={() => void saveContact()} disabled={busy}
-                style={{ padding: '5px 14px', borderRadius: 8, border: 'none', background: busy ? '#9DC7A6' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: busy ? 'default' : 'pointer' }}>
-                {busy ? 'Saving…' : editing.id ? 'Save' : 'Add'}
-              </button>
-            </div>
+            {editing.id && confirmDelId === editing.id ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#C0321A', flex: 1 }}>Delete this contact from the CRM too?</span>
+                <button type="button" onClick={() => setConfirmDelId(null)} disabled={busy}
+                  style={{ padding: '4px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>No</button>
+                <button type="button" onClick={() => void deleteContact(editing.id as string)} disabled={busy}
+                  style={{ padding: '4px 12px', borderRadius: 8, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                  {busy ? 'Deleting…' : 'Yes, delete'}
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: 6 }}>
+                {editing.id && (
+                  <button type="button" onClick={() => setConfirmDelId(editing.id)} disabled={busy}
+                    style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Delete</button>
+                )}
+                <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6 }}>
+                  <button type="button" onClick={() => { setEditing(null); setConfirmDelId(null); }} disabled={busy}
+                    style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+                  <button type="button" onClick={() => void saveContact()} disabled={busy}
+                    style={{ padding: '5px 14px', borderRadius: 8, border: 'none', background: busy ? '#9DC7A6' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: busy ? 'default' : 'pointer' }}>
+                    {busy ? 'Saving…' : editing.id ? 'Save' : 'Add'}
+                  </button>
+                </span>
+              </div>
+            )}
           </div>
         )}
         {contacts.length === 0 && !editing ? (
@@ -1087,35 +1106,19 @@ function LinkedCustomerCard({ customer, contacts, hasLink, canEdit, onSaved }: {
                 <div key={c.id} style={{ background: C.seasalt, borderRadius: 8, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
-                    {canEdit && !editing && confirmDelId !== c.id && (
-                      <>
-                        <button type="button" title="Edit contact"
-                          onClick={() => { setErr(null); setEditing({ id: c.id, name: c.name, email: c.email ?? '', phone: c.phone ?? '' }); }}
-                          style={{ width: 20, height: 20, borderRadius: 6, border: 'none', background: 'transparent', color: C.slate, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, padding: 0 }}>
-                          <Pencil size={11} strokeWidth={2.25} />
-                        </button>
-                        <button type="button" title="Delete contact" onClick={() => setConfirmDelId(c.id)}
-                          style={{ width: 20, height: 20, borderRadius: 6, border: 'none', background: 'transparent', color: '#C0321A', cursor: 'pointer', fontSize: 13, flexShrink: 0, padding: 0 }}>×</button>
-                      </>
+                    {canEdit && !editing && (
+                      <button type="button" title="Edit contact"
+                        onClick={() => { setErr(null); setConfirmDelId(null); setEditing({ id: c.id, name: c.name, email: c.email ?? '', phone: c.phone ?? '' }); }}
+                        style={{ width: 20, height: 20, borderRadius: 6, border: 'none', background: 'transparent', color: C.slate, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, padding: 0 }}>
+                        <Pencil size={11} strokeWidth={2.25} />
+                      </button>
                     )}
                   </div>
-                  {confirmDelId === c.id ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-                      <span style={{ fontSize: 10.5, fontWeight: 700, color: '#C0321A', flex: 1 }}>Delete from the CRM too?</span>
-                      <button type="button" onClick={() => setConfirmDelId(null)}
-                        style={{ padding: '2px 8px', borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 10, fontWeight: 600, cursor: 'pointer' }}>No</button>
-                      <button type="button" onClick={() => void deleteContact(c.id)} disabled={busy}
-                        style={{ padding: '2px 8px', borderRadius: 6, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>Yes</button>
-                    </div>
-                  ) : (
-                    <>
-                      {c.email && (
-                        <a href={`mailto:${c.email}`} title={c.email} style={{ fontSize: 11, color: C.green, textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.email}</a>
-                      )}
-                      {c.phone && (
-                        <span style={{ fontSize: 11, color: C.slate, fontVariantNumeric: 'tabular-nums' }}>{c.phone}</span>
-                      )}
-                    </>
+                  {c.email && (
+                    <a href={`mailto:${c.email}`} title={c.email} style={{ fontSize: 11, color: C.green, textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.email}</a>
+                  )}
+                  {c.phone && (
+                    <span style={{ fontSize: 11, color: C.slate, fontVariantNumeric: 'tabular-nums' }}>{c.phone}</span>
                   )}
                 </div>
               ))}
