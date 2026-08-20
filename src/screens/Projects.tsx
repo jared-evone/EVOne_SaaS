@@ -549,6 +549,10 @@ async function collectChargerStoragePaths(chargerIds: string[]): Promise<string[
   for (const r of (claims ?? []) as Array<{ storage_path: string | null }>) {
     if (r.storage_path) paths.push(r.storage_path);
   }
+  const { data: brk } = await supabase.from('charger_breakdowns').select('storage_path').in('charger_id', chargerIds);
+  for (const r of (brk ?? []) as Array<{ storage_path: string | null }>) {
+    if (r.storage_path) paths.push(r.storage_path);
+  }
   return paths;
 }
 
@@ -1997,7 +2001,7 @@ function warrantyTone(endDate: string | null): { label: string; bg: string; colo
   return { label: `In warranty · ${d}d left`, bg: '#E4F3E3', color: '#1B512D' };
 }
 
-type ChargerDetailTab = 'details' | 'maintenance' | 'warranty';
+type ChargerDetailTab = 'details' | 'maintenance' | 'warranty' | 'breakdown';
 
 function SiteChargersCard({ siteId, focus, siteName, chargers, brandModels, canEdit, canDelete, customer, onChanged }: {
   siteId: string;
@@ -2124,9 +2128,9 @@ function SiteChargersCard({ siteId, focus, siteName, chargers, brandModels, canE
       {selected && (
         <div style={{ border: '1px solid #EBEBEB', borderRadius: 12, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid #EBEBEB', padding: '6px 10px', gap: 4 }}>
-            {(['details', 'maintenance', 'warranty'] as ChargerDetailTab[]).map((t) => (
+            {(['details', 'maintenance', 'warranty', 'breakdown'] as ChargerDetailTab[]).map((t) => (
               <TabButton key={t} active={tab === t} onClick={() => setTab(t)}>
-                {t === 'details' ? 'Details' : t === 'maintenance' ? 'LTA Inspection' : 'Warranty'}
+                {t === 'details' ? 'Details' : t === 'maintenance' ? 'LTA Inspection' : t === 'warranty' ? 'Warranty' : 'Breakdown'}
               </TabButton>
             ))}
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
@@ -2282,6 +2286,7 @@ function ChargerTabPanel({ charger, siteName, tab, onTabChange, canEdit, canDele
 }) {
   if (tab === 'details')     return <ChargerDetailsPanel charger={charger} siteName={siteName} customer={customer} onTabChange={onTabChange} onChargerChanged={onChargerChanged} />;
   if (tab === 'maintenance') return <LtaInspectionPanel  charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} />;
+  if (tab === 'breakdown')   return <BreakdownPanel charger={charger} canEdit={canEdit} canDelete={canDelete} />;
   return <WarrantyPanel charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} />;
 }
 
@@ -3905,6 +3910,209 @@ interface WarrantyClaim {
 
 function computeWarrantyClaimFilename(assetTag: string | null | undefined, claimDate: string | null | undefined, siteName: string | null | undefined): string {
   return composeChargerFilename('Warranty Claim', assetTag, claimDate, siteName);
+}
+
+// ── Breakdown panel ──────────────────────────────────────────────
+// A running log of charger breakdowns: what happened, when, and an optional PDF
+// report. PDFs live in the charger-forms bucket under breakdown/…; rows cascade
+// away with the charger, and collectChargerStoragePaths sweeps the PDFs.
+
+interface BreakdownRecord {
+  id: string;
+  charger_id: string;
+  breakdown_date: string;
+  description: string;
+  storage_path: string | null;
+  filename: string | null;
+  created_at: string;
+}
+
+function BreakdownPanel({ charger, canEdit, canDelete }: {
+  charger: SiteCharger;
+  canEdit: boolean;
+  canDelete: boolean;
+}) {
+  const [records, setRecords] = useState<BreakdownRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [date, setDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [description, setDescription] = useState('');
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const refresh = async () => {
+    const { data } = await supabase.from('charger_breakdowns')
+      .select('*').eq('charger_id', charger.id)
+      .order('breakdown_date', { ascending: false }).order('created_at', { ascending: false });
+    setRecords((data ?? []) as BreakdownRecord[]);
+    setLoading(false);
+  };
+  useEffect(() => { void refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [charger.id]);
+
+  const resetForm = () => {
+    setAdding(false);
+    setDate(new Date().toISOString().slice(0, 10));
+    setDescription('');
+    setPendingFile(null);
+    setError(null);
+  };
+
+  const isPdf = (f: File) => !f.type || f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf');
+
+  const submit = async () => {
+    setError(null);
+    if (!description.trim()) { setError('Describe the breakdown first.'); return; }
+    if (!date) { setError('Pick the breakdown date first.'); return; }
+    setBusy(true);
+    let storage_path: string | null = null;
+    let filename: string | null = null;
+    if (pendingFile) {
+      storage_path = `breakdown/${charger.id}/${crypto.randomUUID()}/${pathSafe(pendingFile.name)}`;
+      const up = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(storage_path, pendingFile, { contentType: pendingFile.type || 'application/pdf' });
+      if (up.error) { setBusy(false); setError(up.error.message); return; }
+      filename = pendingFile.name;
+    }
+    const ins = await supabase.from('charger_breakdowns').insert({
+      charger_id: charger.id, breakdown_date: date, description: description.trim(), storage_path, filename,
+    });
+    setBusy(false);
+    if (ins.error) {
+      if (storage_path) void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([storage_path]);
+      setError(ins.error.message);
+      return;
+    }
+    resetForm();
+    await refresh();
+  };
+
+  const openReport = async (r: BreakdownRecord, mode: 'view' | 'download') => {
+    if (!r.storage_path) return;
+    const { data } = await supabase.storage.from(CHARGER_FORMS_BUCKET)
+      .createSignedUrl(r.storage_path, 60, mode === 'download' ? { download: r.filename ?? 'breakdown-report.pdf' } : undefined);
+    if (data?.signedUrl) window.open(data.signedUrl, mode === 'download' ? '_self' : '_blank');
+  };
+
+  const handleDelete = async (r: BreakdownRecord) => {
+    if (r.storage_path) await supabase.storage.from(CHARGER_FORMS_BUCKET).remove([r.storage_path]);
+    await supabase.from('charger_breakdowns').delete().eq('id', r.id);
+    setConfirmingId(null);
+    await refresh();
+  };
+
+  const btnGhost: React.CSSProperties = { padding: '5px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 16 }}>
+      <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.6 }}>
+        Log breakdowns for <strong style={{ color: '#1a1a1a' }}>{charger.asset_tag}</strong> — what happened, when, and an optional PDF report.
+      </div>
+
+      <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            Breakdown Log {records.length > 0 && <span style={{ color: C.slate, marginLeft: 4 }}>· {records.length}</span>}
+          </div>
+          {canEdit && !adding && (
+            <button onClick={() => setAdding(true)}
+              style={{ padding: '6px 12px', borderRadius: 8, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+              + Log Breakdown
+            </button>
+          )}
+        </div>
+
+        {adding && (
+          <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 8, padding: '8px 12px', fontSize: 12, fontWeight: 600 }}>{error}</div>}
+            <div style={{ display: 'grid', gridTemplateColumns: '180px 1fr', gap: 10, alignItems: 'end' }}>
+              <div>
+                <FieldLabel>Breakdown date</FieldLabel>
+                <input type="date" value={date} onChange={(e) => setDate(e.target.value)} disabled={busy} style={{ ...inputStyle(), background: C.white }} />
+              </div>
+              <div>
+                <FieldLabel>Report PDF (optional)</FieldLabel>
+                <input ref={fileRef} type="file" accept="application/pdf" style={{ display: 'none' }}
+                  onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) { if (!isPdf(f)) { setError('Report must be a PDF.'); return; } setError(null); setPendingFile(f); } }} />
+                {pendingFile ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: C.seasalt, border: '1px solid #EBEBEB', borderRadius: 10, padding: '8px 10px' }}>
+                    <FileText size={14} strokeWidth={1.8} color={C.green} style={{ flexShrink: 0 }} />
+                    <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pendingFile.name}</span>
+                    <button type="button" onClick={() => setPendingFile(null)} disabled={busy}
+                      style={{ width: 24, height: 24, borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', flexShrink: 0 }}>×</button>
+                  </div>
+                ) : (
+                  <button type="button" onClick={() => fileRef.current?.click()} disabled={busy}
+                    style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '9px 14px', borderRadius: 10, border: '1px dashed #C8E6C9', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', width: '100%' }}>
+                    <Upload size={13} strokeWidth={2} /> Choose PDF
+                  </button>
+                )}
+              </div>
+            </div>
+            <div>
+              <FieldLabel>Description</FieldLabel>
+              <textarea value={description} onChange={(e) => setDescription(e.target.value)} disabled={busy} rows={3}
+                placeholder="What broke, symptoms, cause if known, action taken…"
+                style={{ ...inputStyle(), background: C.white, resize: 'vertical', lineHeight: 1.5, fontFamily: 'Figtree' }} />
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button onClick={resetForm} disabled={busy} style={{ padding: '8px 16px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+              <button onClick={() => void submit()} disabled={busy || !description.trim() || !date}
+                style={{ padding: '8px 20px', borderRadius: 10, border: 'none', background: busy || !description.trim() || !date ? '#9DC7A6' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: busy || !description.trim() || !date ? 'default' : 'pointer' }}>
+                {busy ? 'Saving…' : 'Save breakdown'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {loading ? (
+          <div style={{ padding: '18px 8px', textAlign: 'center', fontSize: 12, color: C.slate }}>Loading…</div>
+        ) : records.length === 0 && !adding ? (
+          <div style={{ padding: '18px 8px', textAlign: 'center', fontSize: 12, color: C.slate, border: '1px dashed #E0E5E9', borderRadius: 10 }}>
+            No breakdowns logged for this charger.
+          </div>
+        ) : (
+          records.map((r) => (
+            <div key={r.id} style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {confirmingId === r.id ? (
+                <div style={{ background: '#FDEAEA', borderRadius: 8, padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#C0321A', flex: 1 }}>
+                    Delete this breakdown from {fmtDate(r.breakdown_date)}{r.storage_path ? ' and its report PDF' : ''}?
+                  </div>
+                  <button onClick={() => setConfirmingId(null)} style={{ ...btnGhost, background: C.white }}>Cancel</button>
+                  <button onClick={() => void handleDelete(r)}
+                    style={{ padding: '5px 10px', borderRadius: 6, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                    Yes, delete
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', whiteSpace: 'nowrap' }}>{fmtDate(r.breakdown_date)}</span>
+                    {r.storage_path && (
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: C.honeydew, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>PDF report</span>
+                    )}
+                    <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6 }}>
+                      {r.storage_path && <button onClick={() => void openReport(r, 'view')} style={btnGhost}>View</button>}
+                      {r.storage_path && (
+                        <button onClick={() => void openReport(r, 'download')} style={{ ...btnGhost, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <DownloadIcon size={11} strokeWidth={2.25} /> Download
+                        </button>
+                      )}
+                      {canDelete && <button onClick={() => setConfirmingId(r.id)} style={{ ...btnGhost, border: '1px solid #FDEAEA', color: '#C0321A' }}>Delete</button>}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12.5, color: '#1a1a1a', lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>{r.description}</div>
+                  {r.filename && <div style={{ fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.filename}</div>}
+                </>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
 }
 
 function WarrantyPanel({ charger, siteName, canEdit, canDelete }: {
