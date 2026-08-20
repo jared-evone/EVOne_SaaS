@@ -786,7 +786,12 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
                   brandModels={brandModels}
                   canEdit={canEdit}
                   canDelete={canDelete}
-                  customer={{ name: customer?.name ?? project.name, email: contacts.find((c) => c.email)?.email ?? null, type: customer?.type }}
+                  customer={{
+                    name: customer?.name ?? project.name,
+                    email: contacts.find((c) => c.email)?.email ?? null,
+                    type: customer?.type,
+                    contacts: contacts.filter((c) => !!c.email).map((c) => ({ name: c.name, email: c.email as string })),
+                  }}
                   onChanged={fetchAll}
                   onDeleted={() => setTab('overview')}
                 />
@@ -2823,7 +2828,13 @@ interface LtaRecord {
   period_n: number | null;
 }
 
-interface LtaEmailCustomer { name: string; email: string | null; type?: CustomerType }
+interface LtaEmailCustomer {
+  name: string;
+  email: string | null;
+  type?: CustomerType;
+  /** The customer's CRM contacts — the only allowed To/CC choices in LTA emails. */
+  contacts?: { name: string; email: string }[];
+}
 
 // Attach an invoice PDF to an existing LTA record (from the timeline, via popup).
 function AddInvoiceModal({ record, onClose, onSaved }: {
@@ -3706,8 +3717,12 @@ function SendLtaEmailModal({ record, formDisplayName, charger, siteName, custome
   onClose: () => void;
   onSent: () => Promise<void>;
 }) {
+  const contactOptions = customer.contacts ?? [];
+  // To/CC are picked from the customer's CRM contacts; ccExtra is the escape
+  // hatch for people outside them. The admin default CC (fixedCc) always applies.
   const [to, setTo] = useState(customer.email ?? '');
-  const [cc, setCc] = useState('');
+  const [ccSel, setCcSel] = useState<Set<string>>(new Set());
+  const [ccExtra, setCcExtra] = useState('');
   const [fixedCc, setFixedCc] = useState('');
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
@@ -3749,9 +3764,14 @@ function SendLtaEmailModal({ record, formDisplayName, charger, siteName, custome
   const selectedSender = senders.find((s) => s.id === senderId) ?? null;
 
   const toList = to.split(/[,;]/).map((e) => e.trim()).filter(Boolean);
-  // Per-email CC plus the admin-configured fixed internal CC (deduped).
+  // CC = picked customer contacts + free-text extras + the admin default CC,
+  // deduped, and never repeating the To address.
   const fixedCcList = fixedCc.split(/[,;]/).map((e) => e.trim()).filter(Boolean);
-  const ccList = Array.from(new Set([...cc.split(/[,;]/).map((e) => e.trim()).filter(Boolean), ...fixedCcList]));
+  const ccList = Array.from(new Set([
+    ...ccSel,
+    ...ccExtra.split(/[,;]/).map((e) => e.trim()).filter(Boolean),
+    ...fixedCcList,
+  ])).filter((e) => !toList.includes(e));
   const hasInvoice = !!record.invoice_path;
   const attachCount = (includeForm ? 1 : 0) + (includeInvoice && hasInvoice ? 1 : 0);
   const canSend = toList.length > 0 && !!subject.trim() && !!body.trim() && attachCount > 0 && !sending && !loading;
@@ -3838,15 +3858,60 @@ function SendLtaEmailModal({ record, formDisplayName, charger, siteName, custome
             )}
             <div>
               <FieldLabel>To</FieldLabel>
-              <input value={to} onChange={(e) => setTo(e.target.value)} placeholder="customer@company.com" style={field} />
-              {!customer.email && <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>The linked customer has no contact email on file — enter one above.</div>}
+              {contactOptions.length > 0 ? (
+                <>
+                  <select value={to} onChange={(e) => setTo(e.target.value)} style={{ ...field, cursor: 'pointer' }}>
+                    <option value="">— Select a contact —</option>
+                    {contactOptions.map((c) => (
+                      <option key={c.email} value={c.email}>{c.name ? `${c.name} <${c.email}>` : c.email}</option>
+                    ))}
+                  </select>
+                  <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>
+                    Contacts come from this customer's CRM — add or change people there and they appear here.
+                  </div>
+                </>
+              ) : (
+                <>
+                  <input value={to} onChange={(e) => setTo(e.target.value)} placeholder="customer@company.com" style={field} />
+                  <div style={{ fontSize: 11, color: '#B45309', marginTop: 4 }}>
+                    This customer has no contacts with an email in the CRM — add one there to pick from a list next time.
+                  </div>
+                </>
+              )}
             </div>
             <div>
-              <FieldLabel>CC (comma-separated)</FieldLabel>
-              <input value={cc} onChange={(e) => setCc(e.target.value)} placeholder="optional" style={field} />
-              {fixedCcList.length > 0 && (
-                <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Internal team auto-CC'd: {fixedCcList.join(', ')}</div>
+              <FieldLabel>CC</FieldLabel>
+              {contactOptions.length > 1 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                  {contactOptions.filter((c) => c.email !== to).map((c) => {
+                    const on = ccSel.has(c.email);
+                    return (
+                      <button key={c.email} type="button"
+                        onClick={() => setCcSel((prev) => { const n = new Set(prev); if (n.has(c.email)) n.delete(c.email); else n.add(c.email); return n; })}
+                        title={c.email}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 12px', borderRadius: 99,
+                          border: `1px solid ${on ? C.green : '#EBEBEB'}`,
+                          background: on ? C.honeydew : C.white,
+                          color: on ? C.green : C.slate,
+                          fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                        {on ? '✓ ' : ''}{c.name || c.email}
+                      </button>
+                    );
+                  })}
+                </div>
               )}
+              {fixedCcList.length > 0 && (
+                <div style={{ background: C.seasalt, borderRadius: 10, padding: '8px 12px', marginBottom: 8 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Always CC'd (default)</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {fixedCcList.map((e) => (
+                      <span key={e} style={{ fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 99, background: C.white, border: '1px solid #EBEBEB', color: C.slate }}>{e}</span>
+                    ))}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.slate, marginTop: 4 }}>Set in Charger Registry → Email defaults; applied to every send.</div>
+                </div>
+              )}
+              <input value={ccExtra} onChange={(e) => setCcExtra(e.target.value)} placeholder="Additional CC outside the customer's contacts (comma-separated, optional)" style={field} />
             </div>
             <div>
               <FieldLabel>Subject</FieldLabel>
