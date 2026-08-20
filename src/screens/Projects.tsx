@@ -2472,7 +2472,7 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
 
   // Lifecycle timeline — chronological top → bottom: procurement → installation
   // (Form 1) → registration → recurring Form A / Form D (latest done + next due).
-  type TLAction = { label: string; onClick: () => void; tone: 'green' | 'amber' | 'plain' };
+  type TLAction = { label: string; onClick: () => void; tone: 'green' | 'amber' | 'plain'; icon?: 'mail' };
   type TLNode = { dot: string; titleColor: string; title: string; date: string | null; dateLabel?: string; subtitle: React.ReactNode; actions: TLAction[] };
   const GREEN = C.green, RED = '#C2410C', AMBER = '#F1B04C', PURPLE = '#6B21A8', BLACK = '#1a1a1a';
   const underContract = charger.has_maintenance_package;
@@ -2484,8 +2484,9 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
   const completedActions = (rec: LtaRecord): TLAction[] => {
     const a: TLAction[] = [{ label: 'View', onClick: () => void openLtaRecord(rec), tone: 'green' }];
     // Email the report (with its invoice when one is attached) straight from the
-    // timeline — same modal the LTA Inspection tab uses.
-    a.push({ label: 'Email', onClick: () => setEmailingRec(rec), tone: 'green' });
+    // timeline — same modal the LTA Inspection tab uses. Icon-only, to the right
+    // of View.
+    a.push({ label: 'Email', onClick: () => setEmailingRec(rec), tone: 'green', icon: 'mail' });
     if (!rec.invoice_path) a.push({ label: 'Add invoice', onClick: () => setAddingInvoiceFor(rec), tone: 'amber' });
     return a;
   };
@@ -2689,13 +2690,21 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
                       <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>{n.subtitle}</div>
                     </div>
                     {n.actions.length > 0 && (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0, alignItems: 'flex-end' }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, flexShrink: 0, alignItems: 'center', justifyContent: 'flex-end', maxWidth: 190 }}>
                         {n.actions.map((a) => {
                           const ts = a.tone === 'green'
                             ? { border: '1px solid #C8E6C9', background: C.honeydew, color: C.green }
                             : a.tone === 'amber'
                             ? { border: '1px solid #FBD8B6', background: '#FFF0E0', color: '#B45309' }
                             : { border: '1px solid #EBEBEB', background: C.white, color: C.slate };
+                          if (a.icon === 'mail') {
+                            return (
+                              <button key={a.label} onClick={a.onClick} title={a.label} aria-label={a.label}
+                                style={{ width: 26, height: 26, borderRadius: 8, ...ts, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}>
+                                <Mail size={13} strokeWidth={2.25} />
+                              </button>
+                            );
+                          }
                           return (
                             <button key={a.label} onClick={a.onClick}
                               style={{ padding: '4px 10px', borderRadius: 8, ...ts, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
