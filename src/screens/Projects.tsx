@@ -593,6 +593,9 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
   const [brandModels, setBrandModels] = useState<BrandModel[]>([]);
   const [loading, setLoading]   = useState(true);
   const [tab, setTab]           = useState<DetailTabId>('overview');
+  // Deep-link from an Overview issue row straight to one charger's detail tab.
+  // The nonce makes clicking the same issue twice re-apply the focus.
+  const [chargerFocus, setChargerFocus] = useState<{ chargerId: string; tab: ChargerDetailTab; nonce: number } | null>(null);
   const [addingSite, setAddingSite] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -748,7 +751,11 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
                 contacts={contacts}
                 sites={sites}
                 lta={lta}
-                onPickSite={(id) => setTab(`site:${id}`)}
+                onPickSite={(id) => { setChargerFocus(null); setTab(`site:${id}`); }}
+                onOpenCharger={(siteId, chargerId, detailTab) => {
+                  setChargerFocus({ chargerId, tab: detailTab, nonce: Date.now() });
+                  setTab(`site:${siteId}`);
+                }}
                 canEdit={canEdit}
                 onSaved={fetchAll}
               />
@@ -771,6 +778,7 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
               return (
                 <SiteTab
                   site={site}
+                  focus={chargerFocus}
                   brandModels={brandModels}
                   canEdit={canEdit}
                   canDelete={canDelete}
@@ -1026,7 +1034,7 @@ function LinkedCustomerCard({ customer, contacts, hasLink }: { customer: Custome
 
 // ── Right column: Overview tab ────────────────────────────────────
 
-function OverviewTab({ project, customers, customer, contacts, sites, lta, onPickSite, canEdit, onSaved }: {
+function OverviewTab({ project, customers, customer, contacts, sites, lta, onPickSite, onOpenCharger, canEdit, onSaved }: {
   project: Project;
   customers: CustomerLite[];
   customer: Customer | null;
@@ -1034,6 +1042,7 @@ function OverviewTab({ project, customers, customer, contacts, sites, lta, onPic
   sites: ProjectSite[];
   lta: SiteLtaRow[];
   onPickSite: (id: string) => void;
+  onOpenCharger: (siteId: string, chargerId: string, tab: ChargerDetailTab) => void;
   canEdit: boolean;
   onSaved: () => Promise<void>;
 }) {
@@ -1066,6 +1075,52 @@ function OverviewTab({ project, customers, customer, contacts, sites, lta, onPic
     return { form1Missing, formADue, invoiceMissing };
   };
 
+  // Every outstanding item, one row per charger-and-problem, each deep-linking to
+  // the exact panel where it gets fixed. Same rules as the site-table counts.
+  type Issue = {
+    key: string;
+    kind: 'form1' | 'formA' | 'formD' | 'invoice';
+    label: string;
+    detail: string;
+    site: ProjectSite;
+    charger: SiteCharger;
+    tab: ChargerDetailTab;
+  };
+  const issues: Issue[] = [];
+  for (const site of sites) {
+    for (const c of site.site_chargers) {
+      const e = byCharger.get(c.id) ?? { A: [], D: [] };
+      if (!c.form_1_path) {
+        issues.push({ key: `${c.id}-form1`, kind: 'form1', label: 'Form 1 missing', detail: 'Upload the installation Form 1', site, charger: c, tab: 'details' });
+      }
+      const overdueA = ltaSchedule(ltaScheduleBase(c, formAMonths, 'A'), formAMonths, e.A.map(toPerformed)).overdueCount;
+      if (overdueA > 0) {
+        issues.push({ key: `${c.id}-formA`, kind: 'formA', label: 'Form A due', detail: `${overdueA} cycle${overdueA === 1 ? '' : 's'} overdue`, site, charger: c, tab: 'maintenance' });
+      }
+      if (!isResidential) {
+        const overdueD = ltaSchedule(ltaScheduleBase(c, 12, 'D'), 12, e.D.map(toPerformed)).overdueCount;
+        if (overdueD > 0) {
+          issues.push({ key: `${c.id}-formD`, kind: 'formD', label: 'Form D due', detail: `${overdueD} cycle${overdueD === 1 ? '' : 's'} overdue`, site, charger: c, tab: 'maintenance' });
+        }
+      }
+      if (e.A[0] && !e.A[0].invoice_path) {
+        issues.push({ key: `${c.id}-invA`, kind: 'invoice', label: 'Invoice missing', detail: 'Latest Form A has no invoice attached', site, charger: c, tab: 'maintenance' });
+      }
+      if (!isResidential && e.D[0] && !e.D[0].invoice_path) {
+        issues.push({ key: `${c.id}-invD`, kind: 'invoice', label: 'Invoice missing', detail: 'Latest Form D has no invoice attached', site, charger: c, tab: 'maintenance' });
+      }
+    }
+  }
+  // Most urgent first: overdue inspections, then missing Form 1, then invoices.
+  const KIND_ORDER: Record<Issue['kind'], number> = { formA: 0, formD: 1, form1: 2, invoice: 3 };
+  issues.sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || a.site.name.localeCompare(b.site.name) || a.charger.asset_tag.localeCompare(b.charger.asset_tag));
+  const ISSUE_CHIP: Record<Issue['kind'], { bg: string; color: string }> = {
+    formA:   { bg: '#FDEAEA', color: '#C0321A' },
+    formD:   { bg: '#FDEAEA', color: '#C0321A' },
+    form1:   { bg: '#FFF0E0', color: '#B45309' },
+    invoice: { bg: '#FFF8E1', color: '#B07D00' },
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {/* Registry details + linked customer (moved here from the old side column) */}
@@ -1078,6 +1133,16 @@ function OverviewTab({ project, customers, customer, contacts, sites, lta, onPic
         <SummaryStat label="Sites"    value={String(sites.length)} />
         <SummaryStat label="Chargers" value={String(chargerCount)} />
         <SummaryStat label="Contacts" value={String(contacts.length)} sub={`${emailCount} email${emailCount === 1 ? '' : 's'} · ${phoneCount} phone${phoneCount === 1 ? '' : 's'} on file`} />
+        <SummaryStat label="Outstanding" value={String(issues.length)} tone={issues.length > 0 ? 'danger' : 'ok'}
+          sub={issues.length === 0 ? 'All clear' : (() => {
+            const n = (k: 'form1' | 'formA' | 'formD' | 'invoice') => issues.filter((i) => i.kind === k).length;
+            const parts: string[] = [];
+            const due = n('formA') + n('formD');
+            if (due) parts.push(`${due} form${due === 1 ? '' : 's'} due`);
+            if (n('form1')) parts.push(`${n('form1')} Form 1`);
+            if (n('invoice')) parts.push(`${n('invoice')} invoice${n('invoice') === 1 ? '' : 's'}`);
+            return parts.join(' · ');
+          })()} />
       </div>
 
         {sites.length === 0 ? (
@@ -1138,6 +1203,57 @@ function OverviewTab({ project, customers, customer, contacts, sites, lta, onPic
           </div>
         )}
 
+      {/* Outstanding issues — one row per charger-and-problem, each jumping
+          straight to the panel where it gets resolved. */}
+      {issues.length > 0 && (
+        <div style={{ border: '1px solid #F5C6C0', borderRadius: 12, overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px', background: '#FDF2F2', borderBottom: '1px solid #F5C6C0' }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#C0321A', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Outstanding Issues</span>
+            <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 9px', borderRadius: 99, background: '#C0321A', color: C.white }}>{issues.length}</span>
+            <span style={{ marginLeft: 'auto', fontSize: 11, color: '#C0321A', fontWeight: 600 }}>Click a row to jump to where it's resolved</span>
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', minWidth: 640, borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: C.seasalt }}>
+                  {([['Issue', 'left'], ['Site', 'left'], ['Charger', 'left'], ['Detail', 'left'], ['', 'right']] as const).map(([h, align]) => (
+                    <th key={h} style={{ padding: '10px 14px', textAlign: align, fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {issues.map((it) => {
+                  const chip = ISSUE_CHIP[it.kind];
+                  return (
+                    <tr key={it.key} onClick={() => onOpenCharger(it.site.id, it.charger.id, it.tab)} style={{ cursor: 'pointer' }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = '#FAFAFA')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
+                      <td style={{ padding: '11px 14px', borderBottom: '1px solid #F3F3F3', whiteSpace: 'nowrap' }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, background: chip.bg, color: chip.color }}>{it.label}</span>
+                      </td>
+                      <td style={{ padding: '11px 14px', borderBottom: '1px solid #F3F3F3', fontWeight: 600, color: '#1a1a1a' }}>{it.site.name}</td>
+                      <td style={{ padding: '11px 14px', borderBottom: '1px solid #F3F3F3', whiteSpace: 'nowrap' }}>
+                        <span style={{ fontWeight: 700, color: C.green }}>{it.charger.asset_tag}</span>
+                        {it.charger.brand_model && <span style={{ fontSize: 11, color: C.slate, marginLeft: 8 }}>{it.charger.brand_model}</span>}
+                      </td>
+                      <td style={{ padding: '11px 14px', borderBottom: '1px solid #F3F3F3', fontSize: 12, color: C.slate }}>{it.detail}</td>
+                      <td style={{ padding: '11px 14px', borderBottom: '1px solid #F3F3F3', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        <span style={{ color: C.green, fontWeight: 700, fontSize: 12 }}>Resolve →</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      {issues.length === 0 && sites.length > 0 && (
+        <div style={{ background: '#E4F3E3', borderRadius: 12, padding: '12px 16px', fontSize: 12.5, fontWeight: 600, color: '#1B512D' }}>
+          No outstanding issues — Form 1s, inspections and invoices are all in order.
+        </div>
+      )}
+
       <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 6 }}>
         <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Created</div>
         <div style={{ fontSize: 13, color: '#1a1a1a' }}>
@@ -1163,20 +1279,22 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
   );
 }
 
-function SummaryStat({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function SummaryStat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: 'danger' | 'ok' }) {
+  const danger = tone === 'danger';
   return (
-    <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 700, color: C.green, letterSpacing: '-0.02em' }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>{sub}</div>}
+    <div style={{ background: danger ? '#FDEAEA' : C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: danger ? '#C0321A' : C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: danger ? '#C0321A' : C.green, letterSpacing: '-0.02em' }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: danger ? '#C0321A' : C.slate, fontWeight: 600 }}>{sub}</div>}
     </div>
   );
 }
 
 // ── Site tab (one per site) ───────────────────────────────────────
 
-function SiteTab({ site, brandModels, canEdit, canDelete, customer, onChanged, onDeleted }: {
+function SiteTab({ site, focus, brandModels, canEdit, canDelete, customer, onChanged, onDeleted }: {
   site: ProjectSite;
+  focus?: { chargerId: string; tab: ChargerDetailTab; nonce: number } | null;
   brandModels: BrandModel[];
   canEdit: boolean;
   canDelete: boolean;
@@ -1298,6 +1416,7 @@ function SiteTab({ site, brandModels, canEdit, canDelete, customer, onChanged, o
 
       <SiteChargersCard
         siteId={site.id}
+        focus={focus}
         siteName={site.name}
         chargers={site.site_chargers}
         brandModels={brandModels}
@@ -1880,8 +1999,9 @@ function warrantyTone(endDate: string | null): { label: string; bg: string; colo
 
 type ChargerDetailTab = 'details' | 'maintenance' | 'warranty';
 
-function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, canDelete, customer, onChanged }: {
+function SiteChargersCard({ siteId, focus, siteName, chargers, brandModels, canEdit, canDelete, customer, onChanged }: {
   siteId: string;
+  focus?: { chargerId: string; tab: ChargerDetailTab; nonce: number } | null;
   siteName: string;
   chargers: SiteCharger[];
   brandModels: BrandModel[];
@@ -1920,6 +2040,16 @@ function SiteChargersCard({ siteId, siteName, chargers, brandModels, canEdit, ca
   }, [chargerIdsKey]);
   const isResidential = customer.type === 'residential';
   const formAMonths = isResidential ? 24 : 6;
+
+  // An Overview issue row lands here: select its charger and open the right
+  // detail tab. Keyed on the nonce so repeating the same click re-applies.
+  useEffect(() => {
+    if (focus && chargers.some((c) => c.id === focus.chargerId)) {
+      setSelectedId(focus.chargerId);
+      setTab(focus.tab);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.nonce]);
 
   // If the selected charger disappears (deleted / reload) drop the selection.
   useEffect(() => {
