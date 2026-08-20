@@ -7,6 +7,11 @@ import {
   type RawInvoice, type CustomerLite,
 } from './registryInvoice';
 
+// Boilerplate note stamped on every registry row this importer creates. The
+// registry list hides it (it's identical on every row); exported so the two
+// can't drift apart.
+export const IMPORT_NOTE = 'Created from invoice import';
+
 const PROJECT_FILES_BUCKET = 'project-files';
 const NEW = '__new__';
 const EXTRACT_CONCURRENCY = 3;
@@ -214,7 +219,7 @@ export function InvoiceIngestModal({ onClose, onDone }: { onClose: () => void; o
           else {
             const cName = customers.find((c) => c.id === customerId)?.name ?? r.billToName.trim() ?? 'Registry';
             const { data: proj, error: pErr } = await supabase.from('projects')
-              .insert({ customer_id: customerId, name: cName, status: 'active', notes: 'Created from invoice import' })
+              .insert({ customer_id: customerId, name: cName, status: 'active', notes: IMPORT_NOTE })
               .select('id').single();
             if (pErr || !proj) { errors.push(`${r.fileName}: registry — ${pErr?.message ?? 'failed'}`); continue; }
             projectId = proj.id; registriesCreated++;

@@ -3,7 +3,7 @@ import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
-import { Search, Mail, Pencil, FileText, Upload, Download as DownloadIcon, ChevronDown, X, MapPin, Navigation, Trash2 } from 'lucide-react';
+import { Search, Mail, Pencil, FileText, Upload, Download as DownloadIcon, ChevronDown, X, MapPin, Navigation } from 'lucide-react';
 import { OneMapAutocomplete } from '../components/OneMapAutocomplete';
 import { searchOneMap } from '../lib/onemap';
 import { googleMapsDirections, hasNavTarget } from '../lib/navLinks';
@@ -17,7 +17,7 @@ import {
   TYPE_LABEL,
   TYPE_PALETTE,
 } from './Customers';
-import { InvoiceIngestModal } from './RegistryInvoiceImport';
+import { InvoiceIngestModal, IMPORT_NOTE } from './RegistryInvoiceImport';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -162,7 +162,7 @@ const ASSIGNEE_COLORS: Record<string, { bg: string; color: string }> = {
 };
 
 export function ScreenProjects() {
-  const { can, isAdmin, user } = usePermissions();
+  const { can, isAdmin } = usePermissions();
   const canEdit   = can('projects', 'can_edit');
   const canDelete = can('projects', 'can_delete');
 
@@ -179,8 +179,6 @@ export function ScreenProjects() {
   const [adding, setAdding]       = useState(false);
   const [importingInvoices, setImportingInvoices] = useState(false);
   const [viewingId, setViewingId] = useState<string | null>(null);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const fetchAll = async () => {
     setLoading(true);
@@ -253,65 +251,6 @@ export function ScreenProjects() {
     const { data: created } = await supabase.from('projects').insert(data).select().single();
     await fetchAll();
     if (created) setViewingId(created.id);
-  };
-
-  // Mark an empty registry as taken up for charger entry. One-way: once claimed it can't be undone.
-  const claimChargerEntry = async (p: Project) => {
-    if (p.charger_entry_claimed_at) return;
-    if (!window.confirm(`Take up "${p.name}" to key in its charger? This locks it to you and can’t be undone.`)) return;
-    await supabase.from('projects')
-      .update({ charger_entry_claimed_by: user.full_name || user.email, charger_entry_claimed_at: new Date().toISOString() })
-      .eq('id', p.id);
-    await fetchAll();
-  };
-
-  // Flag a mistaken registry for an admin to delete (e.g. an invoice that wasn't a charger
-  // procurement), or clear the flag. Editors can toggle; admins act on it via delete.
-  const toggleDeletionFlag = async (p: Project) => {
-    if (p.deletion_flagged_at) {
-      await supabase.from('projects').update({ deletion_flagged_by: null, deletion_flagged_at: null, deletion_flag_reason: null }).eq('id', p.id);
-    } else {
-      const reason = window.prompt('Flag this registry for an admin to delete. Reason (optional):');
-      if (reason === null) return; // cancelled
-      await supabase.from('projects')
-        .update({ deletion_flagged_by: user.full_name || user.email, deletion_flagged_at: new Date().toISOString(), deletion_flag_reason: reason.trim() || null })
-        .eq('id', p.id);
-    }
-    await fetchAll();
-  };
-
-  // Directly delete a flagged registry (admin, from the list). Cascades to its
-  // sites, chargers, LTA records, warranty claims, files and their storage.
-  const deleteFlagged = async (p: Project) => {
-    setDeletingId(p.id);
-    setError(null);
-    const err = await deleteRegistryProject(p.id);
-    setDeletingId(null);
-    setConfirmDeleteId(null);
-    if (err) { setError(err); return; }
-    // Drop the row locally instead of refetching, so the table doesn't flash a
-    // full reload on every delete. The KPI counts derive from `projects`.
-    setProjects((ps) => ps.filter((x) => x.id !== p.id));
-  };
-
-  // Mark a registry as a special case with a remark, edit the remark, or clear it.
-  const toggleSpecialCase = async (p: Project) => {
-    if (p.special_case_at) {
-      await supabase.from('projects').update({ special_case_at: null, special_case_by: null, special_case_remark: null }).eq('id', p.id);
-    } else {
-      const remark = window.prompt('Mark as a special case. Remark:');
-      if (remark === null) return; // cancelled
-      await supabase.from('projects')
-        .update({ special_case_at: new Date().toISOString(), special_case_by: user.full_name || user.email, special_case_remark: remark.trim() || null })
-        .eq('id', p.id);
-    }
-    await fetchAll();
-  };
-  const editSpecialRemark = async (p: Project) => {
-    const remark = window.prompt('Edit special-case remark:', p.special_case_remark ?? '');
-    if (remark === null) return;
-    await supabase.from('projects').update({ special_case_remark: remark.trim() || null }).eq('id', p.id);
-    await fetchAll();
   };
 
   if (viewingId) {
@@ -414,16 +353,16 @@ export function ScreenProjects() {
           <table style={{ width: '100%', minWidth: 600, borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
-                {['Customer', 'Status', 'Sites', 'Chargers', 'Assigned', 'Take-up', 'Special', 'Flag', 'Updated'].map((h) => (
+                {['Customer', 'Type', 'Status', 'Sites', 'Chargers', 'Updated'].map((h) => (
                   <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={9} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</td></tr>
+                <tr><td colSpan={6} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</td></tr>
               ) : visible.length === 0 ? (
-                <tr><td colSpan={9} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
+                <tr><td colSpan={6} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
                   {projects.length === 0 ? 'No customers yet. Click "+ New Registration" to add one.' : 'No customers match your filters.'}
                 </td></tr>
               ) : visible.map((p) => {
@@ -431,7 +370,6 @@ export function ScreenProjects() {
                 const cust = customerById(p.customer_id);
                 const open = () => setViewingId(p.id);
                 const chargerCount = chargerCounts[p.id] ?? 0;
-                const claimed = !!p.charger_entry_claimed_at;
                 const flagged = !!p.deletion_flagged_at;
                 const baseBg = flagged ? '#FDF2F2' : 'transparent';
                 return (
@@ -439,17 +377,19 @@ export function ScreenProjects() {
                     onMouseEnter={(e) => (e.currentTarget.style.background = flagged ? '#FBE9E9' : '#FAFAFA')}
                     onMouseLeave={(e) => (e.currentTarget.style.background = baseBg)}>
                     <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span style={{ fontWeight: 700, color: '#1a1a1a', fontSize: 13 }}>{p.name}</span>
-                        {cust && (
-                          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: TYPE_PALETTE[cust.type].bg, color: TYPE_PALETTE[cust.type].color }}>
-                            {TYPE_LABEL[cust.type]}
-                          </span>
-                        )}
-                      </div>
-                      {p.notes && (
+                      <span style={{ fontWeight: 700, color: '#1a1a1a', fontSize: 13 }}>{p.name}</span>
+                      {/* The importer stamps every row with the same note — noise in a
+                          list. A note someone actually typed still shows. */}
+                      {p.notes && p.notes.trim() !== IMPORT_NOTE && (
                         <div style={{ fontSize: 11, color: C.slate, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 480 }}>{p.notes}</div>
                       )}
+                    </td>
+                    <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer' }}>
+                      {cust ? (
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: TYPE_PALETTE[cust.type].bg, color: TYPE_PALETTE[cust.type].color, whiteSpace: 'nowrap' }}>
+                          {TYPE_LABEL[cust.type]}
+                        </span>
+                      ) : <span style={{ color: C.slate, fontSize: 13 }}>—</span>}
                     </td>
                     <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer' }}>
                       <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, background: palette.bg, color: palette.color }}>
@@ -458,83 +398,6 @@ export function ScreenProjects() {
                     </td>
                     <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer', fontSize: 13, color: '#1a1a1a' }}>{siteCounts[p.id] ?? 0}</td>
                     <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.green }}>{chargerCount}</td>
-                    <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer' }}>
-                      {(() => {
-                        const a = assigneeOf.get(p.id);
-                        const col = a ? ASSIGNEE_COLORS[a] : null;
-                        return a
-                          ? <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, background: col?.bg, color: col?.color, whiteSpace: 'nowrap' }}>{a}</span>
-                          : <span style={{ color: C.slate, fontSize: 13 }}>—</span>;
-                      })()}
-                    </td>
-                    <td style={{ padding: '13px 16px' }}>
-                      {chargerCount > 0 ? (
-                        <span style={{ color: C.slate, fontSize: 13 }}>—</span>
-                      ) : (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}
-                          title={claimed ? `Taken up by ${p.charger_entry_claimed_by ?? '—'} · ${new Date(p.charger_entry_claimed_at as string).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}` : 'Check to take up keying in this charger (can’t be undone)'}>
-                          <input type="checkbox" checked={claimed} disabled={claimed || !canEdit}
-                            onChange={() => void claimChargerEntry(p)}
-                            style={{ width: 16, height: 16, cursor: (claimed || !canEdit) ? 'default' : 'pointer', accentColor: C.green }} />
-                          {claimed && <span style={{ fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 130 }}>{p.charger_entry_claimed_by}</span>}
-                        </div>
-                      )}
-                    </td>
-                    <td style={{ padding: '13px 16px' }}>
-                      {(() => {
-                        const special = !!p.special_case_at;
-                        return (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}
-                            title={special
-                              ? `Special case by ${p.special_case_by ?? '—'} · ${new Date(p.special_case_at as string).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}${p.special_case_remark ? ` · ${p.special_case_remark}` : ''}`
-                              : 'Mark as a special case and add a remark'}>
-                            <input type="checkbox" checked={special} disabled={!canEdit}
-                              onChange={() => void toggleSpecialCase(p)}
-                              style={{ width: 16, height: 16, cursor: canEdit ? 'pointer' : 'default', accentColor: C.yellow }} />
-                            {special && (
-                              <span onClick={canEdit ? () => void editSpecialRemark(p) : undefined}
-                                title={canEdit ? 'Click to edit remark' : undefined}
-                                style={{ fontSize: 11, fontWeight: 600, color: '#B45309', background: '#FFF0E0', padding: '2px 8px', borderRadius: 99,
-                                  maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                  cursor: canEdit ? 'pointer' : 'default' }}>
-                                {p.special_case_remark || 'Special'}
-                              </span>
-                            )}
-                          </div>
-                        );
-                      })()}
-                    </td>
-                    <td style={{ padding: '13px 16px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}
-                        title={flagged
-                          ? `Flagged for deletion by ${p.deletion_flagged_by ?? '—'} · ${new Date(p.deletion_flagged_at as string).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}${p.deletion_flag_reason ? ` · ${p.deletion_flag_reason}` : ''}`
-                          : 'Flag this registry for an admin to review & delete'}>
-                        <input type="checkbox" checked={flagged} disabled={!canEdit}
-                          onChange={() => void toggleDeletionFlag(p)}
-                          style={{ width: 16, height: 16, cursor: canEdit ? 'pointer' : 'default', accentColor: '#C0321A' }} />
-                        {flagged && <span style={{ fontSize: 10, fontWeight: 700, color: '#C0321A', background: '#FDEAEA', padding: '2px 8px', borderRadius: 99, whiteSpace: 'nowrap' }}>To delete</span>}
-                        {flagged && canDelete && (
-                          confirmDeleteId === p.id ? (
-                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                              <button onClick={() => void deleteFlagged(p)} disabled={deletingId === p.id}
-                                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 8, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: deletingId === p.id ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>
-                                {deletingId === p.id ? 'Deleting…' : 'Confirm'}
-                              </button>
-                              <button onClick={() => setConfirmDeleteId(null)} disabled={deletingId === p.id}
-                                style={{ padding: '4px 8px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-                                Cancel
-                              </button>
-                            </span>
-                          ) : (
-                            <button onClick={() => setConfirmDeleteId(p.id)}
-                              title={`Delete “${p.name}” and all its sites, chargers, forms and files. This cannot be undone.`}
-                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 8, border: '1px solid #FDEAEA', background: C.white, color: '#C0321A', fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                              <Trash2 size={11} strokeWidth={2.25} /> Delete
-                            </button>
-                          )
-                        )}
-                      </div>
-                    </td>
                     <td onClick={open} style={{ padding: '13px 16px', color: C.slate, fontSize: 12, whiteSpace: 'nowrap', cursor: 'pointer' }}>
                       {new Date(p.updated_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
                     </td>
