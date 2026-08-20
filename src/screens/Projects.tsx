@@ -2308,6 +2308,7 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
   const [ltaRecords, setLtaRecords] = useState<LtaRecord[]>([]);
   const [addingForm, setAddingForm] = useState<LtaFormType | null>(null);
   const [addingInvoiceFor, setAddingInvoiceFor] = useState<LtaRecord | null>(null);
+  const [emailingRec, setEmailingRec] = useState<LtaRecord | null>(null);
   const [addingForm1, setAddingForm1] = useState(false);
   const [editingDue, setEditingDue] = useState<LtaFormType | null>(null);
   const [dueDraft, setDueDraft] = useState('');
@@ -2384,6 +2385,9 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
     : <>Inspected · <span style={{ color: AMBER, fontWeight: 700 }}>invoice pending</span></>;
   const completedActions = (rec: LtaRecord): TLAction[] => {
     const a: TLAction[] = [{ label: 'View', onClick: () => void openLtaRecord(rec), tone: 'green' }];
+    // Email the report (with its invoice when one is attached) straight from the
+    // timeline — same modal the LTA Inspection tab uses.
+    a.push({ label: 'Email', onClick: () => setEmailingRec(rec), tone: 'green' });
     if (!rec.invoice_path) a.push({ label: 'Add invoice', onClick: () => setAddingInvoiceFor(rec), tone: 'amber' });
     return a;
   };
@@ -2533,6 +2537,12 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
     {addingInvoiceFor && (
       <AddInvoiceModal record={addingInvoiceFor}
         onClose={() => setAddingInvoiceFor(null)} onSaved={async () => { await refresh(); setAddingInvoiceFor(null); }} />
+    )}
+    {emailingRec && (
+      <SendLtaEmailModal record={emailingRec}
+        formDisplayName={computeLtaFilename(emailingRec.form_type, charger.asset_tag, emailingRec.performed_at, siteName)}
+        charger={charger} siteName={siteName} customer={customer}
+        onClose={() => setEmailingRec(null)} onSent={refresh} />
     )}
     {addingForm1 && (
       <AddForm1Modal charger={charger} siteName={siteName}
