@@ -8,14 +8,20 @@ import { Search, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Handshake, F
 
 // ── Types ─────────────────────────────────────────────────────────
 
-export type QuoteStatus = 'Draft' | 'Sent' | 'Won' | 'Lost';
-export const QUOTE_STATUSES: QuoteStatus[] = ['Draft', 'Sent', 'Won', 'Lost'];
+// 'Long-term' is a tender submission that may take years to convert. It is a
+// parked record, NOT active pipeline: it's deliberately excluded from pipeline
+// value, open quotes and win rate (those check Draft/Sent/Won/Lost explicitly,
+// here and in SalesManager), so a multi-year lead can't flatter this month's
+// numbers. It is also not "decided", so it carries no outcome date.
+export type QuoteStatus = 'Draft' | 'Sent' | 'Won' | 'Long-term' | 'Lost';
+export const QUOTE_STATUSES: QuoteStatus[] = ['Draft', 'Sent', 'Won', 'Long-term', 'Lost'];
 
 export const QUOTE_STATUS_COLORS: Record<QuoteStatus, { bg: string; color: string }> = {
-  Draft: { bg: '#F3F3F3', color: '#767B77' },
-  Sent:  { bg: '#E3F0FF', color: '#1A62C0' },
-  Won:   { bg: '#E4F3E3', color: '#1B512D' },
-  Lost:  { bg: '#FDEAEA', color: '#C0321A' },
+  Draft:       { bg: '#F3F3F3', color: '#767B77' },
+  Sent:        { bg: '#E3F0FF', color: '#1A62C0' },
+  Won:         { bg: '#E4F3E3', color: '#1B512D' },
+  'Long-term': { bg: '#F0E8FF', color: '#6B21A8' },
+  Lost:        { bg: '#FDEAEA', color: '#C0321A' },
 };
 
 export interface Quote {
@@ -443,7 +449,7 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
 
   return (
     <div style={{ overflowX: 'auto' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${QUOTE_STATUSES.length}, minmax(230px, 1fr))`, gap: 12, minWidth: 720 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${QUOTE_STATUSES.length}, minmax(230px, 1fr))`, gap: 12, minWidth: QUOTE_STATUSES.length * 230 + (QUOTE_STATUSES.length - 1) * 12 }}>
         {QUOTE_STATUSES.map((status) => {
           const col = quotes.filter((q) => q.status === status);
           const colValue = col.reduce((s, q) => s + Number(q.total), 0);

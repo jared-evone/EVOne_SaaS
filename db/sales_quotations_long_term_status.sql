@@ -1,0 +1,30 @@
+-- Sales Pipeline: add the 'Long-term' quote status.
+--
+-- A Long-term quote is a tender submission that may take years to convert. It is
+-- parked for the record and is deliberately NOT active pipeline — the app's KPIs
+-- (pipeline value, open quotes, win rate) test Draft/Sent/Won/Lost explicitly, so
+-- a multi-year lead can't flatter the current month. See QUOTE_STATUSES in
+-- src/screens/Sales.tsx.
+--
+-- STATUS: verify before applying. `sales_quotations.status` may or may not carry
+-- a CHECK constraint restricting it to the original four values. If it does,
+-- saving a Long-term quote fails with a check-violation until this runs. If the
+-- column is plain unconstrained text, no migration is needed at all and this file
+-- simply documents the allowed set.
+--
+-- Check first:
+--   select con.conname, pg_get_constraintdef(con.oid)
+--   from pg_constraint con
+--   join pg_class rel on rel.oid = con.conrelid
+--   where rel.relname = 'sales_quotations' and con.contype = 'c';
+--
+-- Then, only if a status CHECK exists, replace it (substituting the real name):
+--
+--   alter table public.sales_quotations
+--     drop constraint if exists sales_quotations_status_check;
+--
+--   alter table public.sales_quotations
+--     add constraint sales_quotations_status_check
+--     check (status in ('Draft', 'Sent', 'Won', 'Long-term', 'Lost'));
+--
+-- Existing rows are unaffected: no current value changes, the set only widens.
