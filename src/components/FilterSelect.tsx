@@ -23,24 +23,36 @@ export function FilterSelect({ groups, selected, onChange, placeholder = 'All re
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
-  // The panel must OVERLAY the page, never extend it: cap the option list to the
-  // viewport space below the trigger (or flip upward when that's too tight).
-  const [listMax, setListMax] = useState(300);
-  const [openUp, setOpenUp] = useState(false);
+  // The panel is position:FIXED and anchored to the trigger's viewport rect, so
+  // it genuinely overlays the page — no ancestor scroll container can clip it or
+  // grow to fit it. The option list caps to the viewport space on the chosen
+  // side and scrolls internally; the panel flips upward when below is tight.
+  const [anchor, setAnchor] = useState<{ left: number; width: number; top: number; bottom: number; up: boolean; listMax: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   const openPanel = () => {
     const r = ref.current?.getBoundingClientRect();
-    if (r) {
-      const below = window.innerHeight - r.bottom - 70; // room under the trigger, minus panel chrome
-      const above = r.top - 70;
-      const up = below < 180 && above > below;
-      setOpenUp(up);
-      setListMax(Math.max(140, Math.min(300, (up ? above : below))));
-    }
+    if (!r) return;
+    const below = window.innerHeight - r.bottom - 90; // minus panel chrome (search box, padding)
+    const above = r.top - 90;
+    const up = below < 180 && above > below;
+    setAnchor({
+      left: r.left, width: r.width, top: r.bottom + 6, bottom: window.innerHeight - r.top + 6,
+      up, listMax: Math.max(120, Math.min(300, up ? above : below)),
+    });
     setOpen(true);
     setQ('');
   };
+
+  // A fixed panel doesn't follow its trigger — close it if the page scrolls or
+  // resizes underneath.
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close); };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -114,10 +126,12 @@ export function FilterSelect({ groups, selected, onChange, placeholder = 'All re
         <ChevronDown size={15} strokeWidth={2.25} style={{ flexShrink: 0, transition: 'transform .15s', transform: open ? 'rotate(180deg)' : 'none' }} />
       </button>
 
-      {open && (
+      {open && anchor && (
         <div style={{
-          position: 'absolute', left: 0, right: 0, zIndex: 60,
-          top: openUp ? undefined : 'calc(100% + 6px)', bottom: openUp ? 'calc(100% + 6px)' : undefined,
+          position: 'fixed', zIndex: 1300,
+          left: anchor?.left ?? 0, width: anchor?.width ?? 240,
+          top: anchor?.up ? undefined : anchor?.top,
+          bottom: anchor?.up ? anchor?.bottom : undefined,
           background: C.white, border: '1px solid #EBEBEB', borderRadius: 12,
           boxShadow: '0 12px 32px rgba(0,0,0,.14)', padding: 6,
           display: 'flex', flexDirection: 'column', gap: 6,
@@ -132,7 +146,7 @@ export function FilterSelect({ groups, selected, onChange, placeholder = 'All re
             </span>
           </div>
 
-          <div style={{ maxHeight: listMax, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div style={{ maxHeight: anchor?.listMax ?? 300, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
             {visibleGroups.length === 0 && (
               <div style={{ padding: 12, textAlign: 'center', color: C.slate, fontSize: 12 }}>No matching filters</div>
             )}
