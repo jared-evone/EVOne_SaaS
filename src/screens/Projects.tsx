@@ -722,12 +722,16 @@ function ProjectDetailPage({ projectId, initialTarget, customers, canEdit, canDe
   };
   useEffect(() => { void fetchAll(); }, [projectId]);
 
-  // If the currently-active site tab disappears (delete / reload), fall back to overview.
+  // If the currently-active site tab disappears (delete / reload), fall back to
+  // overview — but not while the first fetch is still in flight, or a deep link
+  // into a site tab (from To Do / Overview issues) gets knocked back to
+  // Overview before the sites have even arrived.
   useEffect(() => {
+    if (loading) return;
     if (tab.startsWith('site:') && !sites.find((s) => `site:${s.id}` === tab)) {
       setTab('overview');
     }
-  }, [sites, tab]);
+  }, [sites, tab, loading]);
 
   const handleDelete = async () => {
     setDeleting(true);
