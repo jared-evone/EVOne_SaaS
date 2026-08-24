@@ -499,6 +499,8 @@ interface SiteCharger {
   lta_contract_start_date: string | null;
   form_1_path: string | null;
   form_1_filename: string | null;
+  form_1_invoice_path: string | null;
+  form_1_invoice_filename: string | null;
   notes: string | null;
 }
 
@@ -576,13 +578,14 @@ async function collectChargerStoragePaths(chargerIds: string[]): Promise<string[
 // and the flagged-row delete in the list.
 async function deleteRegistryProject(projectId: string): Promise<string | null> {
   const [{ data: siteRows }, { data: files }] = await Promise.all([
-    supabase.from('project_sites').select('lta_contract_path, site_chargers(id, form_1_path)').eq('project_id', projectId),
+    supabase.from('project_sites').select('lta_contract_path, site_chargers(id, form_1_path, form_1_invoice_path)').eq('project_id', projectId),
     supabase.from('project_files').select('storage_path').eq('project_id', projectId),
   ]);
-  const sites = (siteRows ?? []) as Array<{ lta_contract_path: string | null; site_chargers: Array<{ id: string; form_1_path: string | null }> }>;
+  const sites = (siteRows ?? []) as Array<{ lta_contract_path: string | null; site_chargers: Array<{ id: string; form_1_path: string | null; form_1_invoice_path: string | null }> }>;
   const chargers = sites.flatMap((st) => st.site_chargers ?? []);
   const chargerFormPaths = [
     ...chargers.map((c) => c.form_1_path),
+    ...chargers.map((c) => c.form_1_invoice_path),
     ...sites.map((st) => st.lta_contract_path),
     ...(await collectChargerStoragePaths(chargers.map((c) => c.id))),
   ].filter((x): x is string => !!x);
@@ -1486,6 +1489,7 @@ function SiteTab({ site, focus, brandModels, canEdit, canDelete, customer, onCha
     // by the DB, but storage objects don't cascade — clean them up first.
     const paths: string[] = [
       ...site.site_chargers.map((c) => c.form_1_path),
+      ...site.site_chargers.map((c) => c.form_1_invoice_path),
       site.lta_contract_path,
       ...(await collectChargerStoragePaths(site.site_chargers.map((c) => c.id))),
     ].filter((p): p is string => !!p);
@@ -2242,6 +2246,7 @@ function SiteChargersCard({ siteId, focus, siteName, chargers, brandModels, canE
     // storage objects + the Form 1 PDF first so nothing is orphaned in the bucket.
     const paths: string[] = [
       selected.form_1_path,
+      selected.form_1_invoice_path,
       ...(await collectChargerStoragePaths([selected.id])),
     ].filter((p): p is string => !!p);
     if (paths.length) await supabase.storage.from(CHARGER_FORMS_BUCKET).remove(paths);
@@ -2376,6 +2381,8 @@ function SiteChargersCard({ siteId, focus, siteName, chargers, brandModels, canE
             warranty_end_date: editing.warranty_end_date,
             form_1_path: editing.form_1_path,
             form_1_filename: editing.form_1_filename,
+            form_1_invoice_path: editing.form_1_invoice_path,
+            form_1_invoice_filename: editing.form_1_invoice_filename,
             notes: editing.notes,
           }}
           brandModels={brandModels}
@@ -2389,6 +2396,7 @@ function SiteChargersCard({ siteId, focus, siteName, chargers, brandModels, canE
           onDelete={async () => {
             const paths: string[] = [
               editing.form_1_path,
+              editing.form_1_invoice_path,
               ...(await collectChargerStoragePaths([editing.id])),
             ].filter((p): p is string => !!p);
             if (paths.length) await supabase.storage.from(CHARGER_FORMS_BUCKET).remove(paths);
@@ -2495,6 +2503,27 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
     const { data } = await supabase.storage.from(CHARGER_FORMS_BUCKET)
       .createSignedUrl(charger.form_1_path, 60, mode === 'download' ? { download: form1DisplayName } : undefined);
     if (data?.signedUrl) window.open(data.signedUrl, mode === 'download' ? '_self' : '_blank');
+  };
+
+  // Installation invoice, attached straight from the timeline node.
+  const form1InvoiceRef = useRef<HTMLInputElement>(null);
+  const openForm1Invoice = async () => {
+    if (!charger.form_1_invoice_path) return;
+    const { data } = await supabase.storage.from(CHARGER_FORMS_BUCKET).createSignedUrl(charger.form_1_invoice_path, 60);
+    if (data?.signedUrl) window.open(data.signedUrl, '_blank');
+  };
+  const uploadForm1Invoice = async (file: File) => {
+    if (file.type && file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      alert('Invoice must be a PDF.');
+      return;
+    }
+    const path = `form-1-invoice/${crypto.randomUUID()}/${pathSafe(file.name)}`;
+    const up = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(path, file, { contentType: file.type || 'application/pdf' });
+    if (up.error) { alert(`Upload failed: ${up.error.message}`); return; }
+    const { error } = await supabase.from('site_chargers')
+      .update({ form_1_invoice_path: path, form_1_invoice_filename: file.name }).eq('id', charger.id);
+    if (error) { void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([path]); alert(error.message); return; }
+    await onChargerChanged();
   };
 
   const openLtaRecord = async (record: LtaRecord) => {
@@ -2642,7 +2671,18 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
         ? { dot: GREEN, titleColor: BLACK, title: 'Procurement', date: charger.procurement_date, subtitle: 'Charger procured', actions: [] }
         : { dot: RED, titleColor: RED, title: 'Procurement', date: null, subtitle: 'Procurement date pending', actions: [] }, sort: procSort },
     { node: charger.form_1_path
-        ? { dot: GREEN, titleColor: BLACK, title: 'Installation + Form 1', date: null, subtitle: 'Form 1 attached', actions: [{ label: 'View', onClick: () => void openForm1('view'), tone: 'green' }] }
+        ? {
+            dot: charger.form_1_invoice_path ? GREEN : AMBER, titleColor: BLACK, title: 'Installation + Form 1', date: null,
+            subtitle: charger.form_1_invoice_path
+              ? 'Form 1 · invoice attached'
+              : <>Form 1 attached · <span style={{ color: AMBER, fontWeight: 700 }}>invoice pending</span></>,
+            actions: [
+              { label: 'View', onClick: () => void openForm1('view'), tone: 'green' },
+              ...(charger.form_1_invoice_path
+                ? [{ label: 'Invoice', onClick: () => void openForm1Invoice(), tone: 'plain' } as TLAction]
+                : [{ label: 'Add invoice', onClick: () => form1InvoiceRef.current?.click(), tone: 'amber' } as TLAction]),
+            ],
+          }
         : { dot: RED, titleColor: RED, title: 'Installation + Form 1', date: null, subtitle: 'Form 1 pending upload', actions: [{ label: 'Upload →', onClick: () => setAddingForm1(true), tone: 'plain' }] }, sort: installSort },
     { node: { dot: charger.turn_on_date ? GREEN : RED, titleColor: charger.turn_on_date ? BLACK : RED, title: 'Registration', date: charger.turn_on_date, subtitle: charger.turn_on_date ? 'Charger commissioned' : 'Registration date not set', actions: [] }, sort: regSort },
     ...(charger.lta_letter_date ? [{
@@ -2710,6 +2750,8 @@ function ChargerDetailsPanel({ charger, siteName, customer, onTabChange, onCharg
         charger={charger} siteName={siteName} customer={customer}
         onClose={() => setEmailingRec(null)} onSent={refresh} />
     )}
+    <input ref={form1InvoiceRef} type="file" accept="application/pdf" style={{ display: 'none' }}
+      onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void uploadForm1Invoice(f); }} />
     {addingForm1 && (
       <AddForm1Modal charger={charger} siteName={siteName}
         onClose={() => setAddingForm1(false)} onSaved={async () => { await onChargerChanged(); setAddingForm1(false); }} />
@@ -5002,6 +5044,8 @@ interface ChargerFormData {
   warranty_end_date: string | null;
   form_1_path: string | null;
   form_1_filename: string | null;
+  form_1_invoice_path: string | null;
+  form_1_invoice_filename: string | null;
   notes: string | null;
 }
 
@@ -5011,6 +5055,7 @@ function blankCharger(): ChargerFormData {
     turn_on_date: null, lta_letter_date: null, lta_letter_forms: null, form_a_next_date: null, form_d_next_date: null,
     warranty_start_date: null, warranty_end_date: null,
     form_1_path: null, form_1_filename: null,
+    form_1_invoice_path: null, form_1_invoice_filename: null,
     notes: null,
   };
 }
@@ -5064,6 +5109,32 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
 
   const form1DisplayName = computeForm1Filename(form.asset_tag, form.turn_on_date, siteName);
 
+  const invoiceInputRef = useRef<HTMLInputElement>(null);
+  const handleInvoiceUpload = async (file: File) => {
+    setForm1Error(null);
+    if (file.type && file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      setForm1Error('Invoice must be a PDF.');
+      return;
+    }
+    setForm1Busy(true);
+    const path = `form-1-invoice/${crypto.randomUUID()}/${pathSafe(file.name)}`;
+    const { error } = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(path, file, { contentType: file.type || 'application/pdf' });
+    setForm1Busy(false);
+    if (error) { setForm1Error(error.message); return; }
+    if (form.form_1_invoice_path) void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([form.form_1_invoice_path]);
+    setForm((f) => ({ ...f, form_1_invoice_path: path, form_1_invoice_filename: file.name }));
+  };
+  const openInvoice = async (mode: 'view' | 'download') => {
+    if (!form.form_1_invoice_path) return;
+    const { data } = await supabase.storage.from(CHARGER_FORMS_BUCKET)
+      .createSignedUrl(form.form_1_invoice_path, 60, mode === 'download' ? { download: form.form_1_invoice_filename ?? 'invoice.pdf' } : undefined);
+    if (data?.signedUrl) window.open(data.signedUrl, mode === 'download' ? '_self' : '_blank');
+  };
+  const removeInvoice = () => {
+    if (form.form_1_invoice_path) void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([form.form_1_invoice_path]);
+    setForm((f) => ({ ...f, form_1_invoice_path: null, form_1_invoice_filename: null }));
+  };
+
   const openForm1 = async (mode: 'view' | 'download') => {
     if (!form.form_1_path) return;
     const { data } = await supabase.storage.from(CHARGER_FORMS_BUCKET)
@@ -5114,6 +5185,8 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
       warranty_end_date:       form.warranty_end_date || null,
       form_1_path:             form.form_1_path || null,
       form_1_filename:         form.form_1_path ? computeForm1Filename(form.asset_tag, form.turn_on_date, siteName) : null,
+      form_1_invoice_path:     form.form_1_invoice_path || null,
+      form_1_invoice_filename: form.form_1_invoice_path ? form.form_1_invoice_filename : null,
       notes:                   form.notes && form.notes.trim() ? form.notes.trim() : null,
     });
     setSaving(false);
@@ -5325,6 +5398,28 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
             onChange={(e) => {
               const file = e.target.files?.[0];
               if (file) void handleForm1Upload(file);
+              e.target.value = '';
+            }} />
+          {/* Installation invoice — mirrors the Form A/D invoice pattern */}
+          {form.form_1_invoice_path ? (
+            <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 10, fontWeight: 700, color: C.green, background: C.honeydew, padding: '2px 8px', borderRadius: 6, textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>Invoice</span>
+              <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{form.form_1_invoice_filename}</span>
+              <button type="button" onClick={() => void openInvoice('view')}
+                style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>View</button>
+              <button type="button" onClick={removeInvoice}
+                style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Remove</button>
+            </div>
+          ) : (
+            <button type="button" onClick={() => invoiceInputRef.current?.click()} disabled={form1Busy}
+              style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px 12px', borderRadius: 10, border: '1px dashed #C8E6C9', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', alignSelf: 'flex-start' }}>
+              <Upload size={12} strokeWidth={2.25} /> Attach installation invoice (PDF)
+            </button>
+          )}
+          <input ref={invoiceInputRef} type="file" accept="application/pdf" style={{ display: 'none' }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void handleInvoiceUpload(file);
               e.target.value = '';
             }} />
           {form1Error && (
