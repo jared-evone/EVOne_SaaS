@@ -519,6 +519,10 @@ interface ProjectSite {
   lta_contract_start_date: string | null;
   lta_contract_path: string | null;
   lta_contract_filename: string | null;
+  managed_cpo: boolean;
+  cpo_platform_fee: number | null;
+  cpo_contract_start: string | null;
+  cpo_contract_months: number | null;
   site_chargers: SiteCharger[];
 }
 
@@ -588,15 +592,20 @@ async function collectChargerStoragePaths(chargerIds: string[]): Promise<string[
 // and the flagged-row delete in the list.
 async function deleteRegistryProject(projectId: string): Promise<string | null> {
   const [{ data: siteRows }, { data: files }] = await Promise.all([
-    supabase.from('project_sites').select('lta_contract_path, site_chargers(id, form_1_path, form_1_invoice_path)').eq('project_id', projectId),
+    supabase.from('project_sites').select('id, lta_contract_path, site_chargers(id, form_1_path, form_1_invoice_path)').eq('project_id', projectId),
     supabase.from('project_files').select('storage_path').eq('project_id', projectId),
   ]);
-  const sites = (siteRows ?? []) as Array<{ lta_contract_path: string | null; site_chargers: Array<{ id: string; form_1_path: string | null; form_1_invoice_path: string | null }> }>;
+  const sites = (siteRows ?? []) as Array<{ id: string; lta_contract_path: string | null; site_chargers: Array<{ id: string; form_1_path: string | null; form_1_invoice_path: string | null }> }>;
+  const siteIds = sites.map((st) => st.id);
+  const { data: cpoInvRows } = siteIds.length
+    ? await supabase.from('site_cpo_invoices').select('storage_path').in('site_id', siteIds)
+    : { data: [] as { storage_path: string | null }[] };
   const chargers = sites.flatMap((st) => st.site_chargers ?? []);
   const chargerFormPaths = [
     ...chargers.map((c) => c.form_1_path),
     ...chargers.map((c) => c.form_1_invoice_path),
     ...sites.map((st) => st.lta_contract_path),
+    ...((cpoInvRows ?? []) as { storage_path: string | null }[]).map((r) => r.storage_path),
     ...(await collectChargerStoragePaths(chargers.map((c) => c.id))),
   ].filter((x): x is string => !!x);
   const projectFilePaths = ((files ?? []) as Array<{ storage_path: string | null }>).map((f) => f.storage_path).filter((x): x is string => !!x);
@@ -1497,10 +1506,12 @@ function SiteTab({ site, focus, brandModels, canEdit, canDelete, customer, onCha
     setDeleting(true);
     // Row cascade (site_chargers → charger_lta_records / warranty_claims) is handled
     // by the DB, but storage objects don't cascade — clean them up first.
+    const { data: cpoInv } = await supabase.from('site_cpo_invoices').select('storage_path').eq('site_id', site.id);
     const paths: string[] = [
       ...site.site_chargers.map((c) => c.form_1_path),
       ...site.site_chargers.map((c) => c.form_1_invoice_path),
       site.lta_contract_path,
+      ...((cpoInv ?? []) as { storage_path: string | null }[]).map((r) => r.storage_path),
       ...(await collectChargerStoragePaths(site.site_chargers.map((c) => c.id))),
     ].filter((p): p is string => !!p);
     if (paths.length) await supabase.storage.from(CHARGER_FORMS_BUCKET).remove(paths);
@@ -1601,6 +1612,8 @@ function SiteTab({ site, focus, brandModels, canEdit, canDelete, customer, onCha
           }}
         />
       </div>
+
+      <ManagedCpoCard site={site} canEdit={canEdit} canDelete={canDelete} onChanged={onChanged} />
 
       <SiteChargersCard
         siteId={site.id}
@@ -3264,6 +3277,308 @@ function LtaInspectionPanel({ charger, siteName, canEdit, canDelete, customer }:
       <LtaSection formType="A" intervalMonths={isResidential ? 24 : 6} title={isResidential ? 'Form A · 24-month inspection' : 'Form A · 6-month inspection'}  records={formA} charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} loading={loading} onChanged={refresh} />
       {!isResidential && (
         <LtaSection formType="D" intervalMonths={12} title="Form D · 12-month inspection" records={formD} charger={charger} siteName={siteName} canEdit={canEdit} canDelete={canDelete} customer={customer} loading={loading} onChanged={refresh} />
+      )}
+    </div>
+  );
+}
+
+// ── Managed CPO (site level) ─────────────────────────────────────
+// A managed-CPO site is public charging owned by the customer but billed
+// through EVOne (we hold the EVCO licence). The site pays a platform fee per
+// term; the card tracks the current term, time to renewal, and the
+// subscription invoices issued for it.
+
+function addMonths(dateStr: string, months: number): string {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setMonth(d.getMonth() + months);
+  return toYmd(d);
+}
+
+const fmtSGD = (n: number) => `S$${Number(n).toLocaleString('en-SG', { maximumFractionDigits: 2 })}`;
+
+interface CpoInvoice {
+  id: string;
+  site_id: string;
+  invoice_date: string;
+  amount: number | null;
+  storage_path: string | null;
+  filename: string | null;
+}
+
+function ManagedCpoCard({ site, canEdit, canDelete, onChanged }: {
+  site: ProjectSite;
+  canEdit: boolean;
+  canDelete: boolean;
+  onChanged: () => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [managed, setManaged] = useState(site.managed_cpo);
+  const [fee, setFee] = useState(site.cpo_platform_fee != null ? String(site.cpo_platform_fee) : '');
+  const [start, setStart] = useState(site.cpo_contract_start ?? '');
+  const [months, setMonths] = useState(site.cpo_contract_months != null ? String(site.cpo_contract_months) : '12');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const [invoices, setInvoices] = useState<CpoInvoice[]>([]);
+  const [addingInv, setAddingInv] = useState(false);
+  const [invDate, setInvDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [invAmount, setInvAmount] = useState('');
+  const [invFile, setInvFile] = useState<File | null>(null);
+  const [confirmDelInv, setConfirmDelInv] = useState<string | null>(null);
+  const invFileRef = useRef<HTMLInputElement>(null);
+
+  const loadInvoices = async () => {
+    const { data } = await supabase.from('site_cpo_invoices')
+      .select('*').eq('site_id', site.id).order('invoice_date', { ascending: false });
+    setInvoices((data ?? []) as CpoInvoice[]);
+  };
+  useEffect(() => { if (site.managed_cpo) void loadInvoices(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [site.id, site.managed_cpo]);
+
+  const expiry = site.managed_cpo && site.cpo_contract_start && site.cpo_contract_months
+    ? addMonths(site.cpo_contract_start, site.cpo_contract_months) : null;
+  const daysLeft = expiry ? daysFromToday(expiry) : null;
+  const renewTone = daysLeft == null
+    ? { label: 'Term not set', bg: '#F3F3F3', color: '#767B77' }
+    : daysLeft < 0
+    ? { label: `Expired ${Math.abs(daysLeft)}d ago — invoice the next term`, bg: '#FDEAEA', color: '#C0321A' }
+    : daysLeft <= 60
+    ? { label: `Renews in ${daysLeft}d — time to invoice`, bg: '#FFF8E1', color: '#B07D00' }
+    : { label: `Renews in ${daysLeft}d`, bg: '#E4F3E3', color: '#1B512D' };
+
+  const save = async () => {
+    setErr(null);
+    if (managed && (!start || !Number(months))) { setErr('Set the term start date and duration.'); return; }
+    setBusy(true);
+    const { error } = await supabase.from('project_sites').update({
+      managed_cpo: managed,
+      cpo_platform_fee: managed && fee.trim() !== '' ? Number(fee) : null,
+      cpo_contract_start: managed ? start : null,
+      cpo_contract_months: managed ? Number(months) : null,
+    }).eq('id', site.id);
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    setEditing(false);
+    await onChanged();
+  };
+
+  // One-click roll into the next term: the new term starts where the old one ends.
+  const startNextTerm = async () => {
+    if (!expiry) return;
+    setBusy(true);
+    const { error } = await supabase.from('project_sites').update({ cpo_contract_start: expiry }).eq('id', site.id);
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    await onChanged();
+  };
+
+  const saveInvoice = async () => {
+    setErr(null);
+    if (!invDate) { setErr('Pick the invoice date.'); return; }
+    setBusy(true);
+    let storage_path: string | null = null;
+    let filename: string | null = null;
+    if (invFile) {
+      storage_path = `cpo-subscription/${site.id}/${crypto.randomUUID()}/${pathSafe(invFile.name)}`;
+      const up = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(storage_path, invFile, { contentType: invFile.type || 'application/pdf' });
+      if (up.error) { setBusy(false); setErr(up.error.message); return; }
+      filename = invFile.name;
+    }
+    const ins = await supabase.from('site_cpo_invoices').insert({
+      site_id: site.id, invoice_date: invDate,
+      amount: invAmount.trim() !== '' ? Number(invAmount) : null,
+      storage_path, filename,
+    });
+    setBusy(false);
+    if (ins.error) {
+      if (storage_path) void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([storage_path]);
+      setErr(ins.error.message);
+      return;
+    }
+    setAddingInv(false);
+    setInvDate(new Date().toISOString().slice(0, 10));
+    setInvAmount('');
+    setInvFile(null);
+    await loadInvoices();
+  };
+
+  const openInvoicePdf = async (inv: CpoInvoice) => {
+    if (!inv.storage_path) return;
+    const { data } = await supabase.storage.from(CHARGER_FORMS_BUCKET).createSignedUrl(inv.storage_path, 60);
+    if (data?.signedUrl) window.open(data.signedUrl, '_blank');
+  };
+
+  const deleteInvoice = async (inv: CpoInvoice) => {
+    if (inv.storage_path) await supabase.storage.from(CHARGER_FORMS_BUCKET).remove([inv.storage_path]);
+    await supabase.from('site_cpo_invoices').delete().eq('id', inv.id);
+    setConfirmDelInv(null);
+    await loadInvoices();
+  };
+
+  const miniInput: React.CSSProperties = { width: '100%', padding: '7px 10px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12.5, outline: 'none', boxSizing: 'border-box', background: C.white };
+
+  return (
+    <div style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Managed CPO</div>
+        {canEdit && !editing && (
+          <button onClick={() => setEditing(true)}
+            style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+            <Pencil size={11} strokeWidth={2.25} /> Edit
+          </button>
+        )}
+      </div>
+
+      {err && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 8, padding: '8px 12px', fontSize: 12, fontWeight: 600 }}>{err}</div>}
+
+      {editing ? (
+        <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+            <input type="checkbox" checked={managed} onChange={(e) => setManaged(e.target.checked)}
+              style={{ width: 16, height: 16, accentColor: C.green, cursor: 'pointer' }} />
+            <span style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a' }}>This site is a managed CPO</span>
+          </label>
+          <div style={{ fontSize: 11.5, color: C.slate, lineHeight: 1.5 }}>
+            Public charge points owned by the customer, billed through EVOne under our EVCO licence. The site pays a platform fee per term.
+          </div>
+          {managed && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
+              <div>
+                <FieldLabel>Platform fee (SGD / term)</FieldLabel>
+                <input type="number" min={0} value={fee} onChange={(e) => setFee(e.target.value)} placeholder="e.g. 1200" style={miniInput} />
+              </div>
+              <div>
+                <FieldLabel>Term starts</FieldLabel>
+                <input type="date" value={start} onChange={(e) => setStart(e.target.value)} style={miniInput} />
+              </div>
+              <div>
+                <FieldLabel>Term length (months)</FieldLabel>
+                <input type="number" min={1} value={months} onChange={(e) => setMonths(e.target.value)} style={miniInput} />
+              </div>
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button onClick={() => { setEditing(false); setErr(null); }} disabled={busy}
+              style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+            <button onClick={() => void save()} disabled={busy}
+              style={{ padding: '7px 18px', borderRadius: 8, border: 'none', background: busy ? '#9DC7A6' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: busy ? 'default' : 'pointer' }}>
+              {busy ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+      ) : !site.managed_cpo ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 10px', borderRadius: 99, background: '#F3F3F3', color: '#767B77', textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>Not a managed CPO</span>
+          <span style={{ fontSize: 12, color: C.slate }}>Click Edit if this site's public chargers are billed through EVOne's EVCO licence.</span>
+        </div>
+      ) : (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 10px', borderRadius: 99, background: '#E3F0FF', color: '#1A62C0', textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>Managed CPO</span>
+            <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, background: renewTone.bg, color: renewTone.color, whiteSpace: 'nowrap' }}>{renewTone.label}</span>
+            {canEdit && expiry && (daysLeft ?? 1) <= 60 && (
+              <button onClick={() => void startNextTerm()} disabled={busy} title={`New term starts ${fmtDate(expiry)}`}
+                style={{ padding: '4px 12px', borderRadius: 99, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                Start next term →
+              </button>
+            )}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
+            {([
+              ['Platform fee', site.cpo_platform_fee != null ? `${fmtSGD(site.cpo_platform_fee)} / term` : '—'],
+              ['Term', site.cpo_contract_months ? `${site.cpo_contract_months} month${site.cpo_contract_months === 1 ? '' : 's'}` : '—'],
+              ['Current term started', fmtDate(site.cpo_contract_start) ?? '—'],
+              ['Next payment due', expiry ? (fmtDate(expiry) ?? expiry) : '—'],
+            ] as const).map(([label, value]) => (
+              <div key={label} style={{ background: C.seasalt, borderRadius: 10, padding: '10px 12px' }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', marginTop: 3 }}>{value}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Subscription invoices */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                Subscription invoices{invoices.length > 0 && <span style={{ marginLeft: 4 }}>· {invoices.length}</span>}
+              </div>
+              {canEdit && !addingInv && (
+                <button onClick={() => setAddingInv(true)}
+                  style={{ marginLeft: 'auto', padding: '3px 10px', borderRadius: 99, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                  + Record invoice
+                </button>
+              )}
+            </div>
+            {addingInv && (
+              <div style={{ background: C.seasalt, borderRadius: 10, padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8 }}>
+                  <div>
+                    <FieldLabel>Invoice date</FieldLabel>
+                    <input type="date" value={invDate} onChange={(e) => setInvDate(e.target.value)} style={miniInput} />
+                  </div>
+                  <div>
+                    <FieldLabel>Amount (SGD)</FieldLabel>
+                    <input type="number" min={0} value={invAmount} onChange={(e) => setInvAmount(e.target.value)}
+                      placeholder={site.cpo_platform_fee != null ? String(site.cpo_platform_fee) : 'optional'} style={miniInput} />
+                  </div>
+                </div>
+                <input ref={invFileRef} type="file" accept="application/pdf" style={{ display: 'none' }}
+                  onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) setInvFile(f); }} />
+                {invFile ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: C.white, border: '1px solid #EBEBEB', borderRadius: 8, padding: '7px 10px' }}>
+                    <FileText size={13} strokeWidth={1.8} color={C.green} style={{ flexShrink: 0 }} />
+                    <span style={{ flex: 1, minWidth: 0, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{invFile.name}</span>
+                    <button onClick={() => setInvFile(null)} style={{ border: 'none', background: 'transparent', color: '#C0321A', cursor: 'pointer', fontSize: 13, padding: 0 }}>×</button>
+                  </div>
+                ) : (
+                  <button onClick={() => invFileRef.current?.click()}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 8, border: '1px dashed #C8E6C9', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', alignSelf: 'flex-start' }}>
+                    <Upload size={12} strokeWidth={2.25} /> Attach invoice PDF (optional)
+                  </button>
+                )}
+                <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                  <button onClick={() => { setAddingInv(false); setInvFile(null); }} disabled={busy}
+                    style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11.5, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+                  <button onClick={() => void saveInvoice()} disabled={busy || !invDate}
+                    style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: busy || !invDate ? '#9DC7A6' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 11.5, fontWeight: 700, cursor: busy || !invDate ? 'default' : 'pointer' }}>
+                    {busy ? 'Saving…' : 'Save invoice'}
+                  </button>
+                </div>
+              </div>
+            )}
+            {invoices.length === 0 && !addingInv ? (
+              <div style={{ fontSize: 12, color: C.slate, fontStyle: 'italic' }}>No subscription invoices recorded yet.</div>
+            ) : (
+              invoices.map((inv) => (
+                <div key={inv.id} style={{ display: 'flex', alignItems: 'center', gap: 10, background: C.seasalt, borderRadius: 8, padding: '8px 12px' }}>
+                  {confirmDelInv === inv.id ? (
+                    <>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: '#C0321A', flex: 1 }}>Delete this invoice{inv.storage_path ? ' and its PDF' : ''}?</span>
+                      <button onClick={() => setConfirmDelInv(null)}
+                        style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>No</button>
+                      <button onClick={() => void deleteInvoice(inv)}
+                        style={{ padding: '4px 12px', borderRadius: 6, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Yes, delete</button>
+                    </>
+                  ) : (
+                    <>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: '#1a1a1a', whiteSpace: 'nowrap' }}>{fmtDate(inv.invoice_date)}</span>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: C.green, whiteSpace: 'nowrap' }}>{inv.amount != null ? fmtSGD(inv.amount) : '—'}</span>
+                      <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{inv.filename ?? ''}</span>
+                      {inv.storage_path && (
+                        <button onClick={() => void openInvoicePdf(inv)}
+                          style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>View</button>
+                      )}
+                      {canDelete && (
+                        <button onClick={() => setConfirmDelInv(inv.id)}
+                          style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Delete</button>
+                      )}
+                    </>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </>
       )}
     </div>
   );
