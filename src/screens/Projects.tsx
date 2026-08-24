@@ -17,7 +17,7 @@ import {
   TYPE_LABEL,
   TYPE_PALETTE,
 } from './Customers';
-import { InvoiceIngestModal, IMPORT_NOTE } from './RegistryInvoiceImport';
+import { IMPORT_NOTE } from './RegistryInvoiceImport';
 import { FilterSelect, selectionCount, type FilterGroup, type FilterSelection } from '../components/FilterSelect';
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -144,7 +144,7 @@ function SearchSelect({ value, options, onChange, disabled, placeholder }: {
 
 
 export function ScreenProjects() {
-  const { can, isAdmin } = usePermissions();
+  const { can } = usePermissions();
   const canEdit   = can('projects', 'can_edit');
   const canDelete = can('projects', 'can_delete');
 
@@ -158,7 +158,6 @@ export function ScreenProjects() {
   // Status + customer type live in one grouped dropdown beside the search box.
   const [filters, setFilters] = useState<FilterSelection>({});
   const [adding, setAdding]       = useState(false);
-  const [importingInvoices, setImportingInvoices] = useState(false);
   const [viewingId, setViewingId] = useState<string | null>(null);
 
   const fetchAll = async () => {
@@ -270,12 +269,6 @@ export function ScreenProjects() {
         )}
         {canEdit && (
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
-            {isAdmin && (
-              <button onClick={() => setImportingInvoices(true)}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 18px', borderRadius: 10, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-                <Upload size={14} strokeWidth={2.25} /> Bulk Upload Invoices
-              </button>
-            )}
             <button onClick={() => setAdding(true)}
               style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
               + New Registration
@@ -348,9 +341,6 @@ export function ScreenProjects() {
       {adding && (
         <ProjectModal title="New Registration" initial={blankProject()} customers={customers}
           onSave={addProject} onClose={() => setAdding(false)} />
-      )}
-      {importingInvoices && isAdmin && (
-        <InvoiceIngestModal onClose={() => setImportingInvoices(false)} onDone={fetchAll} />
       )}
     </div>
   );
