@@ -31,6 +31,9 @@ interface TodoItem {
   kind: TodoKind;
   overdue: boolean;
   dueDate: string | null;   // null = no schedule (e.g. Form 1 missing)
+  /** The NEXT scheduled date when the item is overdue — an overdue charger still
+   *  has an upcoming cycle, so it belongs to that month's bucket too. */
+  nextDue: string | null;
   title: string;
   detail: string;
   projectName: string;
@@ -133,7 +136,7 @@ export function ScreenRegistryTodo() {
           const d = daysFromToday(expiry);
           if (d <= UPCOMING_HORIZON_DAYS) {
             out.push({
-              id: `${site.id}-cpo`, kind: 'cpo_renewal', overdue: d < 0, dueDate: expiry,
+              id: `${site.id}-cpo`, kind: 'cpo_renewal', overdue: d < 0, dueDate: expiry, nextDue: null,
               title: 'Platform subscription renewal',
               detail: site.cpo_platform_fee != null ? `Invoice the next term · S$${Number(site.cpo_platform_fee).toLocaleString('en-SG')}` : 'Invoice the next term',
               projectName: project.name, siteName: site.name, chargerTag: null,
@@ -154,14 +157,14 @@ export function ScreenRegistryTodo() {
             const firstMissed = sched.periods.find((p) => !p.performedAt);
             if (firstMissed) {
               out.push({
-                id: `${c.id}-${ft}-over`, kind, overdue: true, dueDate: firstMissed.due,
+                id: `${c.id}-${ft}-over`, kind, overdue: true, dueDate: firstMissed.due, nextDue: sched.nextDue,
                 title: `Form ${ft} inspection overdue`,
                 detail: `${sched.overdueCount} cycle${sched.overdueCount === 1 ? '' : 's'} outstanding${sched.nextDue ? ` · next scheduled ${fmtDate(sched.nextDue)}` : ''}`,
                 ...base, target: { projectId: project.id, siteId: site.id, chargerId: c.id, chargerTab: 'maintenance' },
               });
             } else if (sched.nextDue && daysFromToday(sched.nextDue) <= UPCOMING_HORIZON_DAYS) {
               out.push({
-                id: `${c.id}-${ft}-next`, kind, overdue: false, dueDate: sched.nextDue,
+                id: `${c.id}-${ft}-next`, kind, overdue: false, dueDate: sched.nextDue, nextDue: null,
                 title: `Form ${ft} inspection due`,
                 detail: 'Book the inspection ahead of the due date',
                 ...base, target: { projectId: project.id, siteId: site.id, chargerId: c.id, chargerTab: 'maintenance' },
@@ -173,7 +176,7 @@ export function ScreenRegistryTodo() {
 
           if (!c.form_1_path) {
             out.push({
-              id: `${c.id}-form1`, kind: 'form1', overdue: false, dueDate: null,
+              id: `${c.id}-form1`, kind: 'form1', overdue: false, dueDate: null, nextDue: null,
               title: 'Form 1 not uploaded',
               detail: 'Attach the installation compliance form',
               ...base, target: { projectId: project.id, siteId: site.id, chargerId: c.id, chargerTab: 'details' },
@@ -183,7 +186,7 @@ export function ScreenRegistryTodo() {
           const invItem = (rows: LtaRow[], ft: LtaFormType) => {
             if (rows[0] && !rows[0].invoice_path) {
               out.push({
-                id: `${c.id}-inv${ft}`, kind: 'invoice', overdue: false, dueDate: null,
+                id: `${c.id}-inv${ft}`, kind: 'invoice', overdue: false, dueDate: null, nextDue: null,
                 title: `Form ${ft} invoice missing`,
                 detail: `Inspection performed ${fmtDate(rows[0].performed_at)} — attach the invoice`,
                 ...base, target: { projectId: project.id, siteId: site.id, chargerId: c.id, chargerTab: 'maintenance' },
@@ -198,7 +201,7 @@ export function ScreenRegistryTodo() {
             const d = daysFromToday(c.warranty_end_date);
             if (d >= 0 && d <= 60) {
               out.push({
-                id: `${c.id}-warranty`, kind: 'warranty', overdue: false, dueDate: c.warranty_end_date,
+                id: `${c.id}-warranty`, kind: 'warranty', overdue: false, dueDate: c.warranty_end_date, nextDue: null,
                 title: 'Warranty expiring',
                 detail: 'Review coverage / offer a maintenance contract',
                 ...base, target: { projectId: project.id, siteId: site.id, chargerId: c.id, chargerTab: 'warranty' },
@@ -225,14 +228,23 @@ export function ScreenRegistryTodo() {
   // ── Filters ──
   const thisMonth = monthKey(toYmd(new Date()));
   const nextMonth = monthKey(addMonthsYmd(toYmd(new Date()), 1));
-  const windowOf = (it: TodoItem): string => {
-    if (!it.dueDate) return 'nodate';
-    if (it.overdue || daysFromToday(it.dueDate) < 0) return 'overdue';
-    const mk = monthKey(it.dueDate);
-    if (mk === thisMonth) return 'this_month';
-    if (mk === nextMonth) return 'next_month';
-    return 'later';
+  // An item can belong to SEVERAL due windows: an overdue charger is 'overdue'
+  // AND — through its next scheduled cycle (anchored the usual way: LTA letter
+  // date, else registration, else procurement) — also lands in that month's
+  // bucket. So "This month" answers "what falls due this month", including
+  // chargers that are already behind.
+  const windowsOf = (it: TodoItem): string[] => {
+    const out: string[] = [];
+    if (it.overdue || (it.dueDate && daysFromToday(it.dueDate) < 0)) out.push('overdue');
+    const upcoming = it.overdue ? it.nextDue : it.dueDate;
+    if (upcoming && daysFromToday(upcoming) >= 0) {
+      const mk = monthKey(upcoming);
+      out.push(mk === thisMonth ? 'this_month' : mk === nextMonth ? 'next_month' : 'later');
+    }
+    if (out.length === 0) out.push('nodate');
+    return out;
   };
+  const inWindow = (it: TodoItem, w: string) => windowsOf(it).includes(w);
 
   const groups: FilterGroup[] = useMemo(() => {
     const n = (f: (it: TodoItem) => boolean) => String(items.filter(f).length);
@@ -246,11 +258,11 @@ export function ScreenRegistryTodo() {
       {
         key: 'window', label: 'Due',
         options: [
-          { value: 'overdue',    label: 'Overdue',       sub: n((it) => windowOf(it) === 'overdue') },
-          { value: 'this_month', label: 'This month',    sub: n((it) => windowOf(it) === 'this_month') },
-          { value: 'next_month', label: 'Next month',    sub: n((it) => windowOf(it) === 'next_month') },
-          { value: 'later',      label: `Later (≤${UPCOMING_HORIZON_DAYS}d)`, sub: n((it) => windowOf(it) === 'later') },
-          { value: 'nodate',     label: 'No due date',   sub: n((it) => windowOf(it) === 'nodate') },
+          { value: 'overdue',    label: 'Overdue',       sub: n((it) => inWindow(it, 'overdue')) },
+          { value: 'this_month', label: 'This month',    sub: n((it) => inWindow(it, 'this_month')) },
+          { value: 'next_month', label: 'Next month',    sub: n((it) => inWindow(it, 'next_month')) },
+          { value: 'later',      label: `Later (≤${UPCOMING_HORIZON_DAYS}d)`, sub: n((it) => inWindow(it, 'later')) },
+          { value: 'nodate',     label: 'No due date',   sub: n((it) => inWindow(it, 'nodate')) },
         ].filter((o) => o.sub !== '0'),
       },
     ].filter((g) => g.options.length > 0);
@@ -264,7 +276,7 @@ export function ScreenRegistryTodo() {
   const q = search.trim().toLowerCase();
   const visible = items.filter((it) =>
     anyOf('kind', (v) => it.kind === v) &&
-    anyOf('window', (v) => windowOf(it) === v) &&
+    anyOf('window', (v) => inWindow(it, v)) &&
     (!q || `${it.projectName} ${it.siteName} ${it.chargerTag ?? ''} ${it.title}`.toLowerCase().includes(q)));
 
   const totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
@@ -272,10 +284,10 @@ export function ScreenRegistryTodo() {
   const pageRows = visible.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   const kpi = {
-    overdue: items.filter((it) => windowOf(it) === 'overdue').length,
-    thisMonth: items.filter((it) => windowOf(it) === 'this_month').length,
-    nextMonth: items.filter((it) => windowOf(it) === 'next_month').length,
-    nodate: items.filter((it) => windowOf(it) === 'nodate').length,
+    overdue: items.filter((it) => inWindow(it, 'overdue')).length,
+    thisMonth: items.filter((it) => inWindow(it, 'this_month')).length,
+    nextMonth: items.filter((it) => inWindow(it, 'next_month')).length,
+    nodate: items.filter((it) => inWindow(it, 'nodate')).length,
   };
 
   const open = (it: TodoItem) => {
@@ -341,6 +353,9 @@ export function ScreenRegistryTodo() {
                       <>
                         <div style={{ fontSize: 12.5, fontWeight: 700, color: it.overdue ? '#C0321A' : '#1a1a1a', whiteSpace: 'nowrap' }}>{fmtDate(it.dueDate)}</div>
                         <div style={{ fontSize: 10.5, fontWeight: 700, color: it.overdue ? '#C0321A' : C.slate }}>{relDue(it.dueDate)}</div>
+                        {it.overdue && it.nextDue && (
+                          <div style={{ fontSize: 10, color: C.slate, whiteSpace: 'nowrap' }}>next {fmtDate(it.nextDue)}</div>
+                        )}
                       </>
                     ) : (
                       <div style={{ fontSize: 11, color: C.slate }}>—</div>
