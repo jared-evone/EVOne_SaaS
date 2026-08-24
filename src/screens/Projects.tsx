@@ -1336,19 +1336,19 @@ function OverviewTab({ project, customers, customer, contacts, sites, lta, onPic
       }
       const overdueA = ltaSchedule(ltaScheduleBase(c, formAMonths, 'A'), formAMonths, e.A.map(toPerformed)).overdueCount;
       if (overdueA > 0) {
-        issues.push({ key: `${c.id}-formA`, kind: 'formA', label: 'Form A due', detail: `${overdueA} cycle${overdueA === 1 ? '' : 's'} overdue`, site, charger: c, tab: 'maintenance' });
+        issues.push({ key: `${c.id}-formA`, kind: 'formA', label: 'Form A due', detail: `${overdueA} cycle${overdueA === 1 ? '' : 's'} overdue`, site, charger: c, tab: 'details' });
       }
       if (!isResidential) {
         const overdueD = ltaSchedule(ltaScheduleBase(c, 12, 'D'), 12, e.D.map(toPerformed)).overdueCount;
         if (overdueD > 0) {
-          issues.push({ key: `${c.id}-formD`, kind: 'formD', label: 'Form D due', detail: `${overdueD} cycle${overdueD === 1 ? '' : 's'} overdue`, site, charger: c, tab: 'maintenance' });
+          issues.push({ key: `${c.id}-formD`, kind: 'formD', label: 'Form D due', detail: `${overdueD} cycle${overdueD === 1 ? '' : 's'} overdue`, site, charger: c, tab: 'details' });
         }
       }
       if (e.A[0] && !e.A[0].invoice_path) {
-        issues.push({ key: `${c.id}-invA`, kind: 'invoice', label: 'Invoice missing', detail: 'Latest Form A has no invoice attached', site, charger: c, tab: 'maintenance' });
+        issues.push({ key: `${c.id}-invA`, kind: 'invoice', label: 'Invoice missing', detail: 'Latest Form A has no invoice attached', site, charger: c, tab: 'details' });
       }
       if (!isResidential && e.D[0] && !e.D[0].invoice_path) {
-        issues.push({ key: `${c.id}-invD`, kind: 'invoice', label: 'Invoice missing', detail: 'Latest Form D has no invoice attached', site, charger: c, tab: 'maintenance' });
+        issues.push({ key: `${c.id}-invD`, kind: 'invoice', label: 'Invoice missing', detail: 'Latest Form D has no invoice attached', site, charger: c, tab: 'details' });
       }
     }
   }

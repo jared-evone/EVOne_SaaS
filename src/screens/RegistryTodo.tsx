@@ -160,14 +160,14 @@ export function ScreenRegistryTodo() {
                 id: `${c.id}-${ft}-over`, kind, overdue: true, dueDate: firstMissed.due, nextDue: sched.nextDue,
                 title: `Form ${ft} inspection overdue`,
                 detail: `${sched.overdueCount} cycle${sched.overdueCount === 1 ? '' : 's'} outstanding${sched.nextDue ? ` · next scheduled ${fmtDate(sched.nextDue)}` : ''}`,
-                ...base, target: { projectId: project.id, siteId: site.id, chargerId: c.id, chargerTab: 'maintenance' },
+                ...base, target: { projectId: project.id, siteId: site.id, chargerId: c.id, chargerTab: 'details' },
               });
             } else if (sched.nextDue && daysFromToday(sched.nextDue) <= UPCOMING_HORIZON_DAYS) {
               out.push({
                 id: `${c.id}-${ft}-next`, kind, overdue: false, dueDate: sched.nextDue, nextDue: null,
                 title: `Form ${ft} inspection due`,
                 detail: 'Book the inspection ahead of the due date',
-                ...base, target: { projectId: project.id, siteId: site.id, chargerId: c.id, chargerTab: 'maintenance' },
+                ...base, target: { projectId: project.id, siteId: site.id, chargerId: c.id, chargerTab: 'details' },
               });
             }
           };
@@ -189,7 +189,7 @@ export function ScreenRegistryTodo() {
                 id: `${c.id}-inv${ft}`, kind: 'invoice', overdue: false, dueDate: null, nextDue: null,
                 title: `Form ${ft} invoice missing`,
                 detail: `Inspection performed ${fmtDate(rows[0].performed_at)} — attach the invoice`,
-                ...base, target: { projectId: project.id, siteId: site.id, chargerId: c.id, chargerTab: 'maintenance' },
+                ...base, target: { projectId: project.id, siteId: site.id, chargerId: c.id, chargerTab: 'details' },
               });
             }
           };
