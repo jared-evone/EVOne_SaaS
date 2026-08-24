@@ -993,11 +993,29 @@ function LinkedCustomerCard({ customer, contacts, hasLink, canEdit, onSaved }: {
   onSaved: () => Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
+  // Editing the customer record itself (name / type / billing address) — writes
+  // to the same `customers` row the CRM manages.
+  const [editingCust, setEditingCust] = useState<{ name: string; type: CustomerType; address: string } | null>(null);
   // null = not editing; id null = adding a new contact.
   const [editing, setEditing] = useState<{ id: string | null; name: string; email: string; phone: string } | null>(null);
   const [confirmDelId, setConfirmDelId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const saveCustomer = async () => {
+    if (!customer || !editingCust) return;
+    const name = editingCust.name.trim();
+    if (!name) { setErr('Customer name can\u2019t be empty.'); return; }
+    setBusy(true);
+    setErr(null);
+    const { error } = await supabase.from('customers')
+      .update({ name, type: editingCust.type, address: editingCust.address.trim() || null })
+      .eq('id', customer.id);
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    setEditingCust(null);
+    await onSaved();
+  };
 
   const saveContact = async () => {
     if (!customer || !editing) return;
@@ -1047,23 +1065,58 @@ function LinkedCustomerCard({ customer, contacts, hasLink, canEdit, onSaved }: {
 
   return (
     <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: 18, height: '100%', display: 'flex', flexDirection: 'column', gap: 12, boxSizing: 'border-box' }}>
-      <div style={{ fontSize: 13, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Linked Customer</div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <div style={{ width: 36, height: 36, borderRadius: 10, background: C.honeydew, color: C.green, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 700, flexShrink: 0 }}>
-          {customer.name.trim().charAt(0).toUpperCase() || '?'}
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{customer.name}</div>
-          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: palette.bg, color: palette.color, alignSelf: 'flex-start' }}>
-            {TYPE_LABEL[customer.type]}
-          </span>
-        </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Linked Customer</div>
+        {canEdit && !editingCust && (
+          <button type="button" title="Edit customer (name, type, billing address)"
+            onClick={() => { setErr(null); setEditingCust({ name: customer.name, type: customer.type, address: customer.address ?? '' }); }}
+            style={{ marginLeft: 'auto', width: 24, height: 24, borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, flexShrink: 0 }}>
+            <Pencil size={12} strokeWidth={2.25} />
+          </button>
+        )}
       </div>
-      {customer.address && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-          <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Billing Address</div>
-          <div style={{ fontSize: 12, color: '#1a1a1a', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{customer.address}</div>
+      {editingCust ? (
+        <div style={{ background: C.seasalt, borderRadius: 10, padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <input autoFocus value={editingCust.name} placeholder="Customer name"
+            onChange={(e) => setEditingCust({ ...editingCust, name: e.target.value })} style={miniInput} />
+          <select value={editingCust.type}
+            onChange={(e) => setEditingCust({ ...editingCust, type: e.target.value as CustomerType })}
+            style={{ ...miniInput, cursor: 'pointer' }}>
+            {(Object.keys(TYPE_LABEL) as CustomerType[]).map((t) => <option key={t} value={t}>{TYPE_LABEL[t]}</option>)}
+          </select>
+          <textarea value={editingCust.address} placeholder="Billing address" rows={2}
+            onChange={(e) => setEditingCust({ ...editingCust, address: e.target.value })}
+            style={{ ...miniInput, resize: 'vertical', lineHeight: 1.5, fontFamily: 'Figtree' }} />
+          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+            <button type="button" onClick={() => setEditingCust(null)} disabled={busy}
+              style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+            <button type="button" onClick={() => void saveCustomer()} disabled={busy}
+              style={{ padding: '5px 14px', borderRadius: 8, border: 'none', background: busy ? '#9DC7A6' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: busy ? 'default' : 'pointer' }}>
+              {busy ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+          <div style={{ fontSize: 10.5, color: C.slate }}>Updates the customer CRM record — the registry and invoices follow the new name.</div>
         </div>
+      ) : (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ width: 36, height: 36, borderRadius: 10, background: C.honeydew, color: C.green, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, fontWeight: 700, flexShrink: 0 }}>
+              {customer.name.trim().charAt(0).toUpperCase() || '?'}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{customer.name}</div>
+              <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: palette.bg, color: palette.color, alignSelf: 'flex-start' }}>
+                {TYPE_LABEL[customer.type]}
+              </span>
+            </div>
+          </div>
+          {customer.address && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Billing Address</div>
+              <div style={{ fontSize: 12, color: '#1a1a1a', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{customer.address}</div>
+            </div>
+          )}
+        </>
       )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
