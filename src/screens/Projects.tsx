@@ -157,6 +157,10 @@ export function ScreenProjects() {
   const [search, setSearch]       = useState('');
   // Status + customer type live in one grouped dropdown beside the search box.
   const [filters, setFilters] = useState<FilterSelection>({});
+  // Fixed pages of 15 — no endless scroll.
+  const PAGE_SIZE = 15;
+  const [page, setPage] = useState(1);
+  useEffect(() => { setPage(1); }, [search, filters]);
   const [adding, setAdding]       = useState(false);
   const [viewingId, setViewingId] = useState<string | null>(null);
 
@@ -220,6 +224,9 @@ export function ScreenProjects() {
     const customerName = customerById(p.customer_id)?.name ?? '';
     return (p.name + ' ' + customerName + ' ' + (p.notes ?? '')).toLowerCase().includes(q);
   });
+  const totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageRows = visible.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   const addProject = async (data: ProjectFormData) => {
     const { data: created } = await supabase.from('projects').insert(data).select().single();
@@ -294,7 +301,7 @@ export function ScreenProjects() {
                 <tr><td colSpan={6} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
                   {projects.length === 0 ? 'No customers yet. Click "+ New Registration" to add one.' : 'No customers match your filters.'}
                 </td></tr>
-              ) : visible.map((p) => {
+              ) : pageRows.map((p) => {
                 const palette = PROJECT_STATUS_PALETTE[p.status];
                 const cust = customerById(p.customer_id);
                 const open = () => setViewingId(p.id);
@@ -336,6 +343,21 @@ export function ScreenProjects() {
             </tbody>
           </table>
         </div>
+        {visible.length > PAGE_SIZE && (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 16px', borderTop: '1px solid #EBEBEB' }}>
+            <button onClick={() => setPage((v) => Math.max(1, v - 1))} disabled={safePage <= 1}
+              style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: safePage <= 1 ? '#C9CFD5' : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: safePage <= 1 ? 'default' : 'pointer' }}>
+              ‹ Prev
+            </button>
+            <span style={{ fontSize: 11.5, color: C.slate, fontWeight: 600 }}>
+              {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, visible.length)} of {visible.length}
+            </span>
+            <button onClick={() => setPage((v) => Math.min(totalPages, v + 1))} disabled={safePage >= totalPages}
+              style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: safePage >= totalPages ? '#C9CFD5' : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: safePage >= totalPages ? 'default' : 'pointer' }}>
+              Next ›
+            </button>
+          </div>
+        )}
       </div>
 
       {adding && (

@@ -171,6 +171,11 @@ export function ScreenCustomers() {
     dealer:      rows.filter((r) => r.type === 'dealer').length,
   };
 
+  // Fixed pages of 15 — no endless scroll.
+  const PAGE_SIZE = 15;
+  const [page, setPage] = useState(1);
+  useEffect(() => { setPage(1); }, [search, typeFilter]);
+
   const visible = rows.filter((c) => {
     if (typeFilter !== 'all' && c.type !== typeFilter) return false;
     if (!search) return true;
@@ -178,6 +183,9 @@ export function ScreenCustomers() {
     const m = mainContacts.get(c.id);
     return (c.name + ' ' + (m?.name ?? '') + ' ' + (m?.email ?? '') + ' ' + (m?.phone ?? '')).toLowerCase().includes(q);
   });
+  const totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageRows = visible.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   const save = async (data: CustomerFormData, id?: string, contactId?: string | null) => {
     const contactPayload = {
@@ -276,7 +284,7 @@ export function ScreenCustomers() {
                 <tr><td colSpan={6} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
                   {rows.length === 0 ? 'No customers yet. Click "+ New Customer" to add one.' : 'No customers match your filters.'}
                 </td></tr>
-              ) : visible.map((c) => {
+              ) : pageRows.map((c) => {
                 const p = TYPE_PALETTE[c.type];
                 const m = mainContacts.get(c.id);
                 const cellCursor = canEdit ? 'pointer' : 'default';
@@ -316,6 +324,21 @@ export function ScreenCustomers() {
             </tbody>
           </table>
         </div>
+        {visible.length > PAGE_SIZE && (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 16px', borderTop: '1px solid #EBEBEB' }}>
+            <button onClick={() => setPage((v) => Math.max(1, v - 1))} disabled={safePage <= 1}
+              style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: safePage <= 1 ? '#C9CFD5' : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: safePage <= 1 ? 'default' : 'pointer' }}>
+              ‹ Prev
+            </button>
+            <span style={{ fontSize: 11.5, color: C.slate, fontWeight: 600 }}>
+              {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, visible.length)} of {visible.length}
+            </span>
+            <button onClick={() => setPage((v) => Math.min(totalPages, v + 1))} disabled={safePage >= totalPages}
+              style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: safePage >= totalPages ? '#C9CFD5' : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: safePage >= totalPages ? 'default' : 'pointer' }}>
+              Next ›
+            </button>
+          </div>
+        )}
       </div>
 
       {adding && (
