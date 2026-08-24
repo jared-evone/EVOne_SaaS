@@ -1578,8 +1578,8 @@ function SiteTab({ site, focus, brandModels, canEdit, canDelete, customer, onCha
       </div>
 
       {/* Site-level agreements, side by side: LTA inspection contract + Managed CPO */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))', gap: 16, alignItems: 'start' }}>
-      <div style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))', gap: 16, alignItems: 'stretch' }}>
+      <div style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: 16, boxSizing: 'border-box' }}>
         <ContractCard
           years={site.lta_contract_years}
           startDate={site.lta_contract_start_date}
@@ -3693,7 +3693,7 @@ function ContractCard({ years: years0, startDate: start0, turnOn, canEdit, isRes
   };
 
   return (
-    <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
           LTA Inspection Contract
