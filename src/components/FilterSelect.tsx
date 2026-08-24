@@ -23,7 +23,24 @@ export function FilterSelect({ groups, selected, onChange, placeholder = 'All re
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
+  // The panel must OVERLAY the page, never extend it: cap the option list to the
+  // viewport space below the trigger (or flip upward when that's too tight).
+  const [listMax, setListMax] = useState(300);
+  const [openUp, setOpenUp] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+
+  const openPanel = () => {
+    const r = ref.current?.getBoundingClientRect();
+    if (r) {
+      const below = window.innerHeight - r.bottom - 70; // room under the trigger, minus panel chrome
+      const above = r.top - 70;
+      const up = below < 180 && above > below;
+      setOpenUp(up);
+      setListMax(Math.max(140, Math.min(300, (up ? above : below))));
+    }
+    setOpen(true);
+    setQ('');
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -70,7 +87,7 @@ export function FilterSelect({ groups, selected, onChange, placeholder = 'All re
     <div ref={ref} style={{ position: 'relative' }}>
       <button
         type="button"
-        onClick={() => { setOpen((o) => !o); setQ(''); }}
+        onClick={() => (open ? setOpen(false) : openPanel())}
         style={{
           width: '100%', padding: '8px 12px', borderRadius: 10,
           border: `1px solid ${open || total ? C.green : '#EBEBEB'}`,
@@ -99,7 +116,8 @@ export function FilterSelect({ groups, selected, onChange, placeholder = 'All re
 
       {open && (
         <div style={{
-          position: 'absolute', left: 0, right: 0, top: 'calc(100% + 6px)', zIndex: 60,
+          position: 'absolute', left: 0, right: 0, zIndex: 60,
+          top: openUp ? undefined : 'calc(100% + 6px)', bottom: openUp ? 'calc(100% + 6px)' : undefined,
           background: C.white, border: '1px solid #EBEBEB', borderRadius: 12,
           boxShadow: '0 12px 32px rgba(0,0,0,.14)', padding: 6,
           display: 'flex', flexDirection: 'column', gap: 6,
@@ -114,7 +132,7 @@ export function FilterSelect({ groups, selected, onChange, placeholder = 'All re
             </span>
           </div>
 
-          <div style={{ maxHeight: 300, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div style={{ maxHeight: listMax, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
             {visibleGroups.length === 0 && (
               <div style={{ padding: 12, textAlign: 'center', color: C.slate, fontSize: 12 }}>No matching filters</div>
             )}
