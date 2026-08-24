@@ -1577,7 +1577,8 @@ function SiteTab({ site, focus, brandModels, canEdit, canDelete, customer, onCha
         )}
       </div>
 
-      {/* LTA inspection contract — at the site level */}
+      {/* Site-level agreements, side by side: LTA inspection contract + Managed CPO */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))', gap: 16, alignItems: 'start' }}>
       <div style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: 16 }}>
         <ContractCard
           years={site.lta_contract_years}
@@ -1614,6 +1615,7 @@ function SiteTab({ site, focus, brandModels, canEdit, canDelete, customer, onCha
       </div>
 
       <ManagedCpoCard site={site} canEdit={canEdit} canDelete={canDelete} onChanged={onChanged} />
+      </div>
 
       <SiteChargersCard
         siteId={site.id}
