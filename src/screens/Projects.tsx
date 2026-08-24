@@ -553,6 +553,16 @@ const PROJECT_FILES_BUCKET = 'project-files';
 // delete path must collect and remove them first. This gathers the charger-forms paths
 // tied to a set of chargers: LTA record PDFs + invoices + warranty-claim documents.
 // (Form 1 PDFs and site LTA contracts live on the charger/site rows and are added by callers.)
+// An installation invoice can be SHARED by several chargers at a site (one
+// storage object, many site_chargers rows pointing at it) — so before deleting
+// the object, check nothing else still references it.
+async function form1InvoiceRefCount(path: string, excludeChargerId?: string): Promise<number> {
+  let q = supabase.from('site_chargers').select('id', { count: 'exact', head: true }).eq('form_1_invoice_path', path);
+  if (excludeChargerId) q = q.neq('id', excludeChargerId);
+  const { count } = await q;
+  return count ?? 0;
+}
+
 async function collectChargerStoragePaths(chargerIds: string[]): Promise<string[]> {
   if (!chargerIds.length) return [];
   const paths: string[] = [];
@@ -2239,14 +2249,34 @@ function SiteChargersCard({ siteId, focus, siteName, chargers, brandModels, canE
 
   const selected = chargers.find((c) => c.id === selectedId) ?? null;
 
+  // Sharing one installation invoice across chargers = pointing their rows at
+  // the same storage object. Nothing is duplicated.
+  const applyInvoiceTo = async (chargerIds: string[], path: string, filename: string) => {
+    const { error } = await supabase.from('site_chargers')
+      .update({ form_1_invoice_path: path, form_1_invoice_filename: filename })
+      .in('id', chargerIds);
+    if (error) throw new Error(error.message);
+    await onChanged();
+  };
+  const siblingsOf = (excludeId: string | null) =>
+    chargers
+      .filter((c) => c.id !== excludeId)
+      .map((c) => ({
+        id: c.id,
+        label: `${c.asset_tag}${c.brand_model ? ` · ${c.brand_model}` : ''}`,
+        hasInvoice: !!c.form_1_invoice_path,
+      }));
+
   const handleDeleteSelected = async () => {
     if (!selected) return;
     setDeleting(true);
     // Row cascade (LTA records / warranty claims) is handled by the DB; clean their
     // storage objects + the Form 1 PDF first so nothing is orphaned in the bucket.
+    const invoiceShared = selected.form_1_invoice_path
+      ? (await form1InvoiceRefCount(selected.form_1_invoice_path, selected.id)) > 0 : false;
     const paths: string[] = [
       selected.form_1_path,
-      selected.form_1_invoice_path,
+      invoiceShared ? null : selected.form_1_invoice_path,
       ...(await collectChargerStoragePaths([selected.id])),
     ].filter((p): p is string => !!p);
     if (paths.length) await supabase.storage.from(CHARGER_FORMS_BUCKET).remove(paths);
@@ -2353,6 +2383,8 @@ function SiteChargersCard({ siteId, focus, siteName, chargers, brandModels, canE
           brandModels={brandModels}
           canDelete={false}
           canManageBrandModels={canDelete}
+          siblings={siblingsOf(null)}
+          onApplyInvoiceTo={applyInvoiceTo}
           onSave={async (data) => {
             await supabase.from('site_chargers').insert({ ...data, site_id: siteId });
             await onChanged();
@@ -2388,15 +2420,19 @@ function SiteChargersCard({ siteId, focus, siteName, chargers, brandModels, canE
           brandModels={brandModels}
           canDelete={canDelete}
           canManageBrandModels={canDelete}
+          siblings={siblingsOf(editing.id)}
+          onApplyInvoiceTo={applyInvoiceTo}
           onSave={async (data) => {
             await supabase.from('site_chargers').update(data).eq('id', editing.id);
             await onChanged();
           }}
           onBrandModelsChanged={onChanged}
           onDelete={async () => {
+            const invShared = editing.form_1_invoice_path
+              ? (await form1InvoiceRefCount(editing.form_1_invoice_path, editing.id)) > 0 : false;
             const paths: string[] = [
               editing.form_1_path,
-              editing.form_1_invoice_path,
+              invShared ? null : editing.form_1_invoice_path,
               ...(await collectChargerStoragePaths([editing.id])),
             ].filter((p): p is string => !!p);
             if (paths.length) await supabase.storage.from(CHARGER_FORMS_BUCKET).remove(paths);
@@ -5060,10 +5096,14 @@ function blankCharger(): ChargerFormData {
   };
 }
 
-function ChargerModal({ title, initial, siteName, isResidential, brandModels, canDelete, canManageBrandModels, onSave, onDelete, onBrandModelsChanged, onClose, pdfUrl, pdfName }: {
+function ChargerModal({ title, initial, siteName, isResidential, brandModels, canDelete, canManageBrandModels, siblings = [], onApplyInvoiceTo, onSave, onDelete, onBrandModelsChanged, onClose, pdfUrl, pdfName }: {
   title: string;
   initial: ChargerFormData;
   siteName: string;
+  /** Other chargers at this site — offered as targets for sharing the
+   *  installation invoice (one storage object, many rows). */
+  siblings?: { id: string; label: string; hasInvoice: boolean }[];
+  onApplyInvoiceTo?: (chargerIds: string[], path: string, filename: string) => Promise<void>;
   isResidential: boolean;
   brandModels: BrandModel[];
   canDelete: boolean;
@@ -5121,9 +5161,32 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
     const { error } = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(path, file, { contentType: file.type || 'application/pdf' });
     setForm1Busy(false);
     if (error) { setForm1Error(error.message); return; }
-    if (form.form_1_invoice_path) void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([form.form_1_invoice_path]);
+    if (form.form_1_invoice_path) {
+      const old = form.form_1_invoice_path;
+      void form1InvoiceRefCount(old).then((n) => { if (n <= 1) void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([old]); });
+    }
     setForm((f) => ({ ...f, form_1_invoice_path: path, form_1_invoice_filename: file.name }));
   };
+  const [sharingOpen, setSharingOpen] = useState(false);
+  const [shareSel, setShareSel] = useState<Set<string>>(new Set());
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareNote, setShareNote] = useState<string | null>(null);
+
+  const applyShare = async () => {
+    if (!onApplyInvoiceTo || !form.form_1_invoice_path || !shareSel.size) return;
+    setShareBusy(true);
+    try {
+      await onApplyInvoiceTo([...shareSel], form.form_1_invoice_path, form.form_1_invoice_filename ?? 'invoice.pdf');
+      setShareNote(`Invoice linked to ${shareSel.size} other charger${shareSel.size === 1 ? '' : 's'} — same file, no re-upload.`);
+      setShareSel(new Set());
+      setSharingOpen(false);
+    } catch (e) {
+      setShareNote(e instanceof Error ? e.message : 'Could not link the invoice.');
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
   const openInvoice = async (mode: 'view' | 'download') => {
     if (!form.form_1_invoice_path) return;
     const { data } = await supabase.storage.from(CHARGER_FORMS_BUCKET)
@@ -5131,7 +5194,11 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
     if (data?.signedUrl) window.open(data.signedUrl, mode === 'download' ? '_self' : '_blank');
   };
   const removeInvoice = () => {
-    if (form.form_1_invoice_path) void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([form.form_1_invoice_path]);
+    if (form.form_1_invoice_path) {
+      const old = form.form_1_invoice_path;
+      // Keep the object if other chargers share it — only the reference goes.
+      void form1InvoiceRefCount(old).then((n) => { if (n <= 1) void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([old]); });
+    }
     setForm((f) => ({ ...f, form_1_invoice_path: null, form_1_invoice_filename: null }));
   };
 
@@ -5407,6 +5474,12 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
               <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{form.form_1_invoice_filename}</span>
               <button type="button" onClick={() => void openInvoice('view')}
                 style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>View</button>
+              {siblings.length > 0 && onApplyInvoiceTo && (
+                <button type="button" onClick={() => { setShareNote(null); setSharingOpen((v) => !v); }}
+                  style={{ padding: '6px 10px', borderRadius: 8, border: `1px solid ${sharingOpen ? C.green : '#C8E6C9'}`, background: sharingOpen ? C.honeydew : 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                  Apply to…
+                </button>
+              )}
               <button type="button" onClick={removeInvoice}
                 style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Remove</button>
             </div>
@@ -5422,6 +5495,41 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
               if (file) void handleInvoiceUpload(file);
               e.target.value = '';
             }} />
+          {sharingOpen && form.form_1_invoice_path && (
+            <div style={{ background: C.white, border: '1px solid #C8E6C9', borderRadius: 10, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5 }}>
+                One invoice often covers several chargers installed together. Tick the ones this invoice also belongs to —
+                they'll <strong style={{ color: '#1a1a1a' }}>link to the same file</strong>, nothing is uploaded twice.
+              </div>
+              {siblings.map((sib) => {
+                const on = shareSel.has(sib.id);
+                return (
+                  <label key={sib.id} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={on}
+                      onChange={() => setShareSel((prev) => { const n = new Set(prev); if (n.has(sib.id)) n.delete(sib.id); else n.add(sib.id); return n; })}
+                      style={{ width: 15, height: 15, accentColor: C.green, cursor: 'pointer' }} />
+                    <span style={{ fontSize: 12.5, fontWeight: 600, color: '#1a1a1a' }}>{sib.label}</span>
+                    {sib.hasInvoice && (
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 99, background: '#FFF8E1', color: '#B07D00' }}>
+                        has an invoice — will be replaced
+                      </span>
+                    )}
+                  </label>
+                );
+              })}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
+                <button type="button" onClick={() => setSharingOpen(false)} disabled={shareBusy}
+                  style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+                <button type="button" onClick={() => void applyShare()} disabled={shareBusy || !shareSel.size}
+                  style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: shareBusy || !shareSel.size ? '#9DC7A6' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: shareBusy || !shareSel.size ? 'default' : 'pointer' }}>
+                  {shareBusy ? 'Linking…' : `Link to ${shareSel.size || ''} selected`}
+                </button>
+              </div>
+            </div>
+          )}
+          {shareNote && (
+            <div style={{ background: C.honeydew, color: '#1B512D', borderRadius: 8, padding: '7px 10px', fontSize: 11.5, fontWeight: 600 }}>{shareNote}</div>
+          )}
           {form1Error && (
             <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 8, padding: '6px 10px', fontSize: 11, fontWeight: 600 }}>{form1Error}</div>
           )}
