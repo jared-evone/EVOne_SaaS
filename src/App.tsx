@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 import { C } from './theme';
 import { Logo } from './components/Logo';
 import { NavItem } from './components/NavItem';
@@ -6,7 +6,7 @@ import {
   LayoutDashboard, Home, Receipt, Wrench, Users, FolderKanban, CalendarDays,
   Handshake, ClipboardList, Boxes, Truck, Building2, Plug, Zap, FileText,
   Hammer, Settings as SettingsIcon, ShieldCheck, Database, ChevronRight, ChevronDown,
-  Power, Menu, TrendingUp, UserCog, Mail, Calculator, ClipboardCheck, GanttChartSquare,
+  Power, Menu, TrendingUp, UserCog, Mail, Calculator, ClipboardCheck, GanttChartSquare, ListTodo,
   type LucideIcon,
 } from 'lucide-react';
 import { useIsMobile } from './lib/useIsMobile';
@@ -34,6 +34,7 @@ import { ScreenEmailDesigner } from './screens/EmailDesigner';
 import { ScreenQuoteMachine } from './screens/QuoteMachine';
 import { ScreenRaisePO, PODecisionPage } from './screens/RaisePO';
 import { ScreenChargerProjects } from './screens/projmgmt/ChargerProjects';
+import { ScreenRegistryTodo } from './screens/RegistryTodo';
 import { SuperAdminConsole } from './screens/SuperAdmin';
 import { ScreenChargingDashboard } from './screens/ChargingDashboard';
 import { ScreenDashboard } from './screens/Dashboard';
@@ -55,6 +56,11 @@ type ScreenId = ScreenKey;
 // Landing screen per department when a session starts (used if that screen is
 // visible to the user; otherwise the first available screen is used). Technicians
 // land on their job list rather than the shared Customers tab.
+// Programmatic screen switching for screens that link to each other (e.g. the
+// To Do page opening a registry). Falls back to a no-op outside the shell.
+const ScreenNavContext = createContext<(s: ScreenId) => void>(() => {});
+export function useScreenNav() { return useContext(ScreenNavContext); }
+
 const DEPARTMENT_DEFAULT_SCREEN: Partial<Record<Department, ScreenId>> = {
   tech: 'tsd_technician',
 };
@@ -71,6 +77,7 @@ const NAV_ALL: NavEntry[] = [
   { kind: 'leaf', id: 'installations',     icon: Wrench,          label: 'Installations' },
   { kind: 'leaf', id: 'customers',         icon: Users,           label: 'Customers' },
   { kind: 'leaf', id: 'projects',          icon: FolderKanban,    label: 'Charger Registry' },
+  { kind: 'leaf', id: 'registry_todo',     icon: ListTodo,        label: 'To Do' },
   { kind: 'leaf', id: 'charger_projects',  icon: GanttChartSquare, label: 'Projects' },
   { kind: 'leaf', id: 'email_designer',    icon: Mail,            label: 'Email' },
   { kind: 'leaf', id: 'social',            icon: CalendarDays,    label: 'Social Media Planner' },
@@ -129,6 +136,7 @@ const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
   tsd_technicians:     'Technicians',
   email_designer:      'Email',
   charger_projects:    'Projects',
+  registry_todo:       'To Do',
   settings:            'Users & Permissions',
   dbhealth:            'DB Health',
 };
@@ -161,6 +169,7 @@ const screens: Partial<Record<ScreenId, JSX.Element>> = {
   tsd_technicians:     <TechniciansAdmin />,
   email_designer:      <ScreenEmailDesigner />,
   charger_projects:    <ScreenChargerProjects />,
+  registry_todo:       <ScreenRegistryTodo />,
   settings:            <ScreenSettings />,
   dbhealth:            <ScreenDBHealth />,
 };
@@ -210,6 +219,7 @@ function Dashboard({ onSignOut }: DashboardProps) {
   };
 
   return (
+    <ScreenNavContext.Provider value={selectScreen}>
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: C.seasalt }}>
       {/* Mobile drawer scrim */}
       {isMobile && navOpen && (
@@ -435,6 +445,7 @@ function Dashboard({ onSignOut }: DashboardProps) {
         </div>
       </main>
     </div>
+    </ScreenNavContext.Provider>
   );
 }
 

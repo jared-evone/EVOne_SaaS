@@ -19,6 +19,7 @@ import {
 } from './Customers';
 import { IMPORT_NOTE } from './RegistryInvoiceImport';
 import { FilterSelect, selectionCount, type FilterGroup, type FilterSelection } from '../components/FilterSelect';
+import { takeRegistryTarget, type RegistryTarget } from '../lib/registryNav';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -163,6 +164,13 @@ export function ScreenProjects() {
   useEffect(() => { setPage(1); }, [search, filters]);
   const [adding, setAdding]       = useState(false);
   const [viewingId, setViewingId] = useState<string | null>(null);
+  // A To Do item can deep-link here: open its registry, then hand the site +
+  // charger target down so the detail page lands on the exact panel.
+  const [deepTarget, setDeepTarget] = useState<RegistryTarget | null>(null);
+  useEffect(() => {
+    const t = takeRegistryTarget();
+    if (t) { setDeepTarget(t); setViewingId(t.projectId); }
+  }, []);
 
   const fetchAll = async () => {
     setLoading(true);
@@ -238,6 +246,7 @@ export function ScreenProjects() {
     return (
       <ProjectDetailPage
         projectId={viewingId}
+        initialTarget={deepTarget?.projectId === viewingId ? deepTarget : null}
         customers={customers}
         canEdit={canEdit}
         canDelete={canDelete}
@@ -639,8 +648,9 @@ async function deleteRegistryProject(projectId: string): Promise<string | null> 
 
 type DetailTabId = 'overview' | 'files' | `site:${string}`;
 
-function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }: {
+function ProjectDetailPage({ projectId, initialTarget, customers, canEdit, canDelete, onBack }: {
   projectId: string;
+  initialTarget?: RegistryTarget | null;
   customers: CustomerLite[];
   canEdit: boolean;
   canDelete: boolean;
@@ -658,6 +668,15 @@ function ProjectDetailPage({ projectId, customers, canEdit, canDelete, onBack }:
   // Deep-link from an Overview issue row straight to one charger's detail tab.
   // The nonce makes clicking the same issue twice re-apply the focus.
   const [chargerFocus, setChargerFocus] = useState<{ chargerId: string; tab: ChargerDetailTab; nonce: number } | null>(null);
+  // Deep link from the To Do queue: jump straight to the site tab (and charger).
+  useEffect(() => {
+    if (!initialTarget?.siteId) return;
+    setTab(`site:${initialTarget.siteId}`);
+    if (initialTarget.chargerId) {
+      setChargerFocus({ chargerId: initialTarget.chargerId, tab: initialTarget.chargerTab ?? 'details', nonce: Date.now() });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [addingSite, setAddingSite] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);

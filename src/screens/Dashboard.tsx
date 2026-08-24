@@ -3,6 +3,7 @@ import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { ChargerLocationMap, type ChargerMapLocation } from '../components/ChargerLocationMap';
 import { supabase } from '../lib/supabase';
+import { useScreenNav } from '../App';
 import { ltaSchedule, ltaScheduleBase, toPerformed, type LtaFormType, type LetterForms } from './Projects';
 
 interface ProjectRow {
@@ -55,6 +56,7 @@ const ISSUE_META: Record<IssueKind, { label: string; sub: string; bg: string; co
 };
 
 export function ScreenDashboard() {
+  const go = useScreenNav();
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [sites, setSites] = useState<SiteRow[]>([]);
   const [lta, setLta] = useState<LtaRow[]>([]);
@@ -201,10 +203,16 @@ export function ScreenDashboard() {
               </div>
             </div>
             {!loading && (
-              <span style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, padding: '4px 12px', borderRadius: 99,
-                background: outstanding.total > 0 ? '#FDEAEA' : '#E4F3E3',
-                color: outstanding.total > 0 ? '#C0321A' : '#1B512D' }}>
-                {outstanding.total > 0 ? `${outstanding.total} open` : 'All clear'}
+              <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, padding: '4px 12px', borderRadius: 99,
+                  background: outstanding.total > 0 ? '#FDEAEA' : '#E4F3E3',
+                  color: outstanding.total > 0 ? '#C0321A' : '#1B512D' }}>
+                  {outstanding.total > 0 ? `${outstanding.total} open` : 'All clear'}
+                </span>
+                <button onClick={() => go('registry_todo')}
+                  style={{ padding: '4px 12px', borderRadius: 99, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11.5, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                  Open To Do →
+                </button>
               </span>
             )}
           </div>
