@@ -18,6 +18,7 @@ import {
   TYPE_PALETTE,
 } from './Customers';
 import { InvoiceIngestModal, IMPORT_NOTE } from './RegistryInvoiceImport';
+import { FilterSelect, selectionCount, type FilterGroup, type FilterSelection } from '../components/FilterSelect';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -141,8 +142,6 @@ function SearchSelect({ value, options, onChange, disabled, placeholder }: {
 
 // ── Top-level screen ──────────────────────────────────────────────
 
-type StatusFilter = 'all' | ProjectStatus;
-
 
 export function ScreenProjects() {
   const { can, isAdmin } = usePermissions();
@@ -156,7 +155,8 @@ export function ScreenProjects() {
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState<string | null>(null);
   const [search, setSearch]       = useState('');
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  // Status + customer type live in one grouped dropdown beside the search box.
+  const [filters, setFilters] = useState<FilterSelection>({});
   const [adding, setAdding]       = useState(false);
   const [importingInvoices, setImportingInvoices] = useState(false);
   const [viewingId, setViewingId] = useState<string | null>(null);
@@ -190,8 +190,32 @@ export function ScreenProjects() {
 
   const customerById = (id: string | null) => id ? customers.find((c) => c.id === id) ?? null : null;
 
+  // OR within a group, AND across groups — same faceting as the PIC board.
+  const anyOf = (key: string, test: (v: string) => boolean) => {
+    const vs = filters[key];
+    return !vs?.length || vs.some(test);
+  };
+  const typeOf = (p: Project): string => customerById(p.customer_id)?.type ?? '';
+
+  const filterGroups: FilterGroup[] = [
+    {
+      key: 'status', label: 'Status',
+      options: PROJECT_STATUSES.map((st) => ({
+        value: st, label: PROJECT_STATUS_LABEL[st],
+        sub: String(projects.filter((p) => p.status === st).length),
+      })),
+    },
+    {
+      key: 'type', label: 'Customer type',
+      options: (Object.keys(TYPE_LABEL) as CustomerType[])
+        .map((t) => ({ value: t, label: TYPE_LABEL[t], sub: String(projects.filter((p) => typeOf(p) === t).length) }))
+        .filter((o) => o.sub !== '0'),
+    },
+  ].filter((g) => g.options.length > 0);
+
   const visible = projects.filter((p) => {
-    if (statusFilter !== 'all' && p.status !== statusFilter) return false;
+    if (!anyOf('status', (v) => p.status === v)) return false;
+    if (!anyOf('type', (v) => typeOf(p) === v)) return false;
     if (!search) return true;
     const q = search.toLowerCase();
     const customerName = customerById(p.customer_id)?.name ?? '';
@@ -231,19 +255,19 @@ export function ScreenProjects() {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {(['all', ...PROJECT_STATUSES] as const).map((s) => (
-            <button key={s} onClick={() => setStatusFilter(s as StatusFilter)}
-              style={{ padding: '7px 14px', borderRadius: 99, border: `1px solid ${statusFilter === s ? C.green : '#EBEBEB'}`, background: statusFilter === s ? C.green : C.white, color: statusFilter === s ? C.white : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-              {s === 'all' ? 'All' : PROJECT_STATUS_LABEL[s as ProjectStatus]}
-            </button>
-          ))}
-        </div>
         <div style={{ position: 'relative', width: 260 }}>
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search chargers…"
             style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
           <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, display: 'inline-flex' }}><Search size={14} /></span>
         </div>
+        <div style={{ width: 230 }}>
+          <FilterSelect groups={filterGroups} selected={filters} onChange={setFilters} placeholder="All customers" />
+        </div>
+        {(selectionCount(filters) > 0 || search) && (
+          <span style={{ fontSize: 11.5, color: C.slate, fontWeight: 600 }}>
+            {visible.length} match{visible.length === 1 ? '' : 'es'}
+          </span>
+        )}
         {canEdit && (
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
             {isAdmin && (
