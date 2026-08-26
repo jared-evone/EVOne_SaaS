@@ -254,7 +254,14 @@ function stringValue(values: FormValues, id: string): string {
 // Re-encode a (potentially huge, scale-2 PNG) data URL to a capped-width JPEG so
 // react-pdf doesn't have to embed & decode multi-MB images on the main thread —
 // that's what freezes the tab ("Page Unresponsive") on multi-page overlay forms.
-function downscaleDataUrl(src: string, maxW: number, quality: number): Promise<{ src: string; w: number; h: number } | null> {
+async function downscaleDataUrl(src: string, maxW: number, quality: number): Promise<{ src: string; w: number; h: number } | null> {
+  // Template pages / photos may be Storage URLs now — pull them to a data URL
+  // first so the canvas isn't tainted and the resize below works unchanged.
+  if (/^https?:\/\//i.test(src)) {
+    const dataUrl = await fetchToDataUrl(src);
+    if (!dataUrl) return null;
+    src = dataUrl;
+  }
   return new Promise((resolve) => {
     if (!/^data:image\//i.test(src)) { resolve(null); return; }
     let done = false;

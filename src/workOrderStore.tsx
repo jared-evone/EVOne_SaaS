@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { supabase } from './lib/supabase';
+import { externalizeTemplatePages, removeTemplatePages } from './lib/formMedia';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -465,26 +466,48 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
     },
 
     saveTemplate: (tpl) => {
+      // Show the edit immediately, then persist an EXTERNALIZED copy: overlay
+      // page backgrounds go to Storage and the row keeps only URLs, so the
+      // template stays a few KB instead of megabytes of base64.
       setTemplates((ts) => {
         if (ts.find((t) => t.id === tpl.id)) return ts.map((t) => (t.id === tpl.id ? tpl : t));
         return [...ts, tpl];
       });
-      supabase
-        .from('tsd_form_templates')
-        .upsert({
-          id: tpl.id,
-          name: tpl.name,
-          kind: tpl.kind ?? 'structured',
-          template: tpl,
-          updated_at: new Date().toISOString(),
-        })
-        .then(({ error }) => { if (error) console.error('persist template failed', error); });
+      void (async () => {
+        let toStore = tpl;
+        try {
+          toStore = await externalizeTemplatePages(tpl);
+        } catch (e) {
+          console.error('template page upload failed — storing as-is', e);
+          alert('Uploading the template pages to Storage failed — the template was saved, but heavier than it should be. Re-save it later.');
+        }
+        if (toStore !== tpl) {
+          setTemplates((ts) => ts.map((t) => (t.id === toStore.id ? toStore : t)));
+        }
+        const { error } = await supabase
+          .from('tsd_form_templates')
+          .upsert({
+            id: toStore.id,
+            name: toStore.name,
+            kind: toStore.kind ?? 'structured',
+            template: toStore,
+            updated_at: new Date().toISOString(),
+          });
+        if (error) {
+          console.error('persist template failed', error);
+          alert(`Saving the template to the server failed — it is NOT synced.\n\n${error.message}`);
+        }
+      })();
     },
 
     deleteTemplate: (id) => {
       setTemplates((ts) => ts.filter((t) => t.id !== id));
       supabase.from('tsd_form_templates').delete().eq('id', id)
-        .then(({ error }) => { if (error) console.error('delete template failed', error); });
+        .then(({ error }) => {
+          if (error) { console.error('delete template failed', error); return; }
+          // Row gone → its stored page backgrounds go too.
+          void removeTemplatePages(id);
+        });
     },
 
     saveCustomer: (customer) => {
