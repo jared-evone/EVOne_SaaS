@@ -20,6 +20,7 @@ import {
 import { IMPORT_NOTE } from './RegistryInvoiceImport';
 import { FilterSelect, selectionCount, type FilterGroup, type FilterSelection } from '../components/FilterSelect';
 import { takeRegistryTarget, type RegistryTarget } from '../lib/registryNav';
+import { CustomerCreateModal, type CreatedCustomer } from '../components/CustomerCreateModal';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -83,12 +84,15 @@ function inputStyle(): React.CSSProperties {
 
 interface SearchSelectOption { value: string; label: string; }
 
-function SearchSelect({ value, options, onChange, disabled, placeholder }: {
+function SearchSelect({ value, options, onChange, disabled, placeholder, addNewLabel, onAddNew }: {
   value: string;
   options: SearchSelectOption[];
   onChange: (v: string) => void;
   disabled?: boolean;
   placeholder?: string;
+  /** Optional sticky "+ addNewLabel" footer; hands over the typed query. */
+  addNewLabel?: string;
+  onAddNew?: (query: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -135,6 +139,13 @@ function SearchSelect({ value, options, onChange, disabled, placeholder }: {
               );
             })}
           </div>
+          {onAddNew && addNewLabel && (
+            <button type="button"
+              onClick={() => { const query = q.trim(); setOpen(false); onAddNew(query); }}
+              style={{ width: '100%', textAlign: 'left', padding: '9px 12px', borderRadius: 8, border: '1px dashed #C8E6C9', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
+              + {addNewLabel}{q.trim() ? ` “${q.trim()}”` : ''}
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -399,6 +410,10 @@ interface ProjectModalProps {
 }
 
 function ProjectModal({ initial, title, customers, onSave, onClose }: ProjectModalProps) {
+  // Customers created inline from the dropdown — merged into the options so the
+  // pick works before the page-level list refetches.
+  const [createdCusts, setCreatedCusts] = useState<CustomerLite[]>([]);
+  const [creatingCust, setCreatingCust] = useState<string | null>(null);
   const [form, setForm] = useState<ProjectFormData>(initial);
   // Track the customer name we last auto-filled into the project name. If
   // the user manually edits the name, this falls out of sync — we then
@@ -450,8 +465,17 @@ function ProjectModal({ initial, title, customers, onSave, onClose }: ProjectMod
         <div>
           <FieldLabel>Linked Customer</FieldLabel>
           <SearchSelect value={form.customer_id ?? ''} onChange={onCustomerChange}
-            options={customers.map((c) => ({ value: c.id, label: c.name }))}
-            placeholder="— Select a customer —" />
+            options={[...createdCusts, ...customers].map((c) => ({ value: c.id, label: c.name }))}
+            placeholder="— Select a customer —"
+            addNewLabel="Add new customer" onAddNew={(q) => setCreatingCust(q)} />
+          {creatingCust !== null && (
+            <CustomerCreateModal initialName={creatingCust} onClose={() => setCreatingCust(null)}
+              onCreated={(c: CreatedCustomer) => {
+                setCreatedCusts((xs) => [{ id: c.id, name: c.name, type: c.type }, ...xs]);
+                onCustomerChange(c.id);
+                setCreatingCust(null);
+              }} />
+          )}
           <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
             Customers are shared across Charger Registry, Sales, and Technical Service. Deleting a customer keeps this charger — the link just goes blank.
           </div>
@@ -912,6 +936,8 @@ function ProjectDetailsCard({ project, customers, canEdit, onSaved }: {
   canEdit: boolean;
   onSaved: () => Promise<void>;
 }) {
+  const [createdCusts, setCreatedCusts] = useState<CustomerLite[]>([]);
+  const [creatingCust, setCreatingCust] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [name, setName]       = useState(project.name);
   const [status, setStatus]   = useState<ProjectStatus>(project.status);
@@ -999,8 +1025,17 @@ function ProjectDetailsCard({ project, customers, canEdit, onSaved }: {
           <div>
             <FieldLabel>Linked Customer</FieldLabel>
             <SearchSelect value={customerId ?? ''} onChange={onCustomerChange}
-              options={customers.map((c) => ({ value: c.id, label: c.name }))}
-              placeholder="— Select a customer —" />
+              options={[...createdCusts, ...customers].map((c) => ({ value: c.id, label: c.name }))}
+              placeholder="— Select a customer —"
+              addNewLabel="Add new customer" onAddNew={(q) => setCreatingCust(q)} />
+            {creatingCust !== null && (
+              <CustomerCreateModal initialName={creatingCust} onClose={() => setCreatingCust(null)}
+                onCreated={(c: CreatedCustomer) => {
+                  setCreatedCusts((xs) => [{ id: c.id, name: c.name, type: c.type }, ...xs]);
+                  onCustomerChange(c.id);
+                  setCreatingCust(null);
+                }} />
+            )}
           </div>
           <div>
             <FieldLabel>Charger Name</FieldLabel>

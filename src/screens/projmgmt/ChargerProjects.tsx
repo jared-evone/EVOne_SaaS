@@ -4,6 +4,7 @@ import { KPICard } from '../../components/KPICard';
 import { supabase } from '../../lib/supabase';
 import { useIsMobile } from '../../lib/useIsMobile';
 import { SearchSelect } from '../../components/SearchSelect';
+import { CustomerCreateModal } from '../../components/CustomerCreateModal';
 import { usePermissions } from '../../permissions';
 import { Search, Plus, Trash2, GanttChartSquare, ListChecks, MapPin, CalendarDays, ChevronRight, ArrowLeft, Pencil, FileText, Upload, Paperclip, ChevronUp, ChevronDown, StickyNote } from 'lucide-react';
 
@@ -1165,6 +1166,8 @@ function ProjectModal({ title, initial, customers, templates = [], wizard, canMa
   // the project exists. Editing is single-step (the checklist lives on the page).
   const [step, setStep] = useState<1 | 2>(1);
   const [tplId, setTplId] = useState('');
+  const [createdCusts, setCreatedCusts] = useState<{ id: string; name: string }[]>([]);
+  const [creatingCust, setCreatingCust] = useState<string | null>(null);
   // Keep the current value selectable even if it isn't in the customer list
   // (e.g. a legacy/seeded project whose customer was typed free-text).
   const custOptions = p.customer && !customers.some((c) => c.name === p.customer)
@@ -1185,12 +1188,22 @@ function ProjectModal({ title, initial, customers, templates = [], wizard, canMa
         {field('Customer', (
           <SearchSelect
             value={p.customer}
-            options={custOptions.map((c) => ({ value: c.name, label: c.name }))}
+            options={[...createdCusts, ...custOptions].map((c) => ({ value: c.name, label: c.name }))}
             placeholder="— Select customer —"
             emptyText="No matching customer"
-            onChange={(name) => set({ customer: name, customerId: customers.find((c) => c.name === name)?.id ?? null })}
+            onChange={(name) => set({ customer: name, customerId: [...createdCusts, ...customers].find((c) => c.name === name)?.id ?? null })}
+            addNewLabel="Add new customer"
+            onAddNew={(q) => setCreatingCust(q)}
           />
         ))}
+        {creatingCust !== null && (
+          <CustomerCreateModal initialName={creatingCust} onClose={() => setCreatingCust(null)}
+            onCreated={(c) => {
+              setCreatedCusts((xs) => [{ id: c.id, name: c.name }, ...xs]);
+              set({ customer: c.name, customerId: c.id });
+              setCreatingCust(null);
+            }} />
+        )}
         {field('Project manager', <input value={p.owner} onChange={(e) => set({ owner: e.target.value })} style={inp} />)}
       </div>
       {field('Site / address', <input value={p.site} onChange={(e) => set({ site: e.target.value })} style={inp} />)}

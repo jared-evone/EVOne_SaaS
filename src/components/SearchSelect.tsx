@@ -7,7 +7,7 @@ export interface SelectOption { value: string; label: string; sub?: string }
 // Brand-styled dropdown with a search box — for lists too long for a native
 // <select> (customers, sites, chargers). Closes on outside click; the search
 // filters on label + sub.
-export function SearchSelect({ value, options, onChange, disabled, placeholder, emptyText, loading, up }: {
+export function SearchSelect({ value, options, onChange, disabled, placeholder, emptyText, loading, up, addNewLabel, onAddNew }: {
   value: string;
   options: SelectOption[];
   onChange: (v: string) => void;
@@ -17,6 +17,10 @@ export function SearchSelect({ value, options, onChange, disabled, placeholder, 
   loading?: boolean;
   /** Open upwards — for controls near the bottom of a modal. */
   up?: boolean;
+  /** When set, a sticky "+ addNewLabel" row appears under the options; clicking
+   *  it closes the dropdown and hands over the typed query as a prefill. */
+  addNewLabel?: string;
+  onAddNew?: (query: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -80,6 +84,13 @@ export function SearchSelect({ value, options, onChange, disabled, placeholder, 
               );
             })}
           </div>
+          {onAddNew && addNewLabel && (
+            <button type="button"
+              onClick={() => { const query = q.trim(); setOpen(false); onAddNew(query); }}
+              style={{ width: '100%', textAlign: 'left', padding: '9px 12px', borderRadius: 8, border: '1px dashed #C8E6C9', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
+              + {addNewLabel}{q.trim() ? ` “${q.trim()}”` : ''}
+            </button>
+          )}
         </div>
       )}
     </div>

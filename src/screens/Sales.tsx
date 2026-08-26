@@ -4,6 +4,7 @@ import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
 import { useIsMobile } from '../lib/useIsMobile';
+import { CustomerCreateModal, type CreatedCustomer } from '../components/CustomerCreateModal';
 import { Search, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Handshake, FileUp, FileText, X, Plus } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -122,12 +123,15 @@ const isDecided = (s: QuoteStatus) => s === 'Won' || s === 'Lost';
 
 interface SelectOption { value: string; label: string; }
 
-function SearchSelect({ value, options, onChange, disabled, placeholder }: {
+function SearchSelect({ value, options, onChange, disabled, placeholder, addNewLabel, onAddNew }: {
   value: string;
   options: SelectOption[];
   onChange: (v: string) => void;
   disabled?: boolean;
   placeholder?: string;
+  /** Optional sticky "+ addNewLabel" footer; hands over the typed query. */
+  addNewLabel?: string;
+  onAddNew?: (query: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -174,6 +178,13 @@ function SearchSelect({ value, options, onChange, disabled, placeholder }: {
               );
             })}
           </div>
+          {onAddNew && addNewLabel && (
+            <button type="button"
+              onClick={() => { const query = q.trim(); setOpen(false); onAddNew(query); }}
+              style={{ width: '100%', textAlign: 'left', padding: '9px 12px', borderRadius: 8, border: '1px dashed #C8E6C9', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
+              + {addNewLabel}{q.trim() ? ` “${q.trim()}”` : ''}
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -792,14 +803,19 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
     if (data?.signedUrl) window.open(data.signedUrl, '_blank');
   };
 
+  // Customers created inline from the dropdown — usable immediately, before the
+  // page-level list refetches.
+  const [createdCusts, setCreatedCusts] = useState<CreatedCustomer[]>([]);
+  const [creatingCust, setCreatingCust] = useState<string | null>(null);
   const customerOptions: SelectOption[] = [
+    ...createdCusts.map((c) => ({ value: c.id, label: c.name })),
     ...customers.map((c) => ({ value: c.id, label: c.name })),
     ...(form.customer_id && !customers.some((c) => c.id === form.customer_id)
       ? [{ value: form.customer_id, label: `${form.customer_name} (removed)` }]
       : []),
   ];
   const pickCustomer = (id: string) => {
-    const c = customers.find((x) => x.id === id);
+    const c = [...createdCusts, ...customers].find((x) => x.id === id);
     if (!c) { setForm((f) => ({ ...f, customer_id: id })); return; }
     setForm((f) => ({
       ...f,
@@ -811,6 +827,9 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
       contact_email: c.contact_email ?? '',
     }));
   };
+
+  const pickCustomerCreated = (c: CreatedCustomer) =>
+    setForm((f) => ({ ...f, customer_id: c.id, customer_name: c.name, contact_name: c.contact_name ?? '', contact_email: c.contact_email ?? '' }));
 
   // A quote can be saved once a customer, salesperson and at least one quotation
   // amount are set; PDFs stay optional. A Lost quote additionally needs a reason.
@@ -963,7 +982,12 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div>
             <label style={label}>Customer</label>
-            <SearchSelect value={form.customer_id} options={customerOptions} onChange={pickCustomer} disabled={readOnly} placeholder="— Select customer —" />
+            <SearchSelect value={form.customer_id} options={customerOptions} onChange={pickCustomer} disabled={readOnly} placeholder="— Select customer —"
+              addNewLabel="Add new customer" onAddNew={(q) => setCreatingCust(q)} />
+            {creatingCust !== null && (
+              <CustomerCreateModal initialName={creatingCust} onClose={() => setCreatingCust(null)}
+                onCreated={(c) => { setCreatedCusts((xs) => [c, ...xs]); setCreatingCust(null); pickCustomerCreated(c); }} />
+            )}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
             <div>
