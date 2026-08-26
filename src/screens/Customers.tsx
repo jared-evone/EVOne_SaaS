@@ -187,7 +187,9 @@ export function ScreenCustomers() {
   const safePage = Math.min(page, totalPages);
   const pageRows = visible.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
-  const save = async (data: CustomerFormData, id?: string, contactId?: string | null) => {
+  // Returns the customer's id (existing or newly created) so the modal can
+  // attach additional contacts in the same save — create included.
+  const save = async (data: CustomerFormData, id?: string, contactId?: string | null): Promise<string | null> => {
     const contactPayload = {
       name:  (data.contact_name  ?? '').trim(),
       email: (data.contact_email ?? '').trim() || null,
@@ -203,6 +205,8 @@ export function ScreenCustomers() {
       } else if (contactPayload.name || contactPayload.email || contactPayload.phone) {
         await supabase.from('customer_contacts').insert({ ...contactPayload, customer_id: id });
       }
+      await fetchAll();
+      return id;
     } else {
       const { data: created } = await supabase
         .from('customers')
@@ -213,8 +217,9 @@ export function ScreenCustomers() {
       if (created) {
         await supabase.from('customer_contacts').insert({ ...contactPayload, customer_id: created.id });
       }
+      await fetchAll();
+      return created?.id ?? null;
     }
-    await fetchAll();
   };
 
   const remove = async (id: string) => {
@@ -398,7 +403,7 @@ interface CustomerModalProps {
   title: string;
   canDelete: boolean;
   customerId?: string;
-  onSave: (data: CustomerFormData) => Promise<void>;
+  onSave: (data: CustomerFormData) => Promise<string | null>;
   onDelete?: () => Promise<void>;
   onClose: () => void;
 }
@@ -446,7 +451,7 @@ function CustomerModal({ initial, title, canDelete, customerId, onSave, onDelete
 
   const handleSave = async () => {
     setSaving(true);
-    await onSave({
+    const savedId = await onSave({
       name:    form.name.trim(),
       type:    form.type,
       address: form.address && form.address.trim() ? form.address.trim() : null,
@@ -455,9 +460,11 @@ function CustomerModal({ initial, title, canDelete, customerId, onSave, onDelete
       contact_email: form.contact_email?.trim() || '',
       contact_phone: form.contact_phone?.trim() || '',
     });
-    // Sync additional contacts (edit mode only). Inserted without a position so
-    // they default like the main contact and sort after it by created_at.
-    if (customerId) {
+    // Sync additional contacts — on edit AND on create (onSave hands back the
+    // new customer's id). Inserted without a position so they default like the
+    // main contact and sort after it by created_at.
+    const targetId = customerId ?? savedId;
+    if (targetId) {
       if (deletedIds.length) await supabase.from('customer_contacts').delete().in('id', deletedIds);
       for (const x of extras) {
         const name = x.name.trim();
@@ -466,7 +473,7 @@ function CustomerModal({ initial, title, canDelete, customerId, onSave, onDelete
         if (!name && !email && !phone) continue;
         const payload = { name, email, phone };
         if (x.id) await supabase.from('customer_contacts').update(payload).eq('id', x.id);
-        else await supabase.from('customer_contacts').insert({ ...payload, customer_id: customerId });
+        else await supabase.from('customer_contacts').insert({ ...payload, customer_id: targetId });
       }
     }
     setSaving(false);
@@ -493,9 +500,9 @@ function CustomerModal({ initial, title, canDelete, customerId, onSave, onDelete
           <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
         </div>
 
-        {/* Overview / Additional Contacts tabs — only when editing an existing customer */}
-        {customerId && (
-          <div style={{ display: 'flex', gap: 6, background: C.seasalt, borderRadius: 12, padding: 4 }}>
+        {/* Overview / Additional Contacts tabs — available while creating too, so
+            extra people go in with the customer instead of a second visit. */}
+        <div style={{ display: 'flex', gap: 6, background: C.seasalt, borderRadius: 12, padding: 4 }}>
             {(['overview', 'contacts'] as const).map((t) => (
               <button key={t} type="button" onClick={() => setTab(t)}
                 style={{
@@ -504,13 +511,12 @@ function CustomerModal({ initial, title, canDelete, customerId, onSave, onDelete
                   fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer',
                   boxShadow: tab === t ? '0 1px 3px rgba(0,0,0,.08)' : 'none',
                 }}>
-                {t === 'overview' ? 'Overview' : 'Additional Contacts'}
+                {t === 'overview' ? 'Overview' : `Additional Contacts${extras.length ? ` · ${extras.length}` : ''}`}
               </button>
             ))}
-          </div>
-        )}
+        </div>
 
-        {(!customerId || tab === 'overview') && (<>
+        {tab === 'overview' && (<>
         <div>
           <FieldLabel>Customer Name</FieldLabel>
           <input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="Jane Tan" style={inputStyle()} autoFocus />
@@ -559,7 +565,7 @@ function CustomerModal({ initial, title, canDelete, customerId, onSave, onDelete
         </div>
         </>)}
 
-        {customerId && tab === 'contacts' && (<>
+        {tab === 'contacts' && (<>
           {extras.length === 0 && (
             <div style={{ fontSize: 13, color: C.slate, textAlign: 'center', padding: '12px 0' }}>
               No additional contacts yet. Add people beyond the main contact below.
