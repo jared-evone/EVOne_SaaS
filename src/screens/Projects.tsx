@@ -1872,6 +1872,263 @@ function SiteModal({ title, initial, onSave, onClose }: {
 
 // ── Right column: Files tab ───────────────────────────────────────
 
+// ── File a general document into a charger's records ─────────────
+// Moves a Documents-tab file into a specific charger as: an invoice on an
+// existing Form A/D record, a new Form A/D report (with cycle mapping), a
+// breakdown report, or a warranty claim document. The object physically moves
+// from the project-files bucket into charger-forms so every charger-side
+// viewer and delete sweep works on it like any native upload.
+
+type FileDest = 'invoice' | 'formA' | 'formD' | 'breakdown' | 'warranty';
+
+function FileToChargerModal({ doc, sites, isResidential, onClose, onMoved }: {
+  doc: ProjectFile;
+  sites: ProjectSite[];
+  isResidential: boolean;
+  onClose: () => void;
+  onMoved: () => Promise<void>;
+}) {
+  const chargerOptions = sites.flatMap((st) =>
+    st.site_chargers.map((c) => ({ value: c.id, label: `${st.name} · ${c.asset_tag}` })));
+  const [chargerId, setChargerId] = useState(chargerOptions.length === 1 ? chargerOptions[0].value : '');
+  const [dest, setDest] = useState<FileDest>(doc.section === 'invoices' ? 'invoice' : 'formA');
+  const [records, setRecords] = useState<LtaRecord[]>([]);
+  const [recordId, setRecordId] = useState('');
+  const [performedAt, setPerformedAt] = useState(doc.invoice_date ?? new Date().toISOString().slice(0, 10));
+  const [periodN, setPeriodN] = useState<number | null>(null);
+  const [description, setDescription] = useState('');
+  const [remarks, setRemarks] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const site = sites.find((st) => st.site_chargers.some((c) => c.id === chargerId)) ?? null;
+  const charger = site?.site_chargers.find((c) => c.id === chargerId) ?? null;
+  const formAMonths = isResidential ? 24 : 6;
+
+  useEffect(() => {
+    setRecords([]);
+    setRecordId('');
+    if (!chargerId) return;
+    let cancelled = false;
+    void supabase.from('charger_lta_records').select('*').eq('charger_id', chargerId)
+      .order('performed_at', { ascending: false })
+      .then(({ data }) => { if (!cancelled) setRecords((data ?? []) as LtaRecord[]); });
+    return () => { cancelled = true; };
+  }, [chargerId]);
+
+  const ft: LtaFormType = dest === 'formD' ? 'D' : 'A';
+  const interval = ft === 'A' ? formAMonths : 12;
+  const claimedBy = (() => {
+    const m = new Map<number, string>();
+    if (!charger) return m;
+    const ofType = records.filter((r) => r.form_type === ft);
+    const { periodOf } = ltaAssignPeriods(ltaScheduleBase(charger, interval, ft), interval, ofType.map(toPerformed));
+    for (const [id, n] of periodOf) m.set(n, id);
+    return m;
+  })();
+
+  const DEST_META: { key: FileDest; label: string; hide?: boolean }[] = [
+    { key: 'invoice',   label: 'Invoice for an inspection' },
+    { key: 'formA',     label: 'Form A report' },
+    { key: 'formD',     label: 'Form D report', hide: isResidential },
+    { key: 'breakdown', label: 'Breakdown report' },
+    { key: 'warranty',  label: 'Warranty document' },
+  ];
+
+  const canMove = !!charger && !busy && (
+    dest === 'invoice' ? !!recordId :
+    dest === 'formA' || dest === 'formD' ? !!performedAt :
+    dest === 'breakdown' ? !!performedAt && !!description.trim() :
+    !!performedAt);
+
+  const move = async () => {
+    if (!charger || !site) return;
+    setBusy(true);
+    setErr(null);
+    // 1. Pull the original, 2. place the copy, 3. write the record, 4. only then
+    // remove the source — a failure at any step leaves the document where it was.
+    const dl = await supabase.storage.from(PROJECT_FILES_BUCKET).download(doc.storage_path);
+    if (dl.error || !dl.data) { setBusy(false); setErr(dl.error?.message ?? 'Could not read the document.'); return; }
+    const blob = dl.data;
+    const contentType = doc.mime_type || 'application/pdf';
+
+    let destPath: string;
+    if (dest === 'invoice') destPath = `lta/${charger.id}/${crypto.randomUUID()}/invoice/${pathSafe(doc.filename)}`;
+    else if (dest === 'formA' || dest === 'formD') destPath = `lta/${charger.id}/${crypto.randomUUID()}/${pathSafe(computeLtaFilename(ft, charger.asset_tag, performedAt, site.name))}`;
+    else if (dest === 'breakdown') destPath = `breakdown/${charger.id}/${crypto.randomUUID()}/${pathSafe(doc.filename)}`;
+    else destPath = `warranty/${charger.id}/${crypto.randomUUID()}/${pathSafe(doc.filename)}`;
+
+    const up = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(destPath, blob, { contentType });
+    if (up.error) { setBusy(false); setErr(up.error.message); return; }
+
+    let dbErr: string | null = null;
+    let oldInvoicePath: string | null = null;
+    if (dest === 'invoice') {
+      const rec = records.find((r) => r.id === recordId);
+      oldInvoicePath = rec?.invoice_path ?? null;
+      const { error } = await supabase.from('charger_lta_records')
+        .update({ invoice_path: destPath, invoice_filename: doc.filename }).eq('id', recordId);
+      dbErr = error?.message ?? null;
+    } else if (dest === 'formA' || dest === 'formD') {
+      const { error } = await supabase.from('charger_lta_records').insert({
+        charger_id: charger.id, form_type: ft, performed_at: performedAt, period_n: periodN,
+        storage_path: destPath, filename: computeLtaFilename(ft, charger.asset_tag, performedAt, site.name),
+      });
+      dbErr = error?.message ?? null;
+    } else if (dest === 'breakdown') {
+      const { error } = await supabase.from('charger_breakdowns').insert({
+        charger_id: charger.id, breakdown_date: performedAt, description: description.trim(),
+        storage_path: destPath, filename: doc.filename,
+      });
+      dbErr = error?.message ?? null;
+    } else {
+      const { error } = await supabase.from('charger_warranty_claims').insert({
+        charger_id: charger.id, claim_date: performedAt, parts: null,
+        remarks: remarks.trim() || `Filed from documents: ${doc.filename}`,
+        storage_path: destPath, filename: doc.filename,
+      });
+      dbErr = error?.message ?? null;
+    }
+    if (dbErr) {
+      void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([destPath]);
+      setBusy(false);
+      setErr(dbErr);
+      return;
+    }
+    if (oldInvoicePath) void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([oldInvoicePath]);
+
+    await supabase.from('project_files').delete().eq('id', doc.id);
+    void supabase.storage.from(PROJECT_FILES_BUCKET).remove([doc.storage_path]);
+    setBusy(false);
+    await onMoved();
+    onClose();
+  };
+
+  const inp: React.CSSProperties = { ...inputStyle(), background: C.white };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 12 }}>
+      <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 520, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>File into a charger</div>
+          <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, color: C.slate, fontFamily: 'Figtree' }}>×</button>
+        </div>
+        <div style={{ background: C.seasalt, borderRadius: 10, padding: '8px 12px', fontSize: 12, color: '#1a1a1a', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <FileText size={14} color={C.green} style={{ flexShrink: 0 }} />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 }}>{doc.filename}</span>
+          {doc.invoice_number && <span style={{ color: C.slate, flexShrink: 0 }}>{doc.invoice_number}</span>}
+        </div>
+        {err && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '9px 12px', fontSize: 12, fontWeight: 600 }}>{err}</div>}
+
+        <div>
+          <FieldLabel>Charger</FieldLabel>
+          <SearchSelect value={chargerId} onChange={setChargerId} options={chargerOptions} placeholder="— Select a charger —" />
+        </div>
+
+        <div>
+          <FieldLabel>File as</FieldLabel>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {DEST_META.filter((d) => !d.hide).map((d) => {
+              const on = dest === d.key;
+              return (
+                <button key={d.key} type="button" onClick={() => setDest(d.key)}
+                  style={{ padding: '6px 12px', borderRadius: 99, border: `1px solid ${on ? C.green : '#EBEBEB'}`, background: on ? C.green : C.white, color: on ? C.white : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                  {d.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {dest === 'invoice' && (
+          <div>
+            <FieldLabel>Attach to which inspection record?</FieldLabel>
+            {!chargerId ? (
+              <div style={{ fontSize: 12, color: C.slate, fontStyle: 'italic' }}>Pick a charger first.</div>
+            ) : records.length === 0 ? (
+              <div style={{ fontSize: 12, color: '#B45309', background: '#FFF0E0', borderRadius: 8, padding: '8px 10px' }}>
+                This charger has no Form A/D records yet — file the document as a Form A/D report instead, or upload the inspection first.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {records.map((r) => {
+                  const on = recordId === r.id;
+                  return (
+                    <label key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 10, border: `1px solid ${on ? C.green : '#EBEBEB'}`, background: on ? C.honeydew : C.white, cursor: 'pointer' }}>
+                      <input type="radio" name="lta-rec" checked={on} onChange={() => setRecordId(r.id)} style={{ accentColor: C.green }} />
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: '#1a1a1a' }}>Form {r.form_type} · {fmtDate(r.performed_at)}</span>
+                      {r.invoice_path && (
+                        <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 99, background: '#FFF8E1', color: '#B07D00' }}>
+                          has an invoice — will be replaced
+                        </span>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {(dest === 'formA' || dest === 'formD') && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div>
+              <FieldLabel>Performed on</FieldLabel>
+              <input type="date" value={performedAt} onChange={(e) => setPerformedAt(e.target.value)} style={inp} />
+            </div>
+            <div>
+              <FieldLabel>Counts as</FieldLabel>
+              {charger ? (
+                <LtaCyclePicker registration={ltaScheduleBase(charger, interval, ft)} intervalMonths={interval} date={performedAt}
+                  value={periodN} claimedBy={claimedBy} recordId={null} onChange={setPeriodN} />
+              ) : <div style={{ fontSize: 12, color: C.slate, fontStyle: 'italic', padding: '9px 0' }}>Pick a charger first.</div>}
+            </div>
+          </div>
+        )}
+
+        {dest === 'breakdown' && (
+          <>
+            <div>
+              <FieldLabel>Breakdown date</FieldLabel>
+              <input type="date" value={performedAt} onChange={(e) => setPerformedAt(e.target.value)} style={inp} />
+            </div>
+            <div>
+              <FieldLabel>Description</FieldLabel>
+              <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3}
+                placeholder="What broke, symptoms, action taken…" style={{ ...inp, resize: 'vertical', lineHeight: 1.5, fontFamily: 'Figtree' }} />
+            </div>
+          </>
+        )}
+
+        {dest === 'warranty' && (
+          <>
+            <div>
+              <FieldLabel>Claim date</FieldLabel>
+              <input type="date" value={performedAt} onChange={(e) => setPerformedAt(e.target.value)} style={inp} />
+            </div>
+            <div>
+              <FieldLabel>Remarks</FieldLabel>
+              <input value={remarks} onChange={(e) => setRemarks(e.target.value)} placeholder="optional" style={inp} />
+            </div>
+          </>
+        )}
+
+        <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5 }}>
+          The document moves out of this tab into the charger's own records — it will show up there exactly like a direct upload.
+        </div>
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <button onClick={onClose} disabled={busy}
+            style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+          <button onClick={() => void move()} disabled={!canMove}
+            style={{ padding: '9px 22px', borderRadius: 10, border: 'none', background: canMove ? C.green : '#9DC7A6', color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: canMove ? 'pointer' : 'default' }}>
+            {busy ? 'Moving…' : 'Move into charger'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function FilesTab({ projectId, files, sites, brandModels, customer, canEdit, canDelete, onChanged }: {
   projectId: string;
   files: ProjectFile[];
@@ -1892,6 +2149,9 @@ function FilesTab({ projectId, files, sites, brandModels, customer, canEdit, can
   const [addChargerSiteId, setAddChargerSiteId] = useState<string | null>(null);
   const [pickSiteOpen, setPickSiteOpen] = useState(false);
   const [newSiteOpen, setNewSiteOpen] = useState(false);
+  // Filing a document into a specific charger's records.
+  const [filingDoc, setFilingDoc] = useState<ProjectFile | null>(null);
+  const hasChargers = sites.some((st) => st.site_chargers.length > 0);
   const isResidential = customer?.type === 'residential';
 
   const startAddCharger = () => {
@@ -1927,9 +2187,11 @@ function FilesTab({ projectId, files, sites, brandModels, customer, canEdit, can
       {/* Left — document lists */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18, minWidth: 0 }}>
         <FileSection title="Invoices" section="invoices" files={invoices} selectedId={selected?.id ?? null} onSelect={setSelected}
-          projectId={projectId} canEdit={canEdit} canDelete={canDelete} onChanged={onChanged} />
+          projectId={projectId} canEdit={canEdit} canDelete={canDelete} onChanged={onChanged}
+          onFileTo={canEdit && hasChargers ? setFilingDoc : undefined} />
         <FileSection title="Others" section="others" files={others} selectedId={selected?.id ?? null} onSelect={setSelected}
-          projectId={projectId} canEdit={canEdit} canDelete={canDelete} onChanged={onChanged} />
+          projectId={projectId} canEdit={canEdit} canDelete={canDelete} onChanged={onChanged}
+          onFileTo={canEdit && hasChargers ? setFilingDoc : undefined} />
       </div>
 
       {/* Right — inline viewer for cross-checking */}
@@ -1953,6 +2215,12 @@ function FilesTab({ projectId, files, sites, brandModels, customer, canEdit, can
                   </div>
                 )}
               </div>
+              {canEdit && hasChargers && (
+                <button onClick={() => setFilingDoc(selected)} title="Move this document into a charger's records"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                  File to charger →
+                </button>
+              )}
               {canEdit && (
                 <button onClick={startAddCharger} title="Create a charger with this invoice open"
                   style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 12px', borderRadius: 8, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
@@ -1983,6 +2251,11 @@ function FilesTab({ projectId, files, sites, brandModels, customer, canEdit, can
           </>
         )}
       </div>
+
+      {filingDoc && (
+        <FileToChargerModal doc={filingDoc} sites={sites} isResidential={isResidential}
+          onClose={() => setFilingDoc(null)} onMoved={onChanged} />
+      )}
 
       {/* Pick which site to add the charger to (only when the registry has several). */}
       {pickSiteOpen && (
@@ -2049,7 +2322,7 @@ function FilesTab({ projectId, files, sites, brandModels, customer, canEdit, can
   );
 }
 
-function FileSection({ title, section, files, projectId, canEdit, canDelete, onChanged, selectedId, onSelect }: {
+function FileSection({ title, section, files, projectId, canEdit, canDelete, onChanged, selectedId, onSelect, onFileTo }: {
   title: string;
   section: ProjectFileSection;
   files: ProjectFile[];
@@ -2059,6 +2332,7 @@ function FileSection({ title, section, files, projectId, canEdit, canDelete, onC
   onChanged: () => Promise<void>;
   selectedId: string | null;
   onSelect: (f: ProjectFile) => void;
+  onFileTo?: (f: ProjectFile) => void;
 }) {
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -2165,7 +2439,7 @@ function FileSection({ title, section, files, projectId, canEdit, canDelete, onC
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {files.map((f) => (
-            <FileRow key={f.id} file={f} canDelete={canDelete} onChanged={onChanged}
+            <FileRow key={f.id} file={f} canDelete={canDelete} onChanged={onChanged} onFileTo={onFileTo}
               selected={selectedId === f.id} onSelect={() => onSelect(f)} />
           ))}
         </div>
@@ -2174,7 +2448,7 @@ function FileSection({ title, section, files, projectId, canEdit, canDelete, onC
   );
 }
 
-function FileRow({ file, canDelete, onChanged, selected, onSelect }: { file: ProjectFile; canDelete: boolean; onChanged: () => Promise<void>; selected: boolean; onSelect: () => void }) {
+function FileRow({ file, canDelete, onChanged, selected, onSelect, onFileTo }: { file: ProjectFile; canDelete: boolean; onChanged: () => Promise<void>; selected: boolean; onSelect: () => void; onFileTo?: (f: ProjectFile) => void }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -2241,6 +2515,13 @@ function FileRow({ file, canDelete, onChanged, selected, onSelect }: { file: Pro
             style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 12px', borderRadius: 6, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
             <DownloadIcon size={11} strokeWidth={2.25} /> PDF
           </button>
+          {onFileTo && (
+            <button onClick={() => onFileTo(file)}
+              title="Move this document into a charger's records (Form A/D, invoice, breakdown, warranty)"
+              style={{ padding: '5px 12px', borderRadius: 6, border: '1px dashed #C8E6C9', background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              File →
+            </button>
+          )}
           {canDelete && (
             <button onClick={() => setConfirmDelete(true)}
               style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
