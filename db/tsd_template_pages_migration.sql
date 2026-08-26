@@ -1,8 +1,9 @@
 -- Overlay template pages: base64-in-jsonb -> Storage URLs.
 -- Phase 1 (DONE): 19 page images uploaded to tsd-form-photos/template-pages/{id}/.
--- Phase 2 (RUN VIA MCP): 1) select * from backup.tsd_snapshot('pre-template-pages');
---                        2) the updates below;  3) verify payload shrinks to ~KB.
--- Until phase 2 runs, templates keep their base64 and everything works as before.
+-- Phase 2 (APPLIED): snapshot 'pre-template-pages' taken (base64 originals
+-- recoverable from backup.tsd_form_templates_snapshot), the updates below ran in
+-- one transaction, and the store's mount payload dropped 4,701 KB -> 70 KB with
+-- all 19 page URLs verified reachable.
 
 update tsd_form_templates set template = jsonb_set(template, '{pages,0,imageSrc}', to_jsonb('https://swzorezjlkovvgrcntrs.supabase.co/storage/v1/object/public/tsd-form-photos/template-pages/tpl-1784183331291/page-0.png'::text)) where id = 'tpl-1784183331291';
 update tsd_form_templates set template = jsonb_set(template, '{imageSrc}', to_jsonb('https://swzorezjlkovvgrcntrs.supabase.co/storage/v1/object/public/tsd-form-photos/template-pages/tpl-1784183331291/page-0.png'::text)) where id = 'tpl-1784183331291';
