@@ -54,6 +54,8 @@ interface POSettings {
   body: string;
   approver_email: string | null;
   finance_email: string | null;
+  /** Default CC — receives an FYI copy WITHOUT the Approve/Reject buttons. */
+  cc_email: string | null;
   from_address: string | null;
   reply_to: string | null;
 }
@@ -81,7 +83,9 @@ const newKey = () => `l-${Date.now()}-${lineSeq++}`;
 const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string));
 
 // Build the approval email HTML: intro + line table + approve/reject buttons.
-function buildPoEmail(po: PurchaseOrder, settings: POSettings, salesman: string): string {
+// `fyi` renders the CC copy: same PO details, but the Approve/Reject buttons are
+// replaced by a note naming the approver — so only the addressed approver can act.
+function buildPoEmail(po: PurchaseOrder, settings: POSettings, salesman: string, fyi = false): string {
   const fill = (t: string) => t
     .replace(/\{\{\s*po_number\s*\}\}/gi, po.po_number)
     .replace(/\{\{\s*title\s*\}\}/gi, po.title)
@@ -100,10 +104,12 @@ function buildPoEmail(po: PurchaseOrder, settings: POSettings, salesman: string)
     <div style="font-size:14px;color:#5B6B7A;margin:2px 0 16px;">${esc(po.title)}${po.supplier ? ` · ${esc(po.supplier)}` : ''}</div>
     <div style="font-size:14px;line-height:1.6;margin-bottom:16px;">${intro}</div>
     ${poItemsHtml(po)}
-    <div style="text-align:center;">
+    ${fyi
+      ? `<div style="text-align:center;background:#F7FAFC;border:1px dashed #D5DDE3;border-radius:10px;padding:12px 16px;font-size:13px;color:#5B6B7A;">This copy is for your information — approval sits with <b style="color:#1a1a1a;">${esc(po.approver_email ?? settings.approver_email ?? '')}</b>.</div>`
+      : `<div style="text-align:center;">
       <a href="${approveUrl}" style="display:inline-block;background:${C.green};color:#fff;text-decoration:none;font-weight:700;padding:12px 30px;border-radius:10px;margin:0 6px;">Approve</a>
       <a href="${rejectUrl}" style="display:inline-block;background:#C0321A;color:#fff;text-decoration:none;font-weight:700;padding:12px 30px;border-radius:10px;margin:0 6px;">Reject</a>
-    </div>
+    </div>`}
     <div style="text-align:center;color:#5B6B7A;font-size:12px;margin-top:18px;">Raised by ${esc(salesman)} · EVOne Purchase Orders</div>
   </div>`;
 }
@@ -128,6 +134,25 @@ function poItemsHtml(po: PurchaseOrder): string {
     <div style="text-align:right;font-size:14px;color:#5B6B7A;margin:12px 0 2px;">Purchase cost: <b style="color:#1a1a1a;">${money(po.subtotal, po.currency)} ${esc(po.currency)}</b></div>
     ${po.sell_subtotal ? `<div style="text-align:right;font-size:14px;color:#5B6B7A;margin:2px 0;">Selling to customer: <b style="color:${C.green};">${money(po.sell_subtotal, po.sell_currency)} ${esc(po.sell_currency)}</b></div>
     ${po.sell_currency === po.currency ? `<div style="text-align:right;font-size:14px;color:#5B6B7A;margin:2px 0 22px;">Margin: <b style="color:#1a1a1a;">${money(po.sell_subtotal - po.subtotal, po.currency)}</b></div>` : '<div style="margin-bottom:22px;"></div>'}` : '<div style="margin-bottom:22px;"></div>'}`;
+}
+
+// FYI copies to the template's default CC list — same PO, no action buttons.
+async function sendFyiCopies(po: PurchaseOrder, settings: POSettings, salesman: string, subject: string) {
+  const ccList = (settings.cc_email ?? '').split(/[,;]/).map((e) => e.trim()).filter((e) => /@/.test(e));
+  if (!ccList.length) return;
+  try {
+    await supabase.functions.invoke('send-customer-email', {
+      body: {
+        to: ccList,
+        subject: `FYI: ${subject}`,
+        html: buildPoEmail(po, settings, salesman, true),
+        from: settings.from_address || undefined,
+        replyTo: settings.reply_to || undefined,
+      },
+    });
+  } catch (e) {
+    console.error('PO FYI copy failed', e);
+  }
 }
 
 // Finance email: no approve/reject — finance marks the PO completed (sent to
@@ -276,7 +301,7 @@ export function PODecisionPage({ token, decision }: { token: string; decision: s
 type Tab = 'raise' | 'track' | 'products' | 'template';
 
 export function ScreenRaisePO() {
-  const { can, user } = usePermissions();
+  const { can, user, isAdmin } = usePermissions();
   const canEdit = can('raise_po', 'can_edit');
   const canDelete = can('raise_po', 'can_delete');
 
@@ -299,13 +324,16 @@ export function ScreenRaisePO() {
   const fetchAll = async () => {
     const [{ data: p }, { data: o }, { data: s }] = await Promise.all([
       supabase.from('po_products').select('*').order('category').order('name'),
-      supabase.from('purchase_orders').select('*').eq('created_by_id', user.id).order('created_at', { ascending: false }),
+      // Admins see the whole team's POs; everyone else sees their own.
+      (isAdmin
+        ? supabase.from('purchase_orders').select('*').order('created_at', { ascending: false })
+        : supabase.from('purchase_orders').select('*').eq('created_by_id', user.id).order('created_at', { ascending: false })),
       supabase.from('po_settings').select('*').eq('id', 'default').maybeSingle(),
       fetchLists(),
     ]);
     setProducts((p as Product[]) ?? []);
     setPos((o as unknown as PurchaseOrder[]) ?? []);
-    setSettings((s as POSettings) ?? { id: 'default', subject: '', body: '', approver_email: null, finance_email: null, from_address: null, reply_to: null });
+    setSettings((s as POSettings) ?? { id: 'default', subject: '', body: '', approver_email: null, finance_email: null, cc_email: null, from_address: null, reply_to: null });
     setLoading(false);
   };
   useEffect(() => { void fetchAll(); }, []);
@@ -320,13 +348,14 @@ export function ScreenRaisePO() {
   }
 
   const pending = pos.filter((p) => p.status === 'pending').length;
-  const tabs: [Tab, string][] = [['raise', 'Raise PO'], ['track', `My POs${pos.length ? ` · ${pos.length}` : ''}`]];
+  const tabs: [Tab, string][] = [['raise', 'Raise PO'], ['track', `${isAdmin ? 'All POs' : 'My POs'}${pos.length ? ` · ${pos.length}` : ''}`]];
   if (canEdit) { tabs.push(['products', 'Product Catalog'], ['template', 'Email Template']); }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
-        <KPICard label="My Purchase Orders" value={String(pos.length)} sub="raised by me" accent />
+        <KPICard label={isAdmin ? 'Purchase Orders' : 'My Purchase Orders'} value={String(pos.length)}
+          sub={isAdmin ? 'across the whole team' : 'raised by me'} accent />
         <KPICard label="Pending Approval" value={String(pending)} sub="awaiting the boss" />
         <KPICard label="Products" value={String(products.filter((p) => p.is_active).length)} sub="in the catalog" />
       </div>
@@ -425,6 +454,10 @@ function RaiseTab({ products, settings, onSent }: { products: Product[]; setting
       });
       emailErr = (r as { error?: string } | null)?.error ?? fnErr?.message ?? null;
     } catch (e) { emailErr = (e as Error).message || 'send failed'; }
+    // The default CC gets a buttons-free FYI copy in a SEPARATE send, so the
+    // Approve/Reject links never leave the approver's inbox. A CC failure
+    // doesn't fail the PO.
+    if (!emailErr) void sendFyiCopies(po, settings, user.full_name || user.email, subject);
     await supabase.from('purchase_orders').update({ email_status: emailErr ? 'failed' : 'sent', email_error: emailErr }).eq('id', po.id);
 
     setSending(false);
@@ -589,6 +622,7 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
         body: { to: [po.approver_email], subject, html, from: settings.from_address || undefined, replyTo: settings.reply_to || undefined },
       });
       emailErr = (r as { error?: string } | null)?.error ?? error?.message ?? null;
+      if (!emailErr) void sendFyiCopies(po, settings, po.created_by || user.full_name, subject);
     } catch (e) { emailErr = (e as Error).message; }
     await supabase.from('purchase_orders').update({ email_status: emailErr ? 'failed' : 'sent', email_error: emailErr }).eq('id', po.id);
     setBusy(false);
@@ -643,6 +677,9 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
                   <td style={{ padding: '12px 16px' }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>{po.po_number}</div>
                     <div style={{ fontSize: 12, color: C.slate }}>{po.title}</div>
+                    {po.created_by && po.created_by_id !== user.id && (
+                      <div style={{ fontSize: 11, color: C.slate, marginTop: 1 }}>by <span style={{ fontWeight: 700, color: '#1a1a1a' }}>{po.created_by}</span></div>
+                    )}
                   </td>
                   <td style={{ padding: '12px 16px', fontSize: 13, color: '#1a1a1a' }}>{po.supplier || '—'}</td>
                   <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 700, color: C.green, textAlign: 'right', whiteSpace: 'nowrap' }}>{money(po.subtotal, po.currency)} <span style={{ fontSize: 10, color: C.slate, fontWeight: 700 }}>{po.currency}</span></td>
@@ -1086,7 +1123,8 @@ function TemplateTab({ settings, onRefresh }: { settings: POSettings; onRefresh:
     setSaving(true);
     const { error } = await supabase.from('po_settings').update({
       subject: form.subject, body: form.body, approver_email: form.approver_email || null,
-      finance_email: form.finance_email || null, from_address: form.from_address || null, reply_to: form.reply_to || null,
+      finance_email: form.finance_email || null, cc_email: form.cc_email || null,
+      from_address: form.from_address || null, reply_to: form.reply_to || null,
       updated_at: new Date().toISOString(),
     }).eq('id', 'default');
     setSaving(false);
@@ -1110,6 +1148,13 @@ function TemplateTab({ settings, onRefresh }: { settings: POSettings; onRefresh:
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <div><label style={label}>Default approver (boss)</label><input type="email" value={form.approver_email ?? ''} onChange={(e) => { setForm({ ...form, approver_email: e.target.value }); setSaved(false); }} placeholder="boss@evone.com" style={input} /></div>
           <div><label style={label}>Finance email</label><input type="email" value={form.finance_email ?? ''} onChange={(e) => { setForm({ ...form, finance_email: e.target.value }); setSaved(false); }} placeholder="finance@evone.com" style={input} /></div>
+        </div>
+        <div>
+          <label style={label}>CC on approval emails (comma-separated)</label>
+          <input value={form.cc_email ?? ''} onChange={(e) => { setForm({ ...form, cc_email: e.target.value }); setSaved(false); }} placeholder="e.g. ops@evone.com, director@evone.com" style={input} />
+          <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
+            CC'd people get an <strong>FYI copy without the Approve/Reject buttons</strong> — only the approver's own email carries the actions, so a CC can't approve on their behalf.
+          </div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <div><label style={label}>From address</label><input value={form.from_address ?? ''} onChange={(e) => { setForm({ ...form, from_address: e.target.value }); setSaved(false); }} placeholder="EVOne <po@evone.com.my>" style={input} /></div>
