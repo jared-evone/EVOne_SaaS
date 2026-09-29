@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { C } from '../../theme';
 import { LineChart } from '../../components/charts';
 import { supabase } from '../../lib/supabase';
+import { Pencil, X } from 'lucide-react';
 
 export type Granularity = 'day' | 'week' | 'month';
 type RangeMonths = 6 | 12 | 24 | 'all';
@@ -425,6 +426,124 @@ export function clearExcludedVehiclesCache(): void {
   excludedPromise = null;
 }
 
+// ── Location chart groups ─────────────────────────────────────────
+// Display-level grouping: several raw location names (e.g. before/after a CSMS
+// rename) render as ONE chart. Raw records are never rewritten; the member
+// table's primary key guarantees a location lives in exactly one chart.
+
+export interface ChartMeta { key: string; groupId: string | null; title: string; members: string[]; }
+
+interface LocationGroupsState {
+  titles: Map<string, string>;   // group_id → chart title
+  memberTo: Map<string, string>; // carpark_code → group_id
+}
+
+let locGroupsCache: LocationGroupsState | null = null;
+
+async function fetchLocationGroups(): Promise<LocationGroupsState> {
+  const [{ data: groups }, { data: members }] = await Promise.all([
+    supabase.from('charging_location_groups').select('id, title'),
+    supabase.from('charging_location_group_members').select('carpark_code, group_id'),
+  ]);
+  const titles = new Map<string, string>();
+  for (const g of (groups ?? []) as { id: string; title: string }[]) titles.set(g.id, g.title);
+  const memberTo = new Map<string, string>();
+  for (const m of (members ?? []) as { carpark_code: string; group_id: string }[]) {
+    if (titles.has(m.group_id)) memberTo.set(m.carpark_code, m.group_id);
+  }
+  return { titles, memberTo };
+}
+
+export function useLocationGroups() {
+  const [state, setState] = useState<LocationGroupsState | null>(locGroupsCache);
+  const reload = useCallback(async () => {
+    const s = await fetchLocationGroups();
+    locGroupsCache = s;
+    setState(s);
+  }, []);
+  useEffect(() => { if (!locGroupsCache) void reload().catch(() => {}); else setState(locGroupsCache); }, [reload]);
+
+  // Rewrites member rows onto their group key and reports which raw names fed
+  // each chart — the card subtitle reads from the data, not the config.
+  const apply = useCallback((rows: RawRow[]): { rows: RawRow[]; metaOf: (key: string) => ChartMeta } => {
+    const s = state;
+    if (!s || s.memberTo.size === 0) {
+      return { rows, metaOf: (key) => ({ key, groupId: null, title: key, members: [key] }) };
+    }
+    const memberSets = new Map<string, Set<string>>();
+    const mapped = rows.map((r) => {
+      if (!r.carpark_code) return r;
+      const gid = s.memberTo.get(r.carpark_code);
+      if (!gid) return r;
+      const key = `grp:${gid}`;
+      let set = memberSets.get(key);
+      if (!set) { set = new Set(); memberSets.set(key, set); }
+      set.add(r.carpark_code);
+      return { ...r, carpark_code: key };
+    });
+    const metaOf = (key: string): ChartMeta => {
+      if (!key.startsWith('grp:')) return { key, groupId: null, title: key, members: [key] };
+      const gid = key.slice(4);
+      return { key, groupId: gid, title: s.titles.get(gid) ?? '(untitled chart)', members: [...(memberSets.get(key) ?? [])].sort() };
+    };
+    return { rows: mapped, metaOf };
+  }, [state]);
+
+  // A plain (ungrouped) location chart becomes a real group the first time it
+  // is renamed or gains a member.
+  const ensureGroup = async (meta: ChartMeta): Promise<string> => {
+    if (meta.groupId) return meta.groupId;
+    const { data, error } = await supabase.from('charging_location_groups')
+      .insert({ title: meta.title }).select('id').single();
+    if (error || !data) throw new Error(error?.message ?? 'Could not create the chart group.');
+    const gid = (data as { id: string }).id;
+    const { error: mErr } = await supabase.from('charging_location_group_members')
+      .upsert({ carpark_code: meta.key, group_id: gid });
+    if (mErr) throw new Error(mErr.message);
+    return gid;
+  };
+
+  // A chart whose last location was claimed by another chart disappears.
+  const dropEmptyGroups = async () => {
+    const s = await fetchLocationGroups();
+    const used = new Set(s.memberTo.values());
+    const empty = [...s.titles.keys()].filter((id) => !used.has(id));
+    if (empty.length > 0) await supabase.from('charging_location_groups').delete().in('id', empty);
+  };
+
+  const rename = async (meta: ChartMeta, title: string) => {
+    const trimmed = title.trim();
+    if (!trimmed || trimmed === meta.title) return;
+    if (meta.groupId) {
+      const { error } = await supabase.from('charging_location_groups').update({ title: trimmed }).eq('id', meta.groupId);
+      if (error) throw new Error(error.message);
+    } else {
+      await ensureGroup({ ...meta, title: trimmed });
+    }
+    await reload();
+  };
+
+  // Moving a location in claims it from wherever it was — one location lives
+  // in exactly one chart (the member row's primary key).
+  const addLocation = async (meta: ChartMeta, code: string) => {
+    const gid = await ensureGroup(meta);
+    const { error } = await supabase.from('charging_location_group_members')
+      .upsert({ carpark_code: code, group_id: gid });
+    if (error) throw new Error(error.message);
+    await dropEmptyGroups();
+    await reload();
+  };
+
+  const removeLocation = async (_meta: ChartMeta, code: string) => {
+    const { error } = await supabase.from('charging_location_group_members').delete().eq('carpark_code', code);
+    if (error) throw new Error(error.message);
+    await dropEmptyGroups();
+    await reload();
+  };
+
+  return { ready: state !== null, apply, rename, addLocation, removeLocation };
+}
+
 // Count-then-parallel-range pagination. Assumes the table is stable for the
 // duration of the load (records are imported via a separate modal, never
 // concurrently with a dashboard view), so offset pages don't shift under us.
@@ -525,9 +644,16 @@ export function LocationTrends() {
     });
   }, [rows, rangeMonths, sourceFilter, dcOnly, cpoOnly, cpoSet, excludeOn, excludedSet]);
 
+  const { apply: applyGroups, rename, addLocation, removeLocation } = useLocationGroups();
+  const grouped = useMemo(() => applyGroups(filteredRows), [applyGroups, filteredRows]);
+  const rawCodes = useMemo(
+    () => [...new Set(filteredRows.map((r) => r.carpark_code).filter((c): c is string => !!c))].sort(),
+    [filteredRows],
+  );
+
   const trends = useMemo(
-    () => aggregate(filteredRows, granularity, rangeStartISO(rangeMonths)),
-    [filteredRows, granularity, rangeMonths],
+    () => aggregate(grouped.rows, granularity, rangeStartISO(rangeMonths)),
+    [grouped, granularity, rangeMonths],
   );
 
   const rangeLabel =
@@ -605,7 +731,11 @@ export function LocationTrends() {
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(440px, 1fr))', gap: 16 }}>
-          {trends.map((t) => <CarparkCard key={t.carpark_code} t={t} granularity={granularity} />)}
+          {trends.map((t) => (
+            <CarparkCard key={t.carpark_code} t={t} granularity={granularity}
+              meta={grouped.metaOf(t.carpark_code)} allLocations={rawCodes}
+              onRename={rename} onAddLocation={addLocation} onRemoveLocation={removeLocation} />
+          ))}
         </div>
       )}
     </div>
@@ -616,8 +746,28 @@ export function LocationTrends() {
 
 const CHARGER_TYPE_COLORS: Record<ChargerType, string> = { DC: C.green, AC: C.opal, 'AC/DC': C.yellow };
 
-export function CarparkCard({ t, granularity, metric = 'kwh', dual = false }: { t: CarparkTrend; granularity: Granularity; metric?: 'kwh' | 'count'; dual?: boolean }) {
+export function CarparkCard({ t, granularity, metric = 'kwh', dual = false, meta, allLocations, onRename, onAddLocation, onRemoveLocation }: {
+  t: CarparkTrend; granularity: Granularity; metric?: 'kwh' | 'count'; dual?: boolean;
+  /** Chart identity when location grouping is wired: title + the raw location names feeding it. */
+  meta?: ChartMeta;
+  allLocations?: string[];
+  onRename?: (meta: ChartMeta, title: string) => Promise<void>;
+  onAddLocation?: (meta: ChartMeta, code: string) => Promise<void>;
+  onRemoveLocation?: (meta: ChartMeta, code: string) => Promise<void>;
+}) {
   const isCount = metric === 'count';
+  const chartTitle = meta?.title ?? t.carpark_code;
+  const editable = !!meta && !!onRename;
+  const [editOpen, setEditOpen] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(chartTitle);
+  const [gBusy, setGBusy] = useState(false);
+  const [gErr, setGErr] = useState<string | null>(null);
+  const runGroupAction = async (fn: () => Promise<void>) => {
+    setGBusy(true);
+    setGErr(null);
+    try { await fn(); } catch (e) { setGErr((e as Error).message); }
+    setGBusy(false);
+  };
   // Per-card charger filter: 'all' | 'id:<charger_id>' — lets a struggling
   // charger be spotted inside its site's aggregate.
   const [sel, setSel] = useState('all');
@@ -672,11 +822,27 @@ export function CarparkCard({ t, granularity, metric = 'kwh', dual = false }: { 
     <div style={{ background: C.white, borderRadius: 16, padding: '18px 20px', border: '1px solid #EBEBEB', display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
         <div style={{ minWidth: 0 }}>
-          <div title={t.carpark_code} style={{ fontSize: 15, fontWeight: 700, color: C.green, letterSpacing: '-0.01em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.carpark_code}</div>
-          <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+            <div title={chartTitle} style={{ fontSize: 15, fontWeight: 700, color: C.green, letterSpacing: '-0.01em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{chartTitle}</div>
+            {editable && (
+              <button onClick={() => { setTitleDraft(chartTitle); setEditOpen((v) => !v); setGErr(null); }}
+                title="Rename this chart / merge locations"
+                style={{ border: 'none', background: 'transparent', color: C.slate, cursor: 'pointer', display: 'inline-flex', padding: 2, flexShrink: 0 }}>
+                <Pencil size={12} strokeWidth={2.25} />
+              </button>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap', alignItems: 'center' }}>
             {t.sources.map((s) => (
               <span key={s} style={{ background: SOURCE_COLORS[s].bg, color: SOURCE_COLORS[s].color, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                 {s === 'goparkin' ? 'GoParkin' : 'SP'}
+              </span>
+            ))}
+            {/* Subtitle: the raw location names read from the data, when they differ from the title */}
+            {meta && (meta.members.length > 1 || meta.members[0] !== chartTitle) && meta.members.map((m) => (
+              <span key={m} title={`Location name in the data: ${m}`}
+                style={{ background: '#F3F3F3', color: C.slate, fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 99, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {m}
               </span>
             ))}
           </div>
@@ -687,6 +853,50 @@ export function CarparkCard({ t, granularity, metric = 'kwh', dual = false }: { 
           {dual && <div style={{ fontSize: 13, fontWeight: 700, color: C.opal, marginTop: 2 }}>{fmtKwh(viewKwh)}</div>}
         </div>
       </div>
+
+      {editOpen && meta && (
+        <div style={{ background: C.seasalt, borderRadius: 12, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input value={titleDraft} onChange={(e) => setTitleDraft(e.target.value)} placeholder="Chart title"
+              style={{ flex: 1, minWidth: 0, padding: '7px 10px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white }} />
+            <button disabled={gBusy} onClick={() => void runGroupAction(() => onRename!(meta, titleDraft))}
+              style={{ padding: '7px 14px', borderRadius: 8, border: 'none', background: gBusy ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: gBusy ? 'default' : 'pointer' }}>
+              Save
+            </button>
+            <button onClick={() => setEditOpen(false)}
+              style={{ padding: '7px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+              Done
+            </button>
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+            {meta.members.map((m) => (
+              <span key={m} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: C.white, border: '1px solid #EBEBEB', color: '#1a1a1a', fontSize: 11, fontWeight: 600, padding: '3px 8px', borderRadius: 99, maxWidth: 240 }}>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m}</span>
+                {meta.groupId && onRemoveLocation && (
+                  <button disabled={gBusy} onClick={() => void runGroupAction(() => onRemoveLocation(meta, m))} title="Split this location back into its own chart"
+                    style={{ border: 'none', background: 'transparent', color: C.slate, cursor: 'pointer', display: 'inline-flex', padding: 0 }}>
+                    <X size={11} strokeWidth={2.5} />
+                  </button>
+                )}
+              </span>
+            ))}
+            {onAddLocation && allLocations && (
+              <select value="" disabled={gBusy}
+                onChange={(e) => { const v = e.target.value; if (v) void runGroupAction(() => onAddLocation(meta, v)); }}
+                style={{ padding: '5px 8px', borderRadius: 8, border: '1px dashed #CBD5DC', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer', maxWidth: 240 }}>
+                <option value="">+ Merge a location into this chart…</option>
+                {allLocations.filter((c) => !meta.members.includes(c)).map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            )}
+          </div>
+          <div style={{ fontSize: 10.5, color: C.slate, lineHeight: 1.5 }}>
+            A location can only live in one chart — merging it here removes it (and its old chart, if that was its own). Raw records are never changed.
+          </div>
+          {gErr && <div style={{ background: '#FDEAEA', borderRadius: 8, padding: '8px 12px', fontSize: 11, color: '#C0321A' }}>{gErr}</div>}
+        </div>
+      )}
 
       <LineChart data={data} labels={labels} color={C.green} height={200} formatY={fmtAxis} tooltips={tooltips}
         data2={data2} color2={C.opal} formatY2={fmtKwhShort} />

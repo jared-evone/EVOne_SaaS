@@ -3,7 +3,7 @@ import { C } from '../../theme';
 import {
   aggregate, CarparkCard, ensureCpoCarparkSet, toggleBtn,
   ensureChargingTrendsCache, getCachedChargingRows, clearChargingTrendsCache,
-  ensureExcludedVehicles, normalizePlate,
+  ensureExcludedVehicles, normalizePlate, useLocationGroups,
   type Granularity,
 } from './LocationTrends';
 
@@ -84,11 +84,18 @@ export function Sessions() {
     });
   }, [rows, rangeMonths, sourceFilter, dcOnly, cpoOnly, cpoSet, excludeOn, excludedSet]);
 
+  const { apply: applyGroups, rename, addLocation, removeLocation } = useLocationGroups();
+  const grouped = useMemo(() => applyGroups(filteredRows), [applyGroups, filteredRows]);
+  const rawCodes = useMemo(
+    () => [...new Set(filteredRows.map((r) => r.carpark_code).filter((c): c is string => !!c))].sort(),
+    [filteredRows],
+  );
+
   // aggregate sorts by total kWh; re-sort by session count to match the count metric.
   const trends = useMemo(
-    () => aggregate(filteredRows, granularity, rangeStartISO(rangeMonths))
+    () => aggregate(grouped.rows, granularity, rangeStartISO(rangeMonths))
       .sort((a, b) => b.totalCount - a.totalCount),
-    [filteredRows, granularity, rangeMonths],
+    [grouped, granularity, rangeMonths],
   );
 
   const rangeLabel =
@@ -169,7 +176,11 @@ export function Sessions() {
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(440px, 1fr))', gap: 16 }}>
-          {trends.map((t) => <CarparkCard key={t.carpark_code} t={t} granularity={granularity} metric="count" dual={showEnergy} />)}
+          {trends.map((t) => (
+            <CarparkCard key={t.carpark_code} t={t} granularity={granularity} metric="count" dual={showEnergy}
+              meta={grouped.metaOf(t.carpark_code)} allLocations={rawCodes}
+              onRename={rename} onAddLocation={addLocation} onRemoveLocation={removeLocation} />
+          ))}
         </div>
       )}
     </div>
