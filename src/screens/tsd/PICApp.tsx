@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import * as XLSX from 'xlsx';
 import { C } from '../../theme';
 import { supabase } from '../../lib/supabase';
 import { useIsMobile } from '../../lib/useIsMobile';
@@ -16,12 +17,32 @@ import {
   type WorkOrderForm,
   type FormTemplate,
   type FormField,
+  type PicReview,
 } from '../../workOrderStore';
 import { FieldList, FormHeader, FormPaper, openBase64Pdf } from './TechApp';
 import { OverlayFormRenderer, isOverlay } from './OverlayForm';
 import { PDFPreviewModal, generateWorkOrderPdf } from './PDFExport';
 
 const CPO_BUCKET = 'cpo-maintenance-pdfs';
+
+// "HH:MM" pair → "H:MM" duration (wraps past midnight); '' when incomplete.
+function durationLabel(start: string, end: string): string {
+  const p = (t: string) => { const m = /^(\d{1,2}):(\d{2})$/.exec(t); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+  const s = p(start), e = p(end);
+  if (s == null || e == null) return '';
+  let d = e - s;
+  if (d < 0) d += 24 * 60;
+  if (d === 0) return '';
+  return `${Math.floor(d / 60)}:${String(d % 60).padStart(2, '0')}`;
+}
+
+// "14:30" → "2:30 PM" (the monthly report sheet's time format).
+function fmt12h(t: string): string {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(t);
+  if (!m) return t;
+  const h = Number(m[1]);
+  return `${h % 12 || 12}:${m[2]} ${h >= 12 ? 'PM' : 'AM'}`;
+}
 
 // Review cards per page in the list pane.
 const PER_PAGE = 5;
@@ -174,6 +195,64 @@ export function PICReviewBoard() {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
   })();
   const woDate = (w: WorkOrder) => w.response?.submittedAt || w.scheduledDate || '';
+
+  // Monthly service report (XLSX) — replaces the manual sheet: a WARRANTY block
+  // and a REPAIR JOB (QUOTED) & SERVICE MAINTENANCE block side by side, filled
+  // from each completed work order's admin review. Jobs reviewed before the
+  // admin form existed appear with blank time/quote columns.
+  const [reportMonth, setReportMonth] = useState(thisMonth);
+  const exportMonthly = () => {
+    const inMonth = all.filter((w) => w.status === 'completed' && woDate(w).slice(0, 7) === reportMonth);
+    const fmtD = (w: WorkOrder) => {
+      const d = woDate(w).slice(0, 10);
+      const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d);
+      return m ? `${Number(m[2])}/${Number(m[3])}/${m[1]}` : d;
+    };
+    const baseCols = (w: WorkOrder) => {
+      const r = w.picReview;
+      return {
+        date: fmtD(w),
+        company: w.customer,
+        job: w.title,
+        tech: r?.technicians || assigneesLabel(w, ''),
+        start: r ? fmt12h(r.startTime) : '',
+        end: r ? fmt12h(r.endTime) : '',
+        dur: r ? durationLabel(r.startTime, r.endTime) : '',
+        remarks: r?.remark ?? '',
+        quoted: r?.quotedPrice != null ? r.quotedPrice : '',
+      };
+    };
+    const warranty = inMonth.filter((w) => w.picReview?.warranty === true).map(baseCols);
+    const repair = inMonth.filter((w) => w.picReview?.warranty !== true).map(baseCols);
+
+    const rows: (string | number)[][] = [];
+    rows.push(['WARRANTY', '', '', '', '', '', '', '', '', 'REPAIR JOB (QUOTED) & SERVICE MAINTENANCE', '', '', '', '', '', '', '', '']);
+    rows.push([
+      'Date', 'Company', 'Job', 'Technician', 'Start Time', 'End Time', 'Duration', 'Remarks', '',
+      'Date', 'Company', 'Job', 'Quoted ($)', 'Technician', 'Start Time', 'End Time', 'Duration', 'Remarks',
+    ]);
+    const n = Math.max(warranty.length, repair.length);
+    for (let i = 0; i < n; i++) {
+      const wRow = warranty[i];
+      const rRow = repair[i];
+      rows.push([
+        wRow?.date ?? '', wRow?.company ?? '', wRow?.job ?? '', wRow?.tech ?? '', wRow?.start ?? '', wRow?.end ?? '', wRow?.dur ?? '', wRow?.remarks ?? '', '',
+        rRow?.date ?? '', rRow?.company ?? '', rRow?.job ?? '', rRow?.quoted ?? '', rRow?.tech ?? '', rRow?.start ?? '', rRow?.end ?? '', rRow?.dur ?? '', rRow?.remarks ?? '',
+      ]);
+    }
+    const totalQuoted = repair.reduce((s, r) => s + (typeof r.quoted === 'number' ? r.quoted : 0), 0);
+    rows.push([]);
+    rows.push(['', '', '', '', '', '', '', '', '', '', '', 'Total Quoted ($)', totalQuoted, '', '', '', '', '']);
+
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols'] = [
+      { wch: 10 }, { wch: 26 }, { wch: 34 }, { wch: 16 }, { wch: 10 }, { wch: 10 }, { wch: 9 }, { wch: 22 }, { wch: 2 },
+      { wch: 10 }, { wch: 26 }, { wch: 34 }, { wch: 11 }, { wch: 16 }, { wch: 10 }, { wch: 10 }, { wch: 9 }, { wch: 22 },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, reportMonth);
+    XLSX.writeFile(wb, `TSD_Monthly_Report_${reportMonth}.xlsx`);
+  };
   const isCpoWo = (w: WorkOrder) => !!w.customerId && cpoIds.has(w.customerId);
 
   // Everything a reviewer might recognise a job by — ref, company, site, title,
@@ -278,6 +357,15 @@ export function PICReviewBoard() {
           )}
         </div>
         <FilterSelect groups={groups} selected={filters} onChange={setFilters} placeholder="All reports" />
+        {/* Monthly service report — built from the admin reviews of completed jobs */}
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <input type="month" value={reportMonth} onChange={(e) => setReportMonth(e.target.value || thisMonth)}
+            style={{ flex: 1, minWidth: 0, padding: '7px 10px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
+          <button onClick={exportMonthly} title="Download the monthly service report (Warranty + Repair/Quoted blocks) built from admin reviews"
+            style={{ padding: '7px 12px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            <DownloadIcon size={12} strokeWidth={2.25} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }} /> Monthly Report
+          </button>
+        </div>
         {(search || activeFilters > 0) && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: C.slate, fontWeight: 600 }}>
             <span>{filtered.length} match{filtered.length === 1 ? '' : 'es'}</span>
@@ -417,6 +505,21 @@ function PICReportEditor({ workOrder, alreadyPushed = false, onPushed, onDeleted
   const [pdfOpen, setPdfOpen] = useState(false);
   const [pushOpen, setPushOpen] = useState(false);
 
+  // Internal admin record (times / technicians / warranty / quote). Saved via a
+  // metadata patch (server-side merge), so it can never touch the submitted
+  // forms — and it is NOT printed on the exported report PDF.
+  const [review, setReview] = useState<PicReview>(() => ({
+    startTime: '', endTime: '', technicians: assigneesLabel(workOrder, ''),
+    remark: '', warranty: false, quotedPrice: null,
+    ...(workOrder.picReview ?? {}),
+  }));
+  const [reviewDirty, setReviewDirty] = useState(false);
+  const setRev = (p: Partial<PicReview>) => { setReview((r) => ({ ...r, ...p })); setReviewDirty(true); };
+  const saveReview = () => {
+    store.setPicReview(workOrder.id, { ...review, reviewedAt: new Date().toISOString().slice(0, 10), reviewedBy: DEMO_PIC });
+    setReviewDirty(false);
+  };
+
   useEffect(() => {
     setForms(workOrder.forms.map((f) => ({ ...f, values: { ...(f.values ?? {}) } })));
     setDirty(false);
@@ -430,8 +533,8 @@ function PICReportEditor({ workOrder, alreadyPushed = false, onPushed, onDeleted
   const flash = (msg: string) => { setToast(msg); window.setTimeout(() => setToast(null), 2400); };
   const completed = workOrder.status === 'completed';
 
-  const handleSave = () => { store.amend(workOrder.id, forms, DEMO_PIC); setDirty(false); flash('Changes saved.'); };
-  const handleApprove = () => { if (dirty) store.amend(workOrder.id, forms, DEMO_PIC); store.approve(workOrder.id); setDirty(false); flash('Report approved & marked completed.'); };
+  const handleSave = () => { store.amend(workOrder.id, forms, DEMO_PIC); if (reviewDirty) saveReview(); setDirty(false); flash('Changes saved.'); };
+  const handleApprove = () => { if (reviewDirty) saveReview(); if (dirty) store.amend(workOrder.id, forms, DEMO_PIC); store.approve(workOrder.id); setDirty(false); flash('Report approved & marked completed.'); };
   const handleDelete = () => { setConfirmDelete(false); store.deleteWorkOrder(workOrder.id); onDeleted?.(); };
 
   const hasTemplated = forms.some((f) => !!store.getTemplate(f.templateId));
@@ -530,6 +633,73 @@ function PICReportEditor({ workOrder, alreadyPushed = false, onPushed, onDeleted
       {toast && (
         <div style={{ background: C.honeydew, color: C.green, borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{toast}</div>
       )}
+
+      {/* Admin review — internal record only, feeds the monthly service report. */}
+      <div style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>Admin Review</div>
+          <span style={{ background: '#F3F3F3', color: C.slate, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            Internal — not printed on the report PDF
+          </span>
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+            {workOrder.picReview?.reviewedAt && !reviewDirty && (
+              <span style={{ fontSize: 11, color: C.slate }}>Saved {workOrder.picReview.reviewedAt}{workOrder.picReview.reviewedBy ? ` by ${workOrder.picReview.reviewedBy}` : ''}</span>
+            )}
+            <button onClick={saveReview} disabled={!reviewDirty}
+              style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${reviewDirty ? C.green : '#EBEBEB'}`, background: reviewDirty ? C.honeydew : C.white, color: reviewDirty ? C.green : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: reviewDirty ? 'pointer' : 'not-allowed' }}>
+              Save review
+            </button>
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Start Time</label>
+            <input type="time" value={review.startTime} onChange={(e) => setRev({ startTime: e.target.value })}
+              style={{ width: '100%', padding: '8px 10px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>End Time</label>
+            <input type="time" value={review.endTime} onChange={(e) => setRev({ endTime: e.target.value })}
+              style={{ width: '100%', padding: '8px 10px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
+            {durationLabel(review.startTime, review.endTime) && (
+              <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Duration: {durationLabel(review.startTime, review.endTime)}</div>
+            )}
+          </div>
+          <div style={{ gridColumn: 'span 2', minWidth: 200 }}>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Technician(s)</label>
+            <input value={review.technicians} onChange={(e) => setRev({ technicians: e.target.value })} placeholder="e.g. Zaw, Weiliang"
+              style={{ width: '100%', padding: '8px 10px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Job Type</label>
+            <div style={{ display: 'inline-flex', border: '1px solid #EBEBEB', borderRadius: 99, overflow: 'hidden' }}>
+              {([[false, 'Non-warranty'], [true, 'Warranty']] as const).map(([val, label]) => (
+                <button key={label} onClick={() => setRev({ warranty: val })}
+                  style={{ padding: '7px 16px', border: 'none', fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer',
+                    background: review.warranty === val ? C.green : 'transparent', color: review.warranty === val ? C.white : C.slate }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Quoted ($)</label>
+            <input type="number" min="0" step="0.01" placeholder="e.g. 500"
+              value={review.quotedPrice == null ? '' : String(review.quotedPrice)}
+              onChange={(e) => setRev({ quotedPrice: e.target.value === '' ? null : Number(e.target.value) })}
+              style={{ width: 130, padding: '8px 10px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', textAlign: 'right', boxSizing: 'border-box' }} />
+          </div>
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Remark</label>
+            <input value={review.remark} onChange={(e) => setRev({ remark: e.target.value })} placeholder="e.g. CPO · paid before · inclusive"
+              style={{ width: '100%', padding: '8px 10px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
+          </div>
+        </div>
+      </div>
 
       {forms.map((inst, i) => {
         const tpl = store.getTemplate(inst.templateId);

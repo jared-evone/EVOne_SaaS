@@ -97,6 +97,19 @@ export interface FormResponse {
   editedBy?: string;
 }
 
+/** Internal admin record filled in PIC Review before approval — never printed
+ *  on the exported report PDF. Feeds the monthly service report export. */
+export interface PicReview {
+  startTime: string;      // "09:30"
+  endTime: string;        // "14:30"
+  technicians: string;    // display string, e.g. "Zaw, Weiliang"
+  remark: string;
+  warranty: boolean;
+  quotedPrice: number | null;
+  reviewedAt?: string;
+  reviewedBy?: string;
+}
+
 export interface WorkOrder {
   id: string;
   title: string;
@@ -115,6 +128,8 @@ export interface WorkOrder {
   assignedTo: string | string[] | null;
   forms: WorkOrderForm[];      // one or more form instances to complete
   response: FormResponse | null;
+  /** Optional — absent on work orders reviewed before the feature existed. */
+  picReview?: PicReview | null;
 }
 
 /** Assignees as a list — tolerates the legacy single-string shape. */
@@ -171,6 +186,8 @@ interface Store {
   // pic actions
   amend(workOrderId: string, forms: WorkOrderForm[], picName: string): void;
   approve(workOrderId: string): void;
+  /** Save the internal admin review — a metadata patch, never touches forms. */
+  setPicReview(workOrderId: string, review: PicReview): void;
 
   // admin actions
   createWorkOrder(input: Omit<WorkOrder, 'id' | 'status' | 'response'>): void;
@@ -384,6 +401,15 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
           if (w.id !== id) return w;
           patchWorkOrder(id, { status: 'completed' });
           return { ...w, status: 'completed' };
+        }),
+      ),
+
+    setPicReview: (id, review) =>
+      setWorkOrders((ws) =>
+        ws.map((w) => {
+          if (w.id !== id) return w;
+          patchWorkOrder(id, { picReview: review });
+          return { ...w, picReview: review };
         }),
       ),
 
