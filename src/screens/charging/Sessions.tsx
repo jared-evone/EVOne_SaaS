@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { C } from '../../theme';
+import { usePermissions } from '../../permissions';
 import {
   aggregate, CarparkCard, ensureCpoCarparkSet, toggleBtn,
   ensureChargingTrendsCache, getCachedChargingRows, clearChargingTrendsCache,
@@ -84,6 +85,8 @@ export function Sessions() {
     });
   }, [rows, rangeMonths, sourceFilter, dcOnly, cpoOnly, cpoSet, excludeOn, excludedSet]);
 
+  // Renaming charts and merging locations is an admin-only capability.
+  const { isAdmin } = usePermissions();
   const { apply: applyGroups, rename, addLocation, removeLocation } = useLocationGroups();
   const grouped = useMemo(() => applyGroups(filteredRows), [applyGroups, filteredRows]);
   const rawCodes = useMemo(
@@ -179,7 +182,9 @@ export function Sessions() {
           {trends.map((t) => (
             <CarparkCard key={t.carpark_code} t={t} granularity={granularity} metric="count" dual={showEnergy}
               meta={grouped.metaOf(t.carpark_code)} allLocations={rawCodes}
-              onRename={rename} onAddLocation={addLocation} onRemoveLocation={removeLocation} />
+              onRename={isAdmin ? rename : undefined}
+              onAddLocation={isAdmin ? addLocation : undefined}
+              onRemoveLocation={isAdmin ? removeLocation : undefined} />
           ))}
         </div>
       )}

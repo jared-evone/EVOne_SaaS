@@ -3,6 +3,7 @@ import { C } from '../../theme';
 import { LineChart } from '../../components/charts';
 import { supabase } from '../../lib/supabase';
 import { Pencil, X } from 'lucide-react';
+import { usePermissions } from '../../permissions';
 
 export type Granularity = 'day' | 'week' | 'month';
 type RangeMonths = 6 | 12 | 24 | 'all';
@@ -644,6 +645,8 @@ export function LocationTrends() {
     });
   }, [rows, rangeMonths, sourceFilter, dcOnly, cpoOnly, cpoSet, excludeOn, excludedSet]);
 
+  // Renaming charts and merging locations is an admin-only capability.
+  const { isAdmin } = usePermissions();
   const { apply: applyGroups, rename, addLocation, removeLocation } = useLocationGroups();
   const grouped = useMemo(() => applyGroups(filteredRows), [applyGroups, filteredRows]);
   const rawCodes = useMemo(
@@ -734,7 +737,9 @@ export function LocationTrends() {
           {trends.map((t) => (
             <CarparkCard key={t.carpark_code} t={t} granularity={granularity}
               meta={grouped.metaOf(t.carpark_code)} allLocations={rawCodes}
-              onRename={rename} onAddLocation={addLocation} onRemoveLocation={removeLocation} />
+              onRename={isAdmin ? rename : undefined}
+              onAddLocation={isAdmin ? addLocation : undefined}
+              onRemoveLocation={isAdmin ? removeLocation : undefined} />
           ))}
         </div>
       )}
@@ -838,8 +843,8 @@ export function CarparkCard({ t, granularity, metric = 'kwh', dual = false, meta
                 {s === 'goparkin' ? 'GoParkin' : 'SP'}
               </span>
             ))}
-            {/* Subtitle: the raw location names read from the data, when they differ from the title */}
-            {meta && (meta.members.length > 1 || meta.members[0] !== chartTitle) && meta.members.map((m) => (
+            {/* Subtitle: the real location name(s) as read from the data */}
+            {meta && meta.members.map((m) => (
               <span key={m} title={`Location name in the data: ${m}`}
                 style={{ background: '#F3F3F3', color: C.slate, fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 99, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {m}
