@@ -483,15 +483,17 @@ function CompanyModal({ initial, title, canDelete, invoicingOnly = false, onSave
                   <option key={l} value={l}>{l}</option>
                 ))}
               </select>
-              {locSets.length > 0 && (
-                <select value="" onChange={(e) => { if (e.target.value) applyLocationSet(e.target.value); }}
-                  style={{ padding: '6px 10px', borderRadius: 99, border: `1px dashed ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', maxWidth: 260 }}>
-                  <option value="">+ Add from set…</option>
-                  {locSets.map((s) => (
-                    <option key={s.id} value={s.id}>{s.name} ({s.locations.length})</option>
-                  ))}
-                </select>
-              )}
+              <select value="" disabled={locSets.length === 0}
+                onChange={(e) => { if (e.target.value) applyLocationSet(e.target.value); }}
+                title={locSets.length === 0 ? 'No saved sets yet — pick locations, then use "Save these locations as a set…"' : undefined}
+                style={{ padding: '6px 10px', borderRadius: 99, border: `1px dashed ${locSets.length === 0 ? '#CBD5DC' : C.green}`,
+                  background: locSets.length === 0 ? C.white : C.honeydew, color: locSets.length === 0 ? C.slate : C.green,
+                  fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: locSets.length === 0 ? 'not-allowed' : 'pointer', maxWidth: 280 }}>
+                <option value="">{locSets.length === 0 ? '+ Add from set… (none saved yet)' : '+ Add from set…'}</option>
+                {locSets.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name} ({s.locations.length})</option>
+                ))}
+              </select>
             </div>
             {(form.secondary_rate_locations ?? []).length > 0 && (
               <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
