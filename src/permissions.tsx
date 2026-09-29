@@ -83,9 +83,11 @@ export interface SignedInUser {
   id: string;
   email: string;
   full_name: string;
-  /** The department picked at sign-in — scopes this session's sidebar/screens.
-   *  Whether the account may enter a department is decided by its per-user
-   *  grants in app_user_permissions (managed centrally per email). */
+  /** The ACTIVE department — scopes which screens render and which grants
+   *  apply right now. There is no department picker at sign-in anymore: the
+   *  accessible departments are derived from the account's grants, this field
+   *  starts on the first of them and changes when the user moves between
+   *  department sections in the sidebar. */
   department: Department;
   role_id: string;
   role_name: string;
@@ -130,6 +132,11 @@ interface PermissionsContextValue {
   user: SignedInUser;
   perms: PermissionMap;
   can: (screen: ScreenKey, cap: keyof ScreenCap) => boolean;
+  /** Same as can(), but for an explicit department — the sidebar uses this to
+   *  show every accessible department's screens, not just the active one's. */
+  canIn: (department: Department, screen: ScreenKey, cap: keyof ScreenCap) => boolean;
+  /** Departments this account can enter (≥1 viewable screen granted there). */
+  departments: Department[];
   /** True only for a full department admin: view+edit+delete on EVERY screen the
    *  department exposes. Use this — not a single screen's can_delete — to gate
    *  cross-user/admin-wide views (e.g. seeing every salesperson's pipeline). */
@@ -141,20 +148,32 @@ const PermissionsContext = createContext<PermissionsContextValue | null>(null);
 
 const DENY: ScreenCap = { can_view: false, can_edit: false, can_delete: false };
 
+export type PermsByDepartment = Record<Department, PermissionMap>;
+
+const emptyByDepartment = (): PermsByDepartment => ({ cpo: {}, sales: {}, tech: {}, pm: {} });
+
 // Grants are per-department: a screen shared by several departments (customers,
-// projects) can be granted in one and denied in another. A session is scoped to
-// the department picked at sign-in, so we only load that department's rows.
-export async function loadPermissionsForUser(userId: string, department: Department): Promise<PermissionMap> {
+// projects) can be granted in one and denied in another. All of the account's
+// rows load at once so the sidebar can show every accessible department.
+export async function loadAllPermissionsForUser(userId: string): Promise<PermsByDepartment> {
   const { data: rows } = await supabase
     .from('app_user_permissions')
-    .select('screen_key, can_view, can_edit, can_delete')
-    .eq('user_id', userId)
-    .eq('department', department);
-  const map: PermissionMap = {};
-  for (const r of (rows ?? []) as Array<{ screen_key: string; can_view: boolean; can_edit: boolean; can_delete: boolean }>) {
-    map[r.screen_key as ScreenKey] = { can_view: r.can_view, can_edit: r.can_edit, can_delete: r.can_delete };
+    .select('department, screen_key, can_view, can_edit, can_delete')
+    .eq('user_id', userId);
+  const by = emptyByDepartment();
+  for (const r of (rows ?? []) as Array<{ department: string; screen_key: string; can_view: boolean; can_edit: boolean; can_delete: boolean }>) {
+    const d = r.department as Department;
+    if (!by[d]) continue;
+    by[d][r.screen_key as ScreenKey] = { can_view: r.can_view, can_edit: r.can_edit, can_delete: r.can_delete };
   }
-  return map;
+  return by;
+}
+
+/** Departments where the account has at least one viewable screen that the
+ *  department actually exposes. Used at login and for the sidebar sections. */
+export function accessibleDepartments(by: PermsByDepartment): Department[] {
+  return DEPARTMENTS.filter((d) =>
+    DEPARTMENT_SCREENS[d].some((k) => (by[d][k] ?? DENY).can_view));
 }
 
 interface PermissionsProviderProps {
@@ -163,35 +182,39 @@ interface PermissionsProviderProps {
 }
 
 export function PermissionsProvider({ user, children }: PermissionsProviderProps) {
-  const [perms, setPerms] = useState<PermissionMap>({});
+  const [permsByDept, setPermsByDept] = useState<PermsByDepartment>(emptyByDepartment);
   const [loading, setLoading] = useState(true);
 
   const refresh = async () => {
     setLoading(true);
     // Superadmin has no permission rows — it bypasses the matrix entirely.
-    const m = user.is_superadmin ? {} : await loadPermissionsForUser(user.id, user.department);
-    setPerms(m);
+    const m = user.is_superadmin ? emptyByDepartment() : await loadAllPermissionsForUser(user.id);
+    setPermsByDept(m);
     setLoading(false);
   };
 
   useEffect(() => { refresh(); }, [user.id]);
 
   // Superadmin sees and can do everything, in any department.
-  const can = (screen: ScreenKey, cap: keyof ScreenCap) =>
-    user.is_superadmin ? true : (perms[screen] ?? DENY)[cap];
+  const canIn = (department: Department, screen: ScreenKey, cap: keyof ScreenCap) =>
+    user.is_superadmin ? true : (permsByDept[department]?.[screen] ?? DENY)[cap];
 
-  // Admin = full view+edit+delete on every screen of the department this
-  // session was signed into. Grants are per-user (cross-department), so the
-  // same email can be an admin in one department and a member in another.
+  const can = (screen: ScreenKey, cap: keyof ScreenCap) => canIn(user.department, screen, cap);
+
+  const departments = user.is_superadmin ? DEPARTMENTS : accessibleDepartments(permsByDept);
+
+  // Admin = full view+edit+delete on every screen of the ACTIVE department.
+  // Grants are per-user (cross-department), so the same email can be an admin
+  // in one department and a member in another.
   const isAdmin = user.is_superadmin || DEPARTMENT_SCREENS[user.department].every((k) => {
-    const c = perms[k] ?? DENY;
+    const c = permsByDept[user.department][k] ?? DENY;
     return c.can_view && c.can_edit && c.can_delete;
   });
 
   if (loading) return null;
 
   return (
-    <PermissionsContext.Provider value={{ user, perms, can, isAdmin, refresh }}>
+    <PermissionsContext.Provider value={{ user, perms: permsByDept[user.department], can, canIn, departments, isAdmin, refresh }}>
       {children}
     </PermissionsContext.Provider>
   );

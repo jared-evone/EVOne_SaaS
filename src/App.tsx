@@ -9,6 +9,11 @@ import {
   Power, Menu, TrendingUp, UserCog, Mail, Calculator, ClipboardCheck, GanttChartSquare, ListTodo,
   type LucideIcon,
 } from 'lucide-react';
+
+// Sidebar section icon per department (matches the old login cards).
+const DEPARTMENT_ICONS: Record<Department, LucideIcon> = {
+  tech: Wrench, sales: Handshake, cpo: Zap, pm: FolderKanban,
+};
 import { useIsMobile } from './lib/useIsMobile';
 import { setAppToken, hasValidAppToken } from './lib/supabase';
 import { startVersionWatch } from './lib/version';
@@ -176,27 +181,39 @@ const screens: Partial<Record<ScreenId, JSX.Element>> = {
 
 interface DashboardProps {
   onSignOut: () => void;
+  onSwitchDepartment: (d: Department) => void;
 }
 
-function Dashboard({ onSignOut }: DashboardProps) {
-  const { can, user } = usePermissions();
-  // The session is scoped to the department picked at sign-in; within it, each
-  // screen shows only if the centrally-managed per-user grants allow viewing.
-  const departmentScreens = DEPARTMENT_SCREENS[user.department];
-  const isLeafVisible = (id: ScreenId) => departmentScreens.includes(id) && can(id, 'can_view');
+function Dashboard({ onSignOut, onSwitchDepartment }: DashboardProps) {
+  const { canIn, departments, user } = usePermissions();
 
-  const NAV: NavEntry[] = NAV_ALL.flatMap((n): NavEntry[] => {
-    if (n.kind === 'leaf') return isLeafVisible(n.id) ? [n] : [];
-    const visibleChildren = n.children.filter((c) => isLeafVisible(c.id));
-    return visibleChildren.length > 0 ? [{ ...n, children: visibleChildren }] : [];
-  });
+  // Per-department nav: a department's screens show only if the centrally-managed
+  // per-user grants allow viewing them IN that department.
+  const navFor = (d: Department): NavEntry[] => {
+    const departmentScreens = DEPARTMENT_SCREENS[d];
+    const vis = (id: ScreenId) => departmentScreens.includes(id) && canIn(d, id, 'can_view');
+    return NAV_ALL.flatMap((n): NavEntry[] => {
+      if (n.kind === 'leaf') return vis(n.id) ? [n] : [];
+      const visibleChildren = n.children.filter((c) => vis(c.id));
+      return visibleChildren.length > 0 ? [{ ...n, children: visibleChildren }] : [];
+    });
+  };
+
+  const NAV = navFor(user.department);
+  const multiDept = departments.length > 1;
 
   const allVisibleLeafIds: ScreenId[] = NAV.flatMap((n) => n.kind === 'leaf' ? [n.id] : n.children.map((c) => c.id));
-  const preferredDefault = DEPARTMENT_DEFAULT_SCREEN[user.department];
-  const fallbackScreen: ScreenId | null =
-    (preferredDefault && allVisibleLeafIds.includes(preferredDefault) ? preferredDefault : allVisibleLeafIds[0]) ?? null;
+  const defaultScreenFor = (d: Department): ScreenId | null => {
+    const ids = navFor(d).flatMap((n) => n.kind === 'leaf' ? [n.id] : n.children.map((c) => c.id));
+    const preferred = DEPARTMENT_DEFAULT_SCREEN[d];
+    return (preferred && ids.includes(preferred) ? preferred : ids[0]) ?? null;
+  };
+  const fallbackScreen = defaultScreenFor(user.department);
   const [screen, setScreen] = useState<ScreenId | null>(fallbackScreen);
   const activeScreen = screen && allVisibleLeafIds.includes(screen) ? screen : fallbackScreen;
+
+  // One department section expanded at a time; starts on the active department.
+  const [openDept, setOpenDept] = useState<Department>(user.department);
 
   // Settings group expands automatically when one of its children is active
   const initialOpen: Record<string, boolean> = {};
@@ -216,6 +233,14 @@ function Dashboard({ onSignOut }: DashboardProps) {
   const selectScreen = (id: ScreenId) => {
     setScreen(id);
     if (isMobile) setNavOpen(false);
+  };
+
+  // Clicking a screen inside another department's section also switches the
+  // session's active department — permissions, header chip and screens follow.
+  const selectScreenIn = (d: Department, id: ScreenId) => {
+    if (d !== user.department) onSwitchDepartment(d);
+    setOpenDept(d);
+    selectScreen(id);
   };
 
   return (
@@ -249,66 +274,106 @@ function Dashboard({ onSignOut }: DashboardProps) {
         </div>
 
         <nav style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2, paddingBottom: 12 }}>
-          <div
-            style={{
-              fontSize: 10,
-              fontWeight: 700,
-              color: C.slate,
-              letterSpacing: '0.08em',
-              textTransform: 'uppercase',
-              padding: '10px 16px 4px',
-            }}
-          >
-            Main
-          </div>
-          {NAV.map((n) => {
-            if (n.kind === 'leaf') {
+          {(() => {
+            const renderEntries = (entries: NavEntry[], d: Department) => entries.map((n) => {
+              if (n.kind === 'leaf') {
+                return (
+                  <NavItem
+                    key={n.id}
+                    icon={n.icon}
+                    label={n.label}
+                    active={user.department === d && activeScreen === n.id}
+                    onClick={() => selectScreenIn(d, n.id)}
+                  />
+                );
+              }
+              const open = !!openGroups[n.key];
               return (
-                <NavItem
-                  key={n.id}
-                  icon={n.icon}
-                  label={n.label}
-                  active={activeScreen === n.id}
-                  onClick={() => selectScreen(n.id)}
-                />
+                <div key={n.key} style={{ display: 'flex', flexDirection: 'column', marginTop: 10 }}>
+                  <button
+                    onClick={() => toggleGroup(n.key)}
+                    style={{
+                      display: 'flex', alignItems: 'center',
+                      padding: '10px 16px 4px',
+                      border: 'none', background: 'transparent', cursor: 'pointer',
+                      fontFamily: 'Figtree',
+                      fontSize: 10, fontWeight: 700,
+                      color: C.slate,
+                      letterSpacing: '0.08em', textTransform: 'uppercase',
+                      width: '100%', textAlign: 'left',
+                    }}>
+                    <span>{n.label}</span>
+                    <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center' }}>
+                      {open ? <ChevronDown size={12} strokeWidth={2.5} /> : <ChevronRight size={12} strokeWidth={2.5} />}
+                    </span>
+                  </button>
+                  {open && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      {n.children.map((c) => (
+                        <NavItem
+                          key={c.id}
+                          icon={c.icon}
+                          label={c.label}
+                          active={user.department === d && activeScreen === c.id}
+                          onClick={() => selectScreenIn(d, c.id)}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            });
+
+            if (!multiDept) {
+              return (
+                <>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, letterSpacing: '0.08em', textTransform: 'uppercase', padding: '10px 16px 4px' }}>
+                    Main
+                  </div>
+                  {renderEntries(NAV, user.department)}
+                </>
               );
             }
-            const open = !!openGroups[n.key];
-            return (
-              <div key={n.key} style={{ display: 'flex', flexDirection: 'column', marginTop: 10 }}>
-                <button
-                  onClick={() => toggleGroup(n.key)}
-                  style={{
-                    display: 'flex', alignItems: 'center',
-                    padding: '10px 16px 4px',
-                    border: 'none', background: 'transparent', cursor: 'pointer',
-                    fontFamily: 'Figtree',
-                    fontSize: 10, fontWeight: 700,
-                    color: C.slate,
-                    letterSpacing: '0.08em', textTransform: 'uppercase',
-                    width: '100%', textAlign: 'left',
-                  }}>
-                  <span>{n.label}</span>
-                  <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center' }}>
-                    {open ? <ChevronDown size={12} strokeWidth={2.5} /> : <ChevronRight size={12} strokeWidth={2.5} />}
-                  </span>
-                </button>
-                {open && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    {n.children.map((c) => (
-                      <NavItem
-                        key={c.id}
-                        icon={c.icon}
-                        label={c.label}
-                        active={activeScreen === c.id}
-                        onClick={() => selectScreen(c.id)}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+
+            // Multi-department accordion: one section per accessible department,
+            // one expanded at a time. The active department's name shows green.
+            return departments.map((d) => {
+              const entries = navFor(d);
+              if (entries.length === 0) return null;
+              const open = openDept === d;
+              const isActiveDept = user.department === d;
+              const DeptIcon = DEPARTMENT_ICONS[d];
+              return (
+                <div key={d} style={{ display: 'flex', flexDirection: 'column', marginTop: 6 }}>
+                  <button
+                    onClick={() => setOpenDept(d)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 8,
+                      padding: '9px 12px', borderRadius: 10,
+                      border: 'none', cursor: 'pointer', width: '100%', textAlign: 'left',
+                      background: open ? C.seasalt : 'transparent',
+                      fontFamily: 'Figtree', fontSize: 12, fontWeight: 700,
+                      color: isActiveDept ? C.green : '#1a1a1a',
+                    }}
+                    onMouseEnter={(e) => { if (!open) e.currentTarget.style.background = '#FAFAFA'; }}
+                    onMouseLeave={(e) => { if (!open) e.currentTarget.style.background = 'transparent'; }}
+                  >
+                    <DeptIcon size={14} strokeWidth={2.25} style={{ flexShrink: 0, color: isActiveDept ? C.green : C.slate }} />
+                    <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{DEPARTMENT_LABELS[d]}</span>
+                    {isActiveDept && <span style={{ width: 6, height: 6, borderRadius: 99, background: C.green, flexShrink: 0 }} />}
+                    <span style={{ display: 'inline-flex', alignItems: 'center', color: C.slate, flexShrink: 0 }}>
+                      {open ? <ChevronDown size={12} strokeWidth={2.5} /> : <ChevronRight size={12} strokeWidth={2.5} />}
+                    </span>
+                  </button>
+                  {open && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2 }}>
+                      {renderEntries(entries, d)}
+                    </div>
+                  )}
+                </div>
+              );
+            });
+          })()}
         </nav>
 
         {/* User block */}
@@ -496,6 +561,16 @@ export default function App() {
     try { localStorage.setItem(USER_KEY, JSON.stringify(u)); } catch { /* ignore */ }
     setUser(u);
   };
+  // Moving between department sections in the sidebar re-scopes the session;
+  // persisted so a reload comes back to the same department.
+  const handleSwitchDepartment = (d: Department) => {
+    setUser((u) => {
+      if (!u || u.department === d) return u;
+      const next = { ...u, department: d };
+      try { localStorage.setItem(USER_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  };
   const handleSignOut = () => {
     setAppToken(null);
     try { localStorage.removeItem(USER_KEY); } catch { /* ignore */ }
@@ -540,7 +615,7 @@ export default function App() {
 
   return (
     <PermissionsProvider user={user}>
-      <Dashboard onSignOut={handleSignOut} />
+      <Dashboard onSignOut={handleSignOut} onSwitchDepartment={handleSwitchDepartment} />
     </PermissionsProvider>
   );
 }
