@@ -56,6 +56,8 @@ interface SpCharger {
   charge_type: 'AC' | 'DC';
   first_seen: string | null;
   last_seen_name: string | null;
+  /** Per-charger rate override; null = inherit the carpark price. */
+  price_per_kwh: number | null;
 }
 
 // ── Constants ─────────────────────────────────────────────────────
@@ -315,10 +317,14 @@ async function parseXLSXFile(file: File): Promise<{ rows: ChargingRow[]; warning
 
 // ── Price Application ─────────────────────────────────────────────
 
-function applySpPrices(rows: ChargingRow[], prices: SpCarparkPrice[]): ChargingRow[] {
+// Price resolution: a charger's own rate override wins over its carpark's rate
+// (e.g. Kallang's AC and DC chargers bill differently).
+function applySpPrices(rows: ChargingRow[], prices: SpCarparkPrice[], chargers: SpCharger[]): ChargingRow[] {
   const priceMap = new Map(prices.map((p) => [p.carpark_code, Number(p.price_per_kwh)]));
+  const chargerPrice = new Map(chargers.filter((c) => c.price_per_kwh != null).map((c) => [c.charger_id, Number(c.price_per_kwh)]));
   return rows.map((r) => {
-    const price = r.carpark_code ? (priceMap.get(r.carpark_code) ?? null) : null;
+    const override = r.charger_id != null ? chargerPrice.get(r.charger_id) : undefined;
+    const price = override ?? (r.carpark_code ? (priceMap.get(r.carpark_code) ?? null) : null);
     const txn = price != null && r.total_energy_supplied_kwh != null
       ? Math.round(r.total_energy_supplied_kwh * price * 100) / 100
       : null;
@@ -732,29 +738,61 @@ function SpPriceTab({ prices, onRefresh }: SpPriceTabProps) {
 
 // The registry that anchors SP imports: location + AC/DC resolve by charger ID,
 // so SP's notice-renames of the location display name can't split a site.
-function SpChargersPanel({ chargers, onRefresh }: { chargers: SpCharger[]; onRefresh: () => Promise<SpCharger[]> }) {
+function SpChargersPanel({ chargers, prices, onRefresh }: { chargers: SpCharger[]; prices: SpCarparkPrice[]; onRefresh: () => Promise<SpCharger[]> }) {
   const [editId, setEditId] = useState<string | null>(null);
   const [editLoc, setEditLoc] = useState('');
+  const [editPrice, setEditPrice] = useState('');
+  const [repricePast, setRepricePast] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [ok, setOk] = useState<string | null>(null);
 
-  const saveLocation = async (c: SpCharger) => {
-    const loc = editLoc.trim();
-    if (!loc || loc === c.canonical_location) { setEditId(null); return; }
+  const carparkPriceOf = (c: SpCharger): number | null => {
+    const p = prices.find((x) => x.carpark_code === c.canonical_location);
+    return p ? Number(p.price_per_kwh) : null;
+  };
+
+  const startEdit = (c: SpCharger) => {
+    setEditId(c.charger_id);
+    setEditLoc(c.canonical_location);
+    setEditPrice(c.price_per_kwh != null ? String(c.price_per_kwh) : '');
+    setRepricePast(true);
+    setErr(null);
+    setOk(null);
+  };
+
+  const saveEdit = async (c: SpCharger) => {
+    const loc = editLoc.trim() || c.canonical_location;
+    const priceStr = editPrice.trim();
+    const price = priceStr === '' ? null : parseFloat(priceStr);
+    if (price != null && (isNaN(price) || price < 0)) { setErr('Enter a valid price (or leave it blank to use the carpark price).'); return; }
     setSaving(true);
     setErr(null);
+    setOk(null);
     const { error } = await supabase.from('sp_charger_registry')
-      .update({ canonical_location: loc, updated_at: new Date().toISOString() })
+      .update({ canonical_location: loc, price_per_kwh: price, updated_at: new Date().toISOString() })
       .eq('charger_id', c.charger_id);
-    // Keep history consistent: move this charger's past SP records to the new
-    // name so the location cards don't split (update only — nothing deleted).
-    if (!error) {
-      const { error: backErr } = await supabase.from('crm_charging_records')
-        .update({ carpark_code: loc })
-        .eq('charger_id', c.charger_id).eq('source', 'sp').eq('carpark_code', c.canonical_location);
-      if (backErr) setErr(`Registry updated, but past records could not be moved: ${backErr.message}`);
-    } else {
+    if (error) {
       setErr(error.message);
+    } else {
+      // Keep history consistent: move this charger's past SP records to the new
+      // name so the location cards don't split (update only — nothing deleted).
+      if (loc !== c.canonical_location) {
+        const { error: backErr } = await supabase.from('crm_charging_records')
+          .update({ carpark_code: loc })
+          .eq('charger_id', c.charger_id).eq('source', 'sp').eq('carpark_code', c.canonical_location);
+        if (backErr) setErr(`Registry updated, but past records could not be moved: ${backErr.message}`);
+      }
+      // Optional reprice of past sessions at the effective rate. Server-side
+      // RPC recomputes amount = kWh × rate and logs the old amounts to the
+      // backup schema first, so nothing is lost.
+      const priceChanged = (price ?? null) !== (c.price_per_kwh != null ? Number(c.price_per_kwh) : null);
+      const effective = price ?? carparkPriceOf(c);
+      if (repricePast && priceChanged && effective != null) {
+        const { data: n, error: rpErr } = await supabase.rpc('sp_reprice_charger', { p_charger_id: c.charger_id, p_price: effective });
+        if (rpErr) setErr(`Price saved, but past records could not be re-priced: ${rpErr.message}`);
+        else setOk(`${Number(n ?? 0).toLocaleString()} past session${Number(n) === 1 ? '' : 's'} of ${c.charger_id} re-priced at $${effective.toFixed(4)}/kWh (previous amounts kept in the backup log).`);
+      }
     }
     await onRefresh();
     setSaving(false);
@@ -784,9 +822,10 @@ function SpChargersPanel({ chargers, onRefresh }: { chargers: SpCharger[]; onRef
       <div>
         <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>SP Chargers</div>
         <div style={{ fontSize: 12, color: C.slate, marginTop: 3 }}>
-          SP imports resolve each session's location and AC/DC by charger ID from this list — SP renaming a
+          SP imports resolve each session's location, AC/DC and price by charger ID from this list — SP renaming a
           location to show a notice can't split it anymore. New chargers register themselves on upload (as DC).
-          Edits here also update the charger's past records, so nothing splits or is lost.
+          A charger's own price overrides its carpark price (leave it blank to inherit). Edits here also update
+          the charger's past records, so nothing splits or is lost.
         </div>
       </div>
 
@@ -795,7 +834,7 @@ function SpChargersPanel({ chargers, onRefresh }: { chargers: SpCharger[]; onRef
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
-                {['Charger ID', 'Location', 'Type', 'First Seen', 'Latest SP Name', ''].map((h) => (
+                {['Charger ID', 'Location', 'Type', 'Price / kWh', 'First Seen', 'Latest SP Name', ''].map((h) => (
                   <th key={h} style={{ padding: '12px 20px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
@@ -825,6 +864,24 @@ function SpChargersPanel({ chargers, onRefresh }: { chargers: SpCharger[]; onRef
                         ))}
                       </div>
                     </td>
+                    <td style={{ padding: '14px 20px', whiteSpace: 'nowrap' }}>
+                      {editId === c.charger_id
+                        ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            <input type="number" min="0" step="0.001" value={editPrice}
+                              onChange={(e) => setEditPrice(e.target.value)}
+                              placeholder={carparkPriceOf(c) != null ? `carpark $${carparkPriceOf(c)!.toFixed(4)}` : 'no carpark price'}
+                              style={{ width: 130, padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.green}`, fontFamily: 'Figtree', fontSize: 13, outline: 'none', textAlign: 'right' }} />
+                            <label style={{ fontSize: 10, color: C.slate, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+                              <input type="checkbox" checked={repricePast} onChange={(e) => setRepricePast(e.target.checked)} />
+                              Re-price past records
+                            </label>
+                          </div>
+                        )
+                        : c.price_per_kwh != null
+                          ? <span style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a' }}>${Number(c.price_per_kwh).toFixed(4)}</span>
+                          : <span style={{ fontSize: 12, color: C.slate }}>{carparkPriceOf(c) != null ? `carpark · $${carparkPriceOf(c)!.toFixed(4)}` : '—'}</span>}
+                    </td>
                     <td style={{ padding: '14px 20px', fontSize: 12, color: C.slate, whiteSpace: 'nowrap' }}>{fmtDate(c.first_seen)}</td>
                     <td style={{ padding: '14px 20px', fontSize: 12, color: notice ? '#B07D00' : C.slate, maxWidth: 260 }}>
                       {notice
@@ -839,14 +896,14 @@ function SpChargersPanel({ chargers, onRefresh }: { chargers: SpCharger[]; onRef
                               style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
                               Cancel
                             </button>
-                            <button onClick={() => saveLocation(c)} disabled={saving}
+                            <button onClick={() => saveEdit(c)} disabled={saving}
                               style={{ padding: '5px 14px', borderRadius: 8, border: 'none', background: saving ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: saving ? 'default' : 'pointer' }}>
                               {saving ? 'Saving…' : 'Save'}
                             </button>
                           </div>
                         )
                         : (
-                          <button onClick={() => { setEditId(c.charger_id); setEditLoc(c.canonical_location); }}
+                          <button onClick={() => startEdit(c)}
                             style={{ padding: '5px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
                             Edit
                           </button>
@@ -857,7 +914,7 @@ function SpChargersPanel({ chargers, onRefresh }: { chargers: SpCharger[]; onRef
               })}
               {chargers.length === 0 && (
                 <tr>
-                  <td colSpan={6} style={{ padding: '48px 20px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
+                  <td colSpan={7} style={{ padding: '48px 20px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
                     No SP chargers yet — they register automatically on the first SP upload.
                   </td>
                 </tr>
@@ -868,6 +925,7 @@ function SpChargersPanel({ chargers, onRefresh }: { chargers: SpCharger[]; onRef
       </div>
 
       {err && <div style={{ background: '#FDEAEA', borderRadius: 10, padding: '10px 14px', fontSize: 12, color: '#C0321A' }}>{err}</div>}
+      {ok && <div style={{ background: '#E4F3E3', borderRadius: 10, padding: '10px 14px', fontSize: 12, color: '#1B512D', fontWeight: 600 }}>{ok}</div>}
     </div>
   );
 }
@@ -1709,7 +1767,7 @@ export function ScreenChargingRecords() {
           const site = canonicals.find((c) => raw === c || raw.startsWith(c + ' -')) ?? (raw || r.charger_id);
           newRegRows.set(r.charger_id, {
             charger_id: r.charger_id, canonical_location: site, charge_type: 'DC',
-            first_seen: r.start_date_time, last_seen_name: raw || null,
+            first_seen: r.start_date_time, last_seen_name: raw || null, price_per_kwh: null,
           });
         }
         if (newRegRows.size > 0) {
@@ -1760,7 +1818,7 @@ export function ScreenChargingRecords() {
         }
 
         setParseStatus('Checking for duplicates…');
-        const priced = applySpPrices(allRows, carparkPrices);
+        const priced = applySpPrices(allRows, carparkPrices, [...registry.values(), ...newRegRows.values()]);
         const chargerIds = [...new Set(priced.map((r) => r.charger_id).filter((c): c is string => !!c))];
         const existingKeys = await fetchExistingKeys(chargerIds, priced);
         const { clean, dupeCount } = filterDupes(priced, existingKeys);
@@ -1799,7 +1857,7 @@ export function ScreenChargingRecords() {
 
       if (pendingSpUpload) {
         setParseStatus('Checking for duplicates…');
-        const priced = applySpPrices(pendingSpUpload.rows, allPrices);
+        const priced = applySpPrices(pendingSpUpload.rows, allPrices, spChargers);
         const chargerIds = [...new Set(priced.map((r) => r.charger_id).filter((c): c is string => !!c))];
         const existingKeys = await fetchExistingKeys(chargerIds, priced);
         const { clean, dupeCount } = filterDupes(priced, existingKeys);
@@ -1907,7 +1965,7 @@ export function ScreenChargingRecords() {
       {activeTab === 'sp_price' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
           <SpPriceTab prices={carparkPrices} onRefresh={fetchCarparkPrices} />
-          <SpChargersPanel chargers={spChargers} onRefresh={fetchSpChargers} />
+          <SpChargersPanel chargers={spChargers} prices={carparkPrices} onRefresh={fetchSpChargers} />
         </div>
       )}
 

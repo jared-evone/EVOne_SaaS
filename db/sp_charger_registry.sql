@@ -49,3 +49,42 @@ select charger_id,
 from crm_charging_records
 where source = 'sp' and charger_id is not null and carpark_code is not null
 group by charger_id;
+
+-- 4) migration sp_charger_price_override — a charger's own rate wins over its
+--    carpark rate at import time (Kallang's AC and DC chargers bill
+--    differently); null inherits the carpark price. Re-pricing past sessions
+--    goes through sp_reprice_charger, which logs the previous amounts to
+--    backup.sp_reprice_log before updating (nothing lost).
+alter table sp_charger_registry add column price_per_kwh numeric;
+
+create table if not exists backup.sp_reprice_log (
+  repriced_at            timestamptz not null default now(),
+  record_id              uuid not null,
+  charger_id             text,
+  old_transaction_amount numeric,
+  old_payment_amount     numeric,
+  new_price              numeric
+);
+
+create or replace function sp_reprice_charger(p_charger_id text, p_price numeric)
+returns integer
+language plpgsql security definer set search_path = public, backup as $$
+declare n integer;
+begin
+  insert into backup.sp_reprice_log (record_id, charger_id, old_transaction_amount, old_payment_amount, new_price)
+  select id, charger_id, transaction_amount, payment_amount, p_price
+  from crm_charging_records
+  where source = 'sp' and charger_id = p_charger_id;
+
+  update crm_charging_records
+  set transaction_amount = case when total_energy_supplied_kwh is null then transaction_amount
+                                else round((total_energy_supplied_kwh * p_price)::numeric, 2) end,
+      payment_amount     = case when total_energy_supplied_kwh is null then payment_amount
+                                else round((total_energy_supplied_kwh * p_price)::numeric, 2) end
+  where source = 'sp' and charger_id = p_charger_id;
+  get diagnostics n = row_count;
+  return n;
+end $$;
+
+revoke execute on function sp_reprice_charger(text, numeric) from public, anon;
+grant execute on function sp_reprice_charger(text, numeric) to authenticated;
