@@ -24,6 +24,9 @@ export interface CRMCompany {
   base_rate: number;
   threshold_kwh: number;
   discounted_rate: number;
+  /** Flat $/kWh applied at secondary_rate_locations instead of base/discounted. */
+  secondary_rate?: number | null;
+  secondary_rate_locations?: string[];
   invoice_email: string | null;
   invoice_cc_emails: string[];
   contract_path: string | null;
@@ -80,7 +83,13 @@ export interface CompanyStatement {
   overstayRows?: OverstayRecord[];
   totalKwh: number;
   appliedRate: number;
-  energyAmount?: number;    // totalKwh * appliedRate
+  energyAmount?: number;    // standard + secondary energy charges
+  // Secondary-rate split (optional — statements stored before the feature lack them).
+  // standardKwh bills at appliedRate; secondaryKwh bills flat at secondaryRate.
+  standardKwh?: number;
+  secondaryKwh?: number;
+  secondaryRate?: number;
+  secondaryAmount?: number;
   overstayAmount?: number;  // sum of overstay charges
   minimumCharge?: number;   // top-up applied when the bill falls below the $25 minimum
   totalAmount: number;      // energyAmount + overstayAmount + minimumCharge (the billed total)
@@ -208,20 +217,42 @@ export function buildStatement(
   spRows: SpCorpRecord[],
   overstayRows: OverstayRecord[] = [],
 ): CompanyStatement {
+  // Secondary rate: sessions at the company's selected locations bill flat at
+  // that rate, outside the base/discounted tier — and their kWh doesn't count
+  // toward the volume threshold.
+  const secRate = company.secondary_rate != null && Number(company.secondary_rate) > 0 ? Number(company.secondary_rate) : null;
+  const secLocs = new Set((company.secondary_rate_locations ?? []).map((l) => String(l).trim()));
+  const isSecondary = (loc: string) => secRate != null && secLocs.has(String(loc ?? '').trim());
+
   const gpKwh = goparkinRows.reduce((s, r) => s + r.kwh, 0);
   const spKwh = spRows.reduce((s, r) => s + r.energyKwh, 0);
   const totalKwh = Math.round((gpKwh + spKwh) * 100) / 100;
+  const secondaryKwh = Math.round((
+    goparkinRows.reduce((s, r) => s + (isSecondary(r.location) ? r.kwh : 0), 0) +
+    spRows.reduce((s, r) => s + (isSecondary(r.location) ? r.energyKwh : 0), 0)
+  ) * 100) / 100;
+  const standardKwh = Math.round((totalKwh - secondaryKwh) * 100) / 100;
+
   const appliedRate =
-    totalKwh >= Number(company.threshold_kwh)
+    standardKwh >= Number(company.threshold_kwh)
       ? Number(company.discounted_rate)
       : Number(company.base_rate);
-  const energyAmount = Math.round(totalKwh * appliedRate * 100) / 100;
+  const standardAmount = Math.round(standardKwh * appliedRate * 100) / 100;
+  const secondaryAmount = secRate != null ? Math.round(secondaryKwh * secRate * 100) / 100 : 0;
+  const energyAmount = Math.round((standardAmount + secondaryAmount) * 100) / 100;
   const overstayAmount = Math.round(overstayRows.reduce((s, r) => s + r.amount, 0) * 100) / 100;
   const subtotal = Math.round((energyAmount + overstayAmount) * 100) / 100;
   // Minimum charge: if the bill is below the floor, top it up so the total is exactly $25.
   const minimumCharge = subtotal < MINIMUM_CHARGE ? Math.round((MINIMUM_CHARGE - subtotal) * 100) / 100 : 0;
   const totalAmount = Math.round((subtotal + minimumCharge) * 100) / 100;
-  return { company, goparkinRows, spRows, overstayRows, totalKwh, appliedRate, energyAmount, overstayAmount, minimumCharge, totalAmount };
+  return {
+    company, goparkinRows, spRows, overstayRows, totalKwh, appliedRate, energyAmount,
+    standardKwh,
+    secondaryKwh: secRate != null ? secondaryKwh : undefined,
+    secondaryRate: secRate ?? undefined,
+    secondaryAmount: secRate != null ? secondaryAmount : undefined,
+    overstayAmount, minimumCharge, totalAmount,
+  };
 }
 
 // ── FieldLabel ────────────────────────────────────────────────────
@@ -248,6 +279,11 @@ export function StatementView({ stmt, billingMonth, onClose }: StatementViewProp
   const overstayAmount = stmt.overstayAmount ?? Math.round(overstayRows.reduce((s, r) => s + r.amount, 0) * 100) / 100;
   const minimumCharge = stmt.minimumCharge ?? 0;
   const energyAmount = stmt.energyAmount ?? Math.round((totalAmount - overstayAmount - minimumCharge) * 100) / 100;
+  const secondaryRate = stmt.secondaryRate ?? null;
+  const secondaryKwh = stmt.secondaryKwh ?? 0;
+  const secondaryAmount = stmt.secondaryAmount ?? 0;
+  const standardKwh = stmt.standardKwh ?? totalKwh;
+  const hasSecondary = secondaryRate != null && secondaryKwh > 0;
 
   // Group by identifier
   const gpByPlate = goparkinRows.reduce<Record<string, GoParkinRow[]>>((acc, r) => {
@@ -290,6 +326,9 @@ export function StatementView({ stmt, billingMonth, onClose }: StatementViewProp
               <span><strong>Base Rate:</strong> {fmtRate(company.base_rate)}/kWh</span>
               <span><strong>Discounted Rate:</strong> {fmtRate(company.discounted_rate)}/kWh</span>
               <span><strong>Applied Rate:</strong> <span style={{ color: C.green, fontWeight: 700 }}>{fmtRate(appliedRate)}/kWh</span></span>
+              {secondaryRate != null && (
+                <span><strong>Secondary Rate:</strong> {fmtRate(secondaryRate)}/kWh at {(company.secondary_rate_locations ?? []).length} location{(company.secondary_rate_locations ?? []).length === 1 ? '' : 's'}</span>
+              )}
             </div>
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
@@ -330,9 +369,15 @@ export function StatementView({ stmt, billingMonth, onClose }: StatementViewProp
               </tbody>
             </table>
           </div>
-          {(overstayAmount > 0 || minimumCharge > 0) && (
+          {(overstayAmount > 0 || minimumCharge > 0 || hasSecondary) && (
             <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: 13 }}>
-              <span style={{ color: C.slate }}>Energy charge <strong style={{ color: '#1a1a1a' }}>{fmtAmt(energyAmount)}</strong></span>
+              {hasSecondary
+                ? <>
+                    <span style={{ color: C.slate }}>Standard energy {standardKwh.toLocaleString()} kWh × {fmtRate(appliedRate)} <strong style={{ color: '#1a1a1a' }}>{fmtAmt(Math.round((energyAmount - secondaryAmount) * 100) / 100)}</strong></span>
+                    <span style={{ color: C.slate }}>+</span>
+                    <span style={{ color: C.slate }}>Secondary-rate energy {secondaryKwh.toLocaleString()} kWh × {fmtRate(secondaryRate!)} <strong style={{ color: '#1a1a1a' }}>{fmtAmt(secondaryAmount)}</strong></span>
+                  </>
+                : <span style={{ color: C.slate }}>Energy charge <strong style={{ color: '#1a1a1a' }}>{fmtAmt(energyAmount)}</strong></span>}
               {overstayAmount > 0 && <><span style={{ color: C.slate }}>+</span><span style={{ color: C.slate }}>Overstay charge <strong style={{ color: '#1a1a1a' }}>{fmtAmt(overstayAmount)}</strong></span></>}
               {minimumCharge > 0 && <><span style={{ color: C.slate }}>+</span><span style={{ color: C.slate }}>Minimum charge adjustment <strong style={{ color: '#1a1a1a' }}>{fmtAmt(minimumCharge)}</strong></span></>}
               <span style={{ color: C.slate }}>=</span>
@@ -495,6 +540,11 @@ export function CorporateStatementPDF({ stmt, billingMonth }: PDFProps) {
   const overstayAmount = stmt.overstayAmount ?? Math.round(overstayRows.reduce((s, r) => s + r.amount, 0) * 100) / 100;
   const minimumCharge = stmt.minimumCharge ?? 0;
   const energyAmount = stmt.energyAmount ?? Math.round((totalAmount - overstayAmount - minimumCharge) * 100) / 100;
+  const secondaryRate = stmt.secondaryRate ?? null;
+  const secondaryKwh = stmt.secondaryKwh ?? 0;
+  const secondaryAmount = stmt.secondaryAmount ?? 0;
+  const standardKwh = stmt.standardKwh ?? totalKwh;
+  const hasSecondary = secondaryRate != null && secondaryKwh > 0;
 
   const gpByPlate = goparkinRows.reduce<Record<string, GoParkinRow[]>>((acc, r) => {
     (acc[r.plate] = acc[r.plate] ?? []).push(r);
@@ -564,6 +614,7 @@ export function CorporateStatementPDF({ stmt, billingMonth }: PDFProps) {
                 ['Base Rate', `${fmtRate(company.base_rate)}/kWh`, false],
                 ['Discounted Rate', `${fmtRate(company.discounted_rate)}/kWh`, false],
                 ['Applied Rate', `${fmtRate(appliedRate)}/kWh`, true],
+                ...(secondaryRate != null ? [['Secondary Rate', `${fmtRate(secondaryRate)}/kWh (selected locations)`, false] as [string, string, boolean]] : []),
               ] as [string, string, boolean][]).map(([k, v, accent]) => (
                 <View key={k} style={{ flexDirection: 'row', marginBottom: 4 }}>
                   <Text style={{ fontSize: 10, fontWeight: 'bold', width: 110 }}>{k}:</Text>
@@ -591,10 +642,17 @@ export function CorporateStatementPDF({ stmt, billingMonth }: PDFProps) {
           </View>
         </View>
 
-        {(overstayAmount > 0 || minimumCharge > 0) && (
+        {(overstayAmount > 0 || minimumCharge > 0 || hasSecondary) && (
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: -12, marginBottom: minimumCharge > 0 ? 4 : 18 }}>
-            <Text style={{ fontSize: 10, color: pdfSlate }}>Energy charge </Text>
-            <Text style={{ fontSize: 10, fontWeight: 'bold' }}>{fmtAmt(energyAmount)}</Text>
+            {hasSecondary ? <>
+              <Text style={{ fontSize: 10, color: pdfSlate }}>{`Standard energy ${standardKwh.toLocaleString()} kWh × ${fmtRate(appliedRate)} `}</Text>
+              <Text style={{ fontSize: 10, fontWeight: 'bold' }}>{fmtAmt(Math.round((energyAmount - secondaryAmount) * 100) / 100)}</Text>
+              <Text style={{ fontSize: 10, color: pdfSlate }}>{`  +  Secondary-rate energy ${secondaryKwh.toLocaleString()} kWh × ${fmtRate(secondaryRate!)} `}</Text>
+              <Text style={{ fontSize: 10, fontWeight: 'bold' }}>{fmtAmt(secondaryAmount)}</Text>
+            </> : <>
+              <Text style={{ fontSize: 10, color: pdfSlate }}>Energy charge </Text>
+              <Text style={{ fontSize: 10, fontWeight: 'bold' }}>{fmtAmt(energyAmount)}</Text>
+            </>}
             {overstayAmount > 0 && <>
               <Text style={{ fontSize: 10, color: pdfSlate }}>{'  +  Overstay charge '}</Text>
               <Text style={{ fontSize: 10, fontWeight: 'bold' }}>{fmtAmt(overstayAmount)}</Text>

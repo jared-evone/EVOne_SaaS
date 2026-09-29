@@ -48,6 +48,11 @@ export interface PortalStatementData {
   totalKwh: number;
   appliedRate: number;
   energyAmount?: number;
+  // Secondary-rate split (statements stored before the feature lack these).
+  standardKwh?: number;
+  secondaryKwh?: number;
+  secondaryRate?: number;
+  secondaryAmount?: number;
   overstayAmount?: number;
   minimumCharge?: number;
   totalAmount: number;

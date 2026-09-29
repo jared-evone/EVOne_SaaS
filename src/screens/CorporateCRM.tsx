@@ -15,6 +15,9 @@ interface CRMCompany {
   base_rate: number;
   threshold_kwh: number;
   discounted_rate: number;
+  /** Flat $/kWh applied at secondary_rate_locations instead of base/discounted. */
+  secondary_rate?: number | null;
+  secondary_rate_locations?: string[];
   invoice_email: string | null;
   invoice_cc_emails: string[];
   contract_path: string | null;
@@ -277,6 +280,21 @@ interface CompanyModalProps {
 function CompanyModal({ initial, title, canDelete, invoicingOnly = false, onSave, onDelete, onClose }: CompanyModalProps) {
   const [form, setForm] = useState(initial);
   const [ccText, setCcText] = useState((initial.invoice_cc_emails ?? []).join(', '));
+  // Known charging locations for the secondary-rate picker (names as they
+  // appear in the charging data — the strings invoicing matches against).
+  const [locOptions, setLocOptions] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.rpc('charging_records_by_carpark');
+      if (cancelled || !data) return;
+      const names = [...new Set((data as { carpark_name: string | null }[])
+        .map((r) => r.carpark_name)
+        .filter((n): n is string => !!n))].sort((a, b) => a.localeCompare(b));
+      setLocOptions(names);
+    })();
+    return () => { cancelled = true; };
+  }, []);
   const [contractFile, setContractFile] = useState<File | null>(null);
   const [removeContract, setRemoveContract] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -394,6 +412,50 @@ function CompanyModal({ initial, title, canDelete, invoicingOnly = false, onSave
             {textField('Discounted Rate', 'discounted_rate', 'number')}
           </div>
         </div>
+        {!invoicingOnly && (
+        <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Secondary Rate (per-location)</div>
+          <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5, marginTop: -6 }}>
+            Sessions at the selected locations bill at this one flat rate instead of the base/discounted tier.
+            They don't count toward the volume threshold. Leave the rate empty to disable.
+          </div>
+          <div>
+            <FieldLabel>Secondary Rate (SGD / kWh)</FieldLabel>
+            <input type="number" step="0.001" min="0" placeholder="e.g. 0.480"
+              value={form.secondary_rate == null ? '' : String(form.secondary_rate)}
+              onChange={(e) => setForm((f) => ({ ...f, secondary_rate: e.target.value === '' ? null : Number(e.target.value) }))}
+              style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box', background: C.white }} />
+          </div>
+          <div>
+            <FieldLabel>Applies at Locations</FieldLabel>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+              {(form.secondary_rate_locations ?? []).map((loc) => (
+                <span key={loc} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: C.white, border: '1px solid #EBEBEB', borderRadius: 99, padding: '4px 10px', fontSize: 12, fontWeight: 600, color: '#1a1a1a', maxWidth: 260 }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{loc}</span>
+                  <button type="button" title="Remove"
+                    onClick={() => setForm((f) => ({ ...f, secondary_rate_locations: (f.secondary_rate_locations ?? []).filter((l) => l !== loc) }))}
+                    style={{ border: 'none', background: 'transparent', color: C.slate, cursor: 'pointer', fontSize: 13, lineHeight: 1, padding: 0, fontFamily: 'Figtree' }}>×</button>
+                </span>
+              ))}
+              <select value=""
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (!v) return;
+                  setForm((f) => ({ ...f, secondary_rate_locations: [...new Set([...(f.secondary_rate_locations ?? []), v])] }));
+                }}
+                style={{ padding: '6px 10px', borderRadius: 99, border: '1px dashed #CBD5DC', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer', maxWidth: 260 }}>
+                <option value="">+ Add location…</option>
+                {locOptions.filter((l) => !(form.secondary_rate_locations ?? []).includes(l)).map((l) => (
+                  <option key={l} value={l}>{l}</option>
+                ))}
+              </select>
+            </div>
+            {(form.secondary_rate != null && Number(form.secondary_rate) > 0 && (form.secondary_rate_locations ?? []).length === 0) && (
+              <div style={{ fontSize: 11, color: '#B07D00', marginTop: 6 }}>Pick at least one location or the secondary rate never applies.</div>
+            )}
+          </div>
+        </div>
+        )}
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Invoicing</div>
           {textField('Invoice Email (To)', 'invoice_email', 'email', 'billing@company.com')}
@@ -910,7 +972,7 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
 
       {adding && (
         <CompanyModal title="Add Company" canDelete={canDelete}
-          initial={{ name: '', base_rate: 0, threshold_kwh: 1000, discounted_rate: 0, invoice_email: null, invoice_cc_emails: [], contract_path: null, contract_filename: null, is_active: true, inactive_date: null }}
+          initial={{ name: '', base_rate: 0, threshold_kwh: 1000, discounted_rate: 0, secondary_rate: null, secondary_rate_locations: [], invoice_email: null, invoice_cc_emails: [], contract_path: null, contract_filename: null, is_active: true, inactive_date: null }}
           onSave={addCompany} onClose={() => setAdding(false)} />
       )}
       {editing && (
@@ -922,6 +984,8 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
             base_rate: editing.base_rate,
             threshold_kwh: editing.threshold_kwh,
             discounted_rate: editing.discounted_rate,
+            secondary_rate: editing.secondary_rate ?? null,
+            secondary_rate_locations: editing.secondary_rate_locations ?? [],
             invoice_email: editing.invoice_email,
             invoice_cc_emails: editing.invoice_cc_emails ?? [],
             contract_path: editing.contract_path,

@@ -27,6 +27,13 @@ function addDays(d: Date, n: number): Date {
 export function InvoicePDF({ stmt, billingMonth, invoiceNumber, issuedAt }: Props) {
   const { company, totalKwh, appliedRate, totalAmount } = stmt;
   const dueDate = addDays(issuedAt, 30);
+  // Secondary-rate split (statements stored before the feature lack these).
+  const secondaryRate = stmt.secondaryRate ?? null;
+  const secondaryKwh = stmt.secondaryKwh ?? 0;
+  const secondaryAmount = stmt.secondaryAmount ?? 0;
+  const standardKwh = stmt.standardKwh ?? totalKwh;
+  const hasSecondary = secondaryRate != null && secondaryKwh > 0;
+  const standardLineAmount = Math.round((totalAmount - secondaryAmount) * 100) / 100;
 
   return (
     <Document>
@@ -78,22 +85,39 @@ export function InvoicePDF({ stmt, billingMonth, invoiceNumber, issuedAt }: Prop
               <Text style={{ fontSize: 9, fontWeight: 'bold', color: pdfSlate, textAlign: 'right' }}>AMOUNT</Text>
             </View>
           </View>
-          <View style={{ flexDirection: 'row' }}>
+          <View style={{ flexDirection: 'row', ...(hasSecondary ? bBottom : {}) }}>
             <View style={{ width: '52%', paddingVertical: 10, paddingHorizontal: 10, ...bRight }}>
               <Text style={{ fontSize: 10, fontWeight: 'bold', color: '#1a1a1a' }}>Corporate EV Charging</Text>
               <Text style={{ fontSize: 9, color: pdfSlate, marginTop: 2 }}>{fmtMonthLabel(billingMonth)} — combined GoParkin + SP sessions</Text>
-              <Text style={{ fontSize: 9, color: pdfSlate, marginTop: 2 }}>Applied tier: {totalKwh >= Number(company.threshold_kwh) ? 'Discounted (above threshold)' : 'Base rate'}</Text>
+              <Text style={{ fontSize: 9, color: pdfSlate, marginTop: 2 }}>Applied tier: {standardKwh >= Number(company.threshold_kwh) ? 'Discounted (above threshold)' : 'Base rate'}</Text>
             </View>
             <View style={{ width: '16%', paddingVertical: 10, paddingHorizontal: 10, ...bRight }}>
-              <Text style={{ fontSize: 10, color: '#1a1a1a', textAlign: 'right' }}>{fmtKwh(totalKwh)}</Text>
+              <Text style={{ fontSize: 10, color: '#1a1a1a', textAlign: 'right' }}>{fmtKwh(hasSecondary ? standardKwh : totalKwh)}</Text>
             </View>
             <View style={{ width: '16%', paddingVertical: 10, paddingHorizontal: 10, ...bRight }}>
               <Text style={{ fontSize: 10, color: '#1a1a1a', textAlign: 'right' }}>{fmtRate(appliedRate)}</Text>
             </View>
             <View style={{ width: '16%', paddingVertical: 10, paddingHorizontal: 10 }}>
-              <Text style={{ fontSize: 10, fontWeight: 'bold', color: '#1a1a1a', textAlign: 'right' }}>{fmtAmt(totalAmount)}</Text>
+              <Text style={{ fontSize: 10, fontWeight: 'bold', color: '#1a1a1a', textAlign: 'right' }}>{fmtAmt(hasSecondary ? standardLineAmount : totalAmount)}</Text>
             </View>
           </View>
+          {hasSecondary && (
+            <View style={{ flexDirection: 'row' }}>
+              <View style={{ width: '52%', paddingVertical: 10, paddingHorizontal: 10, ...bRight }}>
+                <Text style={{ fontSize: 10, fontWeight: 'bold', color: '#1a1a1a' }}>Corporate EV Charging — Secondary-Rate Locations</Text>
+                <Text style={{ fontSize: 9, color: pdfSlate, marginTop: 2 }}>Flat rate at selected locations</Text>
+              </View>
+              <View style={{ width: '16%', paddingVertical: 10, paddingHorizontal: 10, ...bRight }}>
+                <Text style={{ fontSize: 10, color: '#1a1a1a', textAlign: 'right' }}>{fmtKwh(secondaryKwh)}</Text>
+              </View>
+              <View style={{ width: '16%', paddingVertical: 10, paddingHorizontal: 10, ...bRight }}>
+                <Text style={{ fontSize: 10, color: '#1a1a1a', textAlign: 'right' }}>{fmtRate(secondaryRate!)}</Text>
+              </View>
+              <View style={{ width: '16%', paddingVertical: 10, paddingHorizontal: 10 }}>
+                <Text style={{ fontSize: 10, fontWeight: 'bold', color: '#1a1a1a', textAlign: 'right' }}>{fmtAmt(secondaryAmount)}</Text>
+              </View>
+            </View>
+          )}
         </View>
 
         {/* ── Totals box (right-aligned) ── */}
