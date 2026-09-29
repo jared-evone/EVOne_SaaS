@@ -57,7 +57,7 @@ This app uses **custom auth** (the `app_users` table), wrapped so the database c
 
 **RLS posture (this is the security boundary)**
 - Every `public` data table has RLS enabled. Internal tables have one policy: `FOR ALL TO authenticated USING (true) WITH CHECK (true)` — i.e. you must be logged in; `anon` (the bare public key) is denied.
-- A small set is **also** reachable by anonymous flows and therefore keeps an `anon` policy too: the **customer portal** + **public `?apply=`** (`customer_portal_accounts`, `customer_portal_documents`, `crm_companies`, `crm_vehicles`, `crm_sp_drivers`, `crm_account_applications`, `crm_account_form_templates`, `cpo_locations`, `cpo_managed_carparks`) and the **QR form-test `?formPreview=`** (`tsd_form_templates` anon SELECT).
+- A small set is **also** reachable by anonymous flows and therefore keeps an `anon` policy too: the **customer portal** (`customer_portal_accounts`, `customer_portal_documents`, `crm_companies`, `crm_vehicles`, `crm_sp_drivers`, `cpo_locations`, `cpo_managed_carparks`) and the **QR form-test `?formPreview=`** (`tsd_form_templates` anon SELECT). The account-opening `?apply=` flow was retired in Sept 2026 (screens/crm removed); its tables (`crm_account_applications`, `crm_account_form_templates`) and their anon policies remain in the DB, data intact.
 - **Gotcha that bit us (twice):** an `anon`-only policy hides the object from logged-in staff. Any **table** an anon flow needs must have **both** an `anon` policy AND an `authenticated` policy, or internal screens read empty. The **same applies to `storage.objects`** — a bucket policy scoped to `anon` alone blocks authenticated uploads/reads/deletes (this is why CPO meter-reading PDF uploads failed for logged-in users; fixed in `fix_cpo_pdf_storage_authenticated` by widening the `cpo-pm pdfs` policies to `anon, authenticated`).
 
 **When you add a new table**
@@ -326,12 +326,10 @@ src/
                             one file per top-level screen; export `ScreenFoo`
     Projects.tsx            Charger Registry — sites, chargers, LTA inspection
                             schedule (Form A/D), warranty. The biggest screen.
-    Login.tsx               department picker + email/password sign-in
+    Login.tsx               email/password sign-in (departments derive from grants)
     Settings.tsx, DBHealth.tsx
                             in-app admin (Users & Permissions matrix + DB health)
     charging/               sub-tabs for ChargingRecords (CarparksTab, …)
-    crm/                    Corporate CRM onboarding —
-                            AccountOpening (admin) + PublicApplication (customer)
     portal/                 customer-facing invoice / statement portal
     projmgmt/               ChargerProjects.tsx — the Charger Registry "Projects"
                             module (pm department only): per-project lifecycle
@@ -363,7 +361,7 @@ src/
 - **No default exports** except top-level pages bound by tooling (`App.tsx`, `main.tsx`). Everything else is named.
 - **No comments** unless explaining a non-obvious WHY. Don't write `// component for X` above an obvious component.
 - **No new dependencies** without a clear reason. Bundle-size matters for a self-contained dashboard. If you're tempted to add a date library — use `Date` + `toLocaleDateString`. If you're tempted to add a UI library — re-read this file.
-- **PDF generation**: `@react-pdf/renderer`. Canonical use: [PDFExport.tsx](src/screens/tsd/PDFExport.tsx), [CorporateInvoicing.tsx](src/screens/CorporateInvoicing.tsx), [PublicApplication.tsx](src/screens/crm/PublicApplication.tsx). Don't bring in a server-side PDF service.
+- **PDF generation**: `@react-pdf/renderer`. Canonical use: [PDFExport.tsx](src/screens/tsd/PDFExport.tsx), [CorporateInvoicing.tsx](src/screens/CorporateInvoicing.tsx). Don't bring in a server-side PDF service.
 - **CSV / Excel import**: `xlsx`. See the GoParkin + SP parsers in [CorporateInvoicing.tsx](src/screens/CorporateInvoicing.tsx) and [ChargingRecords.tsx](src/screens/ChargingRecords.tsx).
 - **Storage uploads**: Supabase Storage. Sign URLs with `createSignedUrl(path, 60)` for view; pass `{ download: filename }` to force download. See the meter-reading / maintenance flows in [CPOChargers.tsx](src/screens/CPOChargers.tsx).
 - **Hover** is done via `onMouseEnter` / `onMouseLeave` on the element itself (mutates `e.currentTarget.style.…`). It's verbose but consistent with inline styling.

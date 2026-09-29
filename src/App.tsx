@@ -53,7 +53,6 @@ import { TechApp } from './screens/tsd/TechApp';
 import { WorkOrdersAdmin, FormBuilder } from './screens/tsd/TSDAdminApp';
 import { TechniciansAdmin } from './screens/tsd/TechniciansAdmin';
 import { PICReviewBoard } from './screens/tsd/PICApp';
-import { PublicApplication } from './screens/crm/PublicApplication';
 import { FormTestPage } from './screens/tsd/FormTestPage';
 import {
   PermissionsProvider, usePermissions,
@@ -619,12 +618,6 @@ export default function App() {
   // A newer version was deployed — show the updating splash while we reload.
   if (updating) {
     return <UpdateOverlay relogin={FORCE_RELOGIN_ON_UPDATE} />;
-  }
-
-  // Public account-opening invite: bypass login entirely.
-  const applyToken = new URLSearchParams(window.location.search).get('apply');
-  if (applyToken) {
-    return <PublicApplication token={applyToken} />;
   }
 
   // QR-code form test from the Form Builder: bypass login, render the saved template.

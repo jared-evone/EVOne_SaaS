@@ -3,7 +3,6 @@ import { C } from '../theme';
 import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { useIsMobile } from '../lib/useIsMobile';
-import { AccountOpening } from './crm/AccountOpening';
 import { usePermissions } from '../permissions';
 import { Search, Download as DownloadIcon, Mail, ChevronDown, RotateCw } from 'lucide-react';
 import { FileText } from 'lucide-react';
@@ -35,7 +34,7 @@ interface CRMVehicle {
   crm_companies: { name: string } | null;
 }
 
-type CRMTab = 'companies' | 'managed' | 'vehicles' | 'sp' | 'opening' | 'email' | 'email_design' | 'email_audit';
+type CRMTab = 'companies' | 'managed' | 'vehicles' | 'sp' | 'email' | 'email_design' | 'email_audit';
 
 interface CRMDriver {
   id: string;
@@ -1795,7 +1794,6 @@ export function ScreenCorporateCRM() {
     { id: 'managed',   label: 'Managed CPO' },
     { id: 'vehicles',  label: 'GoParkin Vehicles' },
     { id: 'sp',        label: 'SP Vehicles' },
-    { id: 'opening',   label: 'Account Opening' },
     { id: 'email',     label: 'Notifications' },
     { id: 'email_design', label: 'Email Designer' },
     { id: 'email_audit', label: 'Email Audit' },
@@ -1823,7 +1821,6 @@ export function ScreenCorporateCRM() {
       {tab === 'managed'   && <ManagedCpoTab companies={companies} onRefresh={fetchCompanies} />}
       {tab === 'vehicles'  && <VehiclesTab  companies={companies} error={error} />}
       {tab === 'sp'        && <SPDriversTab companies={companies} error={error} />}
-      {tab === 'opening'   && <AccountOpening />}
       {tab === 'email'     && <NotificationsTab companies={companies} />}
       {tab === 'email_design' && <EmailDesignerTab />}
       {tab === 'email_audit' && <EmailAuditTab companies={companies} />}
