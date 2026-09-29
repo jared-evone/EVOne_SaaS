@@ -158,6 +158,30 @@ export function LineChart({
     ` L ${pts[pts.length - 1].x},${H - 24} Z`;
   const gridLines = [0.25, 0.5, 0.75, 1].map((f) => H - 24 - f * (H - 48));
   const hovered = hover != null ? tooltips?.[hover] : undefined;
+  // X labels: at the measured width, drop any label that would collide with the
+  // one before it — the LAST label (the most recent period) always wins over
+  // earlier neighbours — and clamp both ends so nothing clips off the edges.
+  const estHalf = (s: string) => (s.length * 5.5 + 8) / 2;
+  const labelX = (i: number) => Math.min(Math.max(xAt(i), estHalf(labels[i])), W - estHalf(labels[i]));
+  const keptLabels = new Set<number>();
+  {
+    const labelIdxs = labels.map((l, i) => (l ? i : -1)).filter((i) => i >= 0);
+    let prevRight = -Infinity;
+    for (const i of labelIdxs) {
+      const h = estHalf(labels[i]);
+      const x = labelX(i);
+      if (x - h >= prevRight + 4) { keptLabels.add(i); prevRight = x + h; }
+    }
+    const last = labelIdxs.length ? labelIdxs[labelIdxs.length - 1] : -1;
+    if (last >= 0 && !keptLabels.has(last)) {
+      const lx = labelX(last);
+      const lh = estHalf(labels[last]);
+      for (const i of [...keptLabels]) {
+        if (labelX(i) + estHalf(labels[i]) > lx - lh - 4) keptLabels.delete(i);
+      }
+      keptLabels.add(last);
+    }
+  }
   return (
     <div ref={wrapRef} style={{ position: 'relative' }}>
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none">
@@ -182,9 +206,9 @@ export function LineChart({
         <circle key={i} cx={p.x} cy={p.y} r="4" fill="white" stroke={color} strokeWidth="2" />
       ))}
       {labels.map((l, i) => {
-        if (!l) return null;
+        if (!l || !keptLabels.has(i)) return null;
         return (
-          <text key={i} x={xAt(i)} y={H - 6} textAnchor="middle" fontSize="10" fontFamily="Figtree" fill={C.slate}>
+          <text key={i} x={labelX(i)} y={H - 6} textAnchor="middle" fontSize="10" fontFamily="Figtree" fill={C.slate}>
             {l}
           </text>
         );
