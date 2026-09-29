@@ -6,9 +6,12 @@ interface NavItemProps {
   label: string;
   active: boolean;
   onClick: () => void;
+  /** Active-state background — override when the item sits on a tinted surface
+   *  (e.g. the honeydew Global chip) where the default honeydew would vanish. */
+  activeBackground?: string;
 }
 
-export function NavItem({ icon: Icon, label, active, onClick }: NavItemProps) {
+export function NavItem({ icon: Icon, label, active, onClick, activeBackground }: NavItemProps) {
   return (
     <button
       onClick={onClick}
@@ -20,7 +23,7 @@ export function NavItem({ icon: Icon, label, active, onClick }: NavItemProps) {
         borderRadius: 10,
         border: 'none',
         cursor: 'pointer',
-        background: active ? C.honeydew : 'transparent',
+        background: active ? (activeBackground ?? C.honeydew) : 'transparent',
         color: active ? C.green : C.slate,
         fontFamily: 'Figtree',
         fontSize: 14,

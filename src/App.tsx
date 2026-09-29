@@ -14,6 +14,11 @@ import {
 const DEPARTMENT_ICONS: Record<Department, LucideIcon> = {
   tech: Wrench, sales: Handshake, cpo: Zap, pm: FolderKanban,
 };
+
+// Screens shared by the whole company — shown once in the highlighted Global
+// chip above the department sections (multi-department accounts only), never
+// repeated inside them. Add future cross-department tabs here.
+const GLOBAL_SCREEN_IDS: ScreenKey[] = ['customers'];
 import { useIsMobile } from './lib/useIsMobile';
 import { setAppToken, hasValidAppToken } from './lib/supabase';
 import { startVersionWatch } from './lib/version';
@@ -243,6 +248,19 @@ function Dashboard({ onSignOut, onSwitchDepartment }: DashboardProps) {
     selectScreen(id);
   };
 
+  // A global screen opens in whichever department hosts it — the current one if
+  // it grants viewing, else the first accessible department that does.
+  const globalHosts = (id: ScreenId) =>
+    departments.filter((d) => DEPARTMENT_SCREENS[d].includes(id) && canIn(d, id, 'can_view'));
+  const globalLeaves = multiDept
+    ? NAV_ALL.filter((n): n is NavLeaf => n.kind === 'leaf' && GLOBAL_SCREEN_IDS.includes(n.id) && globalHosts(n.id).length > 0)
+    : [];
+  const selectGlobal = (id: ScreenId) => {
+    const hosts = globalHosts(id);
+    if (hosts.length === 0) return;
+    selectScreenIn(hosts.includes(user.department) ? user.department : hosts[0], id);
+  };
+
   return (
     <ScreenNavContext.Provider value={selectScreen}>
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: C.seasalt }}>
@@ -337,8 +355,27 @@ function Dashboard({ onSignOut, onSwitchDepartment }: DashboardProps) {
 
             // Multi-department accordion: one section per accessible department,
             // one expanded at a time. The active department's name shows green.
-            return departments.map((d) => {
-              const entries = navFor(d);
+            // Global screens sit above it in a highlighted chip, listed once.
+            const globalBlock = globalLeaves.length > 0 && (
+              <div key="global" style={{ background: C.honeydew, borderRadius: 12, padding: 6, marginTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: C.green, letterSpacing: '0.08em', textTransform: 'uppercase', padding: '6px 10px 2px' }}>
+                  Global
+                </div>
+                {globalLeaves.map((g) => (
+                  <NavItem
+                    key={g.id}
+                    icon={g.icon}
+                    label={g.label}
+                    active={activeScreen === g.id}
+                    activeBackground={C.white}
+                    onClick={() => selectGlobal(g.id)}
+                  />
+                ))}
+              </div>
+            );
+
+            const deptSections = departments.map((d) => {
+              const entries = navFor(d).filter((n) => !(n.kind === 'leaf' && GLOBAL_SCREEN_IDS.includes(n.id)));
               if (entries.length === 0) return null;
               const open = openDept === d;
               const isActiveDept = user.department === d;
@@ -373,6 +410,8 @@ function Dashboard({ onSignOut, onSwitchDepartment }: DashboardProps) {
                 </div>
               );
             });
+
+            return <>{globalBlock}{deptSections}</>;
           })()}
         </nav>
 
