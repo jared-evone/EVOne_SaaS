@@ -42,6 +42,7 @@ interface PurchaseOrder {
   finance_decided_at: string | null;
   email_status: string | null;
   email_error: string | null;
+  app_base: string | null;
   forwarded_at: string | null;
   created_by: string | null;
   created_by_id: string | null;
@@ -96,7 +97,7 @@ function buildPoEmail(po: PurchaseOrder, settings: POSettings, salesman: string,
   const intro = esc(fill(settings.body)).replace(/\\n/g, '<br>').replace(/\n/g, '<br>');
   // Link to the app's decision page (renders reliably as HTML); it calls the
   // po-decision function to record the choice.
-  const appBase = typeof window !== 'undefined' ? `${window.location.origin}${window.location.pathname}` : '';
+  const appBase = po.app_base || (typeof window !== 'undefined' ? `${window.location.origin}${window.location.pathname}` : '');
   const approveUrl = `${appBase}?po=${po.approval_token}&decision=approve`;
   const rejectUrl = `${appBase}?po=${po.approval_token}&decision=reject`;
   return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a1a;">
@@ -158,7 +159,7 @@ async function sendFyiCopies(po: PurchaseOrder, settings: POSettings, salesman: 
 // Finance email: no approve/reject — finance marks the PO completed (sent to
 // supplier) or cancels it. Buttons point at the app decision page.
 function buildFinanceEmail(po: PurchaseOrder, salesman: string): string {
-  const appBase = typeof window !== 'undefined' ? `${window.location.origin}${window.location.pathname}` : '';
+    const appBase = po.app_base || (typeof window !== 'undefined' ? `${window.location.origin}${window.location.pathname}` : '');
   const completeUrl = `${appBase}?po=${po.approval_token}&decision=complete`;
   const cancelUrl = `${appBase}?po=${po.approval_token}&decision=cancel`;
   return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;max-width:600px;margin:0 auto;color:#1a1a1a;">
@@ -1253,7 +1254,7 @@ function TemplateTab({ settings, onRefresh }: { settings: POSettings; onRefresh:
         <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>Preview</div>
         <div style={{ border: '1px solid #EBEBEB', borderRadius: 12, padding: 18 }}
           dangerouslySetInnerHTML={{ __html: buildPoEmail(
-            { id: '', po_number: 'PO-2026-0001', title: 'Sample PO', supplier: 'Acme Supplies', approver_email: '', finance_email: '', currency: 'SGD', sell_subtotal: 5400, sell_currency: 'SGD', lines: [{ product_id: null, name: '22kW AC Charger', remark: 'Model ABC-22\nOCPP 1.6J, Type 2 socket', unit: 'unit', unit_price: 1800, sell_price: 2300, qty: 2, currency: 'SGD', supplier: 'Acme Supplies' }, { product_id: null, name: 'Installation', remark: null, unit: 'lot', unit_price: 600, sell_price: 800, qty: 1, currency: 'SGD', supplier: 'Acme Supplies' }], subtotal: 4200, notes: '', status: 'pending', approval_token: 'preview', decided_at: null, finance_decided_at: null, email_status: null, email_error: null, forwarded_at: null, created_by: 'You', created_by_id: '', created_at: '' },
+            { id: '', po_number: 'PO-2026-0001', title: 'Sample PO', supplier: 'Acme Supplies', approver_email: '', finance_email: '', currency: 'SGD', sell_subtotal: 5400, sell_currency: 'SGD', lines: [{ product_id: null, name: '22kW AC Charger', remark: 'Model ABC-22\nOCPP 1.6J, Type 2 socket', unit: 'unit', unit_price: 1800, sell_price: 2300, qty: 2, currency: 'SGD', supplier: 'Acme Supplies' }, { product_id: null, name: 'Installation', remark: null, unit: 'lot', unit_price: 600, sell_price: 800, qty: 1, currency: 'SGD', supplier: 'Acme Supplies' }], subtotal: 4200, notes: '', status: 'pending', approval_token: 'preview', decided_at: null, finance_decided_at: null, email_status: null, email_error: null, app_base: null, forwarded_at: null, created_by: 'You', created_by_id: '', created_at: '' },
             form, 'You',
           ) }} />
       </div>
