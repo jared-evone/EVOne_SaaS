@@ -137,8 +137,9 @@ function poItemsHtml(po: PurchaseOrder): string {
     ${po.sell_currency === po.currency ? `<div style="text-align:right;font-size:14px;color:#5B6B7A;margin:2px 0 22px;">Margin: <b style="color:#1a1a1a;">${money(po.sell_subtotal - po.subtotal, po.currency)}</b></div>` : '<div style="margin-bottom:22px;"></div>'}` : '<div style="margin-bottom:22px;"></div>'}`;
 }
 
-// FYI copies to the template's default CC list — same PO, no action buttons.
-async function sendFyiCopies(po: PurchaseOrder, settings: POSettings, salesman: string, subject: string) {
+// FYI copies to the template's default CC list — same PO, no action buttons,
+// so approve/complete links never leave the responsible person's inbox.
+async function sendFyiCopies(po: PurchaseOrder, settings: POSettings, salesman: string, subject: string, kind: 'approval' | 'finance' = 'approval') {
   const ccList = (settings.cc_email ?? '').split(/[,;]/).map((e) => e.trim()).filter((e) => /@/.test(e));
   if (!ccList.length) return;
   try {
@@ -146,7 +147,7 @@ async function sendFyiCopies(po: PurchaseOrder, settings: POSettings, salesman: 
       body: {
         to: ccList,
         subject: `FYI: ${subject}`,
-        html: buildPoEmail(po, settings, salesman, true),
+        html: kind === 'finance' ? buildFinanceEmail(po, salesman, settings, true) : buildPoEmail(po, settings, salesman, true),
         from: settings.from_address || undefined,
         replyTo: settings.reply_to || undefined,
       },
@@ -158,7 +159,7 @@ async function sendFyiCopies(po: PurchaseOrder, settings: POSettings, salesman: 
 
 // Finance email: no approve/reject — finance marks the PO completed (sent to
 // supplier) or cancels it. Buttons point at the app decision page.
-function buildFinanceEmail(po: PurchaseOrder, salesman: string): string {
+function buildFinanceEmail(po: PurchaseOrder, salesman: string, settings?: POSettings, fyi = false): string {
     const appBase = po.app_base || (typeof window !== 'undefined' ? `${window.location.origin}${window.location.pathname}` : '');
   const completeUrl = `${appBase}?po=${po.approval_token}&decision=complete`;
   const cancelUrl = `${appBase}?po=${po.approval_token}&decision=cancel`;
@@ -167,10 +168,12 @@ function buildFinanceEmail(po: PurchaseOrder, salesman: string): string {
     <div style="font-size:14px;color:#5B6B7A;margin:2px 0 16px;">${esc(po.title)}${po.supplier ? ` · ${esc(po.supplier)}` : ''}</div>
     <div style="font-size:14px;line-height:1.6;margin-bottom:16px;">This purchase order has been <b style="color:${C.green};">approved by management</b>. Please send it to the supplier, then mark it as completed below.</div>
     ${poItemsHtml(po)}
-    <div style="text-align:center;">
+    ${fyi
+      ? `<div style="text-align:center;background:#F7FAFC;border:1px dashed #D5DDE3;border-radius:10px;padding:12px 16px;font-size:13px;color:#5B6B7A;">This copy is for your information — the completed/cancel action sits with <b style="color:#1a1a1a;">${esc(po.finance_email ?? settings?.finance_email ?? 'finance')}</b>.</div>`
+      : `<div style="text-align:center;">
       <a href="${completeUrl}" style="display:inline-block;background:${C.green};color:#fff;text-decoration:none;font-weight:700;padding:12px 30px;border-radius:10px;margin:0 6px;">Mark Completed</a>
       <a href="${cancelUrl}" style="display:inline-block;background:#C0321A;color:#fff;text-decoration:none;font-weight:700;padding:12px 30px;border-radius:10px;margin:0 6px;">Cancel PO</a>
-    </div>
+    </div>`}
     <div style="text-align:center;color:#5B6B7A;font-size:12px;margin-top:18px;">Raised by ${esc(salesman)} · EVOne Purchase Orders</div>
   </div>`;
 }
@@ -662,13 +665,15 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
     const finance = po.finance_email || settings.finance_email;
     if (!finance) { window.alert('No finance email is set. Add one in the Email Template tab.'); return; }
     setBusy(true);
-    const html = buildFinanceEmail(po, po.created_by || user.full_name);
+    const html = buildFinanceEmail(po, po.created_by || user.full_name, settings);
+    const subject = `Approved PO - ${po.supplier || 'No supplier'} - ${po.title}`;
     let emailErr: string | null = null;
     try {
       const { data: r, error } = await supabase.functions.invoke('send-customer-email', {
-        body: { to: [finance], subject: `Approved PO - ${po.supplier || 'No supplier'} - ${po.title}`, html, from: settings.from_address || undefined, replyTo: settings.reply_to || undefined },
+        body: { to: [finance], subject, html, from: settings.from_address || undefined, replyTo: settings.reply_to || undefined },
       });
       emailErr = (r as { error?: string } | null)?.error ?? error?.message ?? null;
+      if (!emailErr) void sendFyiCopies(po, settings, po.created_by || user.full_name, subject, 'finance');
     } catch (e) { emailErr = (e as Error).message; }
     if (emailErr) { setBusy(false); window.alert(`Could not email finance: ${emailErr}`); return; }
     await supabase.from('purchase_orders').update({ status: 'sent_to_finance', forwarded_at: new Date().toISOString() }).eq('id', po.id);
@@ -735,6 +740,7 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
 
       {open && (
         <PODetailModal po={open} busy={busy} canDelete={canDelete} isAdmin={isAdmin} notice={notice}
+          financeEmail={open.finance_email || settings.finance_email}
           onResend={() => resend(open)} onForward={() => forwardToFinance(open)}
           onManualDecision={(d) => manualDecision(open, d)}
           onDelete={() => deletePO(open)} onClose={() => setOpen(null)} />
@@ -750,7 +756,7 @@ function ClipboardEmpty() {
 type StepState = 'done' | 'current' | 'pending' | 'error';
 const fmtDT = (s: string | null) => (s ? new Date(s).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '');
 
-function POTimeline({ po }: { po: PurchaseOrder }) {
+function POTimeline({ po, financeEmail }: { po: PurchaseOrder; financeEmail: string | null }) {
   const steps: { label: string; sub: string; state: StepState }[] = [];
   steps.push({ label: 'PO raised', sub: `by ${po.created_by ?? 'you'} · ${fmtDT(po.created_at)}`, state: 'done' });
   steps.push({
@@ -769,7 +775,9 @@ function POTimeline({ po }: { po: PurchaseOrder }) {
     const forwarded = po.status === 'sent_to_finance' || po.status === 'completed' || po.status === 'cancelled' || !!po.forwarded_at;
     steps.push({
       label: 'Sent to finance',
-      sub: po.forwarded_at ? fmtDT(po.forwarded_at) : po.status === 'approved' ? 'Ready — use the button below' : 'After approval',
+      sub: po.forwarded_at
+        ? `${fmtDT(po.forwarded_at)}${financeEmail ? ` · to ${financeEmail}` : ''}`
+        : po.status === 'approved' ? `Ready — use the button below${financeEmail ? ` (goes to ${financeEmail})` : ''}` : 'After approval',
       state: forwarded ? 'done' : po.status === 'approved' ? 'current' : 'pending',
     });
     if (po.status === 'cancelled') {
@@ -814,8 +822,10 @@ function POTimeline({ po }: { po: PurchaseOrder }) {
   );
 }
 
-function PODetailModal({ po, busy, canDelete, isAdmin, notice, onResend, onForward, onManualDecision, onDelete, onClose }: {
+function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, onResend, onForward, onManualDecision, onDelete, onClose }: {
   po: PurchaseOrder;
+  /** The address the finance step actually uses (PO snapshot, else template default). */
+  financeEmail: string | null;
   busy: boolean;
   canDelete: boolean;
   isAdmin: boolean;
@@ -845,7 +855,7 @@ function PODetailModal({ po, busy, canDelete, isAdmin, notice, onResend, onForwa
           {po.decided_at && <span style={{ fontSize: 12, color: C.slate }}>on {new Date(po.decided_at).toLocaleString('en-GB')}</span>}
         </div>
 
-        <POTimeline po={po} />
+        <POTimeline po={po} financeEmail={financeEmail} />
 
         <div style={{ background: C.seasalt, borderRadius: 12, overflow: 'hidden' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -1239,7 +1249,7 @@ function TemplateTab({ settings, onRefresh }: { settings: POSettings; onRefresh:
           <label style={label}>CC on approval emails (comma-separated)</label>
           <input value={form.cc_email ?? ''} onChange={(e) => { setForm({ ...form, cc_email: e.target.value }); setSaved(false); }} placeholder="e.g. ops@evone.com, director@evone.com" style={input} />
           <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
-            CC'd people get an <strong>FYI copy without the Approve/Reject buttons</strong> — only the approver's own email carries the actions, so a CC can't approve on their behalf.
+            CC'd people get an <strong>FYI copy of every send — the approval email AND the finance email — without the action buttons</strong>. Only the approver's own email carries Approve/Reject, and only finance's carries Complete/Cancel.
           </div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
