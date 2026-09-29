@@ -106,7 +106,7 @@ function buildPoEmail(po: PurchaseOrder, settings: POSettings, salesman: string,
     <div style="font-size:14px;line-height:1.6;margin-bottom:16px;">${intro}</div>
     ${poItemsHtml(po)}
     ${fyi
-      ? `<div style="text-align:center;background:#F7FAFC;border:1px dashed #D5DDE3;border-radius:10px;padding:12px 16px;font-size:13px;color:#5B6B7A;">This copy is for your information — approval sits with <b style="color:#1a1a1a;">${esc(po.approver_email ?? settings.approver_email ?? '')}</b>.</div>`
+      ? `<div style="text-align:center;background:#F7FAFC;border:1px dashed #D5DDE3;border-radius:10px;padding:12px 16px;font-size:13px;color:#5B6B7A;">This copy is for your information — approval sits with <b style="color:#1a1a1a;">${esc(settings.approver_email ?? po.approver_email ?? '')}</b>.</div>`
       : `<div style="text-align:center;">
       <a href="${approveUrl}" style="display:inline-block;background:${C.green};color:#fff;text-decoration:none;font-weight:700;padding:12px 30px;border-radius:10px;margin:0 6px;">Approve</a>
       <a href="${rejectUrl}" style="display:inline-block;background:#C0321A;color:#fff;text-decoration:none;font-weight:700;padding:12px 30px;border-radius:10px;margin:0 6px;">Reject</a>
@@ -169,7 +169,7 @@ function buildFinanceEmail(po: PurchaseOrder, salesman: string, settings?: POSet
     <div style="font-size:14px;line-height:1.6;margin-bottom:16px;">This purchase order has been <b style="color:${C.green};">approved by management</b>. Please send it to the supplier, then mark it as completed below.</div>
     ${poItemsHtml(po)}
     ${fyi
-      ? `<div style="text-align:center;background:#F7FAFC;border:1px dashed #D5DDE3;border-radius:10px;padding:12px 16px;font-size:13px;color:#5B6B7A;">This copy is for your information — the completed/cancel action sits with <b style="color:#1a1a1a;">${esc(po.finance_email ?? settings?.finance_email ?? 'finance')}</b>.</div>`
+      ? `<div style="text-align:center;background:#F7FAFC;border:1px dashed #D5DDE3;border-radius:10px;padding:12px 16px;font-size:13px;color:#5B6B7A;">This copy is for your information — the completed/cancel action sits with <b style="color:#1a1a1a;">${esc(settings?.finance_email ?? po.finance_email ?? 'finance')}</b>.</div>`
       : `<div style="text-align:center;">
       <a href="${completeUrl}" style="display:inline-block;background:${C.green};color:#fff;text-decoration:none;font-weight:700;padding:12px 30px;border-radius:10px;margin:0 6px;">Mark Completed</a>
       <a href="${cancelUrl}" style="display:inline-block;background:#C0321A;color:#fff;text-decoration:none;font-weight:700;padding:12px 30px;border-radius:10px;margin:0 6px;">Cancel PO</a>
@@ -640,29 +640,36 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
     await onRefresh();
   };
 
+  // Addresses always come from the CURRENT Email Template — the values stored
+  // on the PO row are only a record of where it went originally, kept as a
+  // fallback for POs older than the template.
+  const approverFor = (po: PurchaseOrder) => settings.approver_email || po.approver_email;
+  const financeFor = (po: PurchaseOrder) => settings.finance_email || po.finance_email;
+
   const resend = async (po: PurchaseOrder) => {
-    if (!po.approver_email) return;
+    const approver = approverFor(po);
+    if (!approver) { setNotice({ text: 'No approver email is set. Add one in the Email Template tab.', tone: 'err' }); return; }
     setBusy(true);
     const html = buildPoEmail(po, settings, po.created_by || user.full_name);
     const subject = `Purchase Order - ${po.supplier || 'No supplier'} - ${po.title}`;
     let emailErr: string | null = null;
     try {
       const { data: r, error } = await supabase.functions.invoke('send-customer-email', {
-        body: { to: [po.approver_email], subject, html, from: settings.from_address || undefined, replyTo: settings.reply_to || undefined },
+        body: { to: [approver], subject, html, from: settings.from_address || undefined, replyTo: settings.reply_to || undefined },
       });
       emailErr = (r as { error?: string } | null)?.error ?? error?.message ?? null;
       if (!emailErr) void sendFyiCopies(po, settings, po.created_by || user.full_name, subject);
     } catch (e) { emailErr = (e as Error).message; }
-    await supabase.from('purchase_orders').update({ email_status: emailErr ? 'failed' : 'sent', email_error: emailErr }).eq('id', po.id);
+    await supabase.from('purchase_orders').update({ email_status: emailErr ? 'failed' : 'sent', email_error: emailErr, approver_email: approver }).eq('id', po.id);
     setBusy(false);
     setNotice(emailErr
       ? { text: `Resend failed: ${emailErr}`, tone: 'err' }
-      : { text: `Approval email resent to ${po.approver_email} at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}.`, tone: 'ok' });
+      : { text: `Approval email resent to ${approver} at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}.`, tone: 'ok' });
     await onRefresh();
   };
 
   const forwardToFinance = async (po: PurchaseOrder) => {
-    const finance = po.finance_email || settings.finance_email;
+    const finance = financeFor(po);
     if (!finance) { window.alert('No finance email is set. Add one in the Email Template tab.'); return; }
     setBusy(true);
     const html = buildFinanceEmail(po, po.created_by || user.full_name, settings);
@@ -676,7 +683,7 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
       if (!emailErr) void sendFyiCopies(po, settings, po.created_by || user.full_name, subject, 'finance');
     } catch (e) { emailErr = (e as Error).message; }
     if (emailErr) { setBusy(false); window.alert(`Could not email finance: ${emailErr}`); return; }
-    await supabase.from('purchase_orders').update({ status: 'sent_to_finance', forwarded_at: new Date().toISOString() }).eq('id', po.id);
+    await supabase.from('purchase_orders').update({ status: 'sent_to_finance', forwarded_at: new Date().toISOString(), finance_email: finance }).eq('id', po.id);
     setBusy(false);
     setOpen(null);
     await onRefresh();
@@ -685,7 +692,7 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
   // Re-send the finance email for a PO that is already with finance — no
   // status change, just the same email again (plus FYI copies).
   const resendFinance = async (po: PurchaseOrder) => {
-    const finance = po.finance_email || settings.finance_email;
+    const finance = financeFor(po);
     if (!finance) { setNotice({ text: 'No finance email is set. Add one in the Email Template tab.', tone: 'err' }); return; }
     setBusy(true);
     const html = buildFinanceEmail(po, po.created_by || user.full_name, settings);
@@ -698,6 +705,9 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
       emailErr = (r as { error?: string } | null)?.error ?? error?.message ?? null;
       if (!emailErr) void sendFyiCopies(po, settings, po.created_by || user.full_name, subject, 'finance');
     } catch (e) { emailErr = (e as Error).message; }
+    if (!emailErr && po.finance_email !== finance) {
+      await supabase.from('purchase_orders').update({ finance_email: finance }).eq('id', po.id);
+    }
     setBusy(false);
     setNotice(emailErr
       ? { text: `Resend to finance failed: ${emailErr}`, tone: 'err' }
@@ -762,7 +772,7 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
 
       {open && (
         <PODetailModal po={open} busy={busy} canDelete={canDelete} isAdmin={isAdmin} notice={notice}
-          financeEmail={open.finance_email || settings.finance_email}
+          financeEmail={financeFor(open)} approverEmail={approverFor(open)}
           onResend={() => resend(open)} onForward={() => forwardToFinance(open)}
           onResendFinance={() => resendFinance(open)}
           onManualDecision={(d) => manualDecision(open, d)}
@@ -779,12 +789,12 @@ function ClipboardEmpty() {
 type StepState = 'done' | 'current' | 'pending' | 'error';
 const fmtDT = (s: string | null) => (s ? new Date(s).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '');
 
-function POTimeline({ po, financeEmail }: { po: PurchaseOrder; financeEmail: string | null }) {
+function POTimeline({ po, financeEmail, approverEmail }: { po: PurchaseOrder; financeEmail: string | null; approverEmail: string | null }) {
   const steps: { label: string; sub: string; state: StepState }[] = [];
   steps.push({ label: 'PO raised', sub: `by ${po.created_by ?? 'you'} · ${fmtDT(po.created_at)}`, state: 'done' });
   steps.push({
     label: 'Emailed to approver',
-    sub: po.email_status === 'sent' ? `Sent to ${po.approver_email}` : po.email_status === 'failed' ? 'Send failed — resend below' : 'Queued to send',
+    sub: po.email_status === 'sent' ? `Sent to ${approverEmail ?? po.approver_email}` : po.email_status === 'failed' ? 'Send failed — resend below' : 'Queued to send',
     state: po.email_status === 'sent' ? 'done' : po.email_status === 'failed' ? 'error' : 'pending',
   });
   if (po.status === 'rejected') {
@@ -845,10 +855,11 @@ function POTimeline({ po, financeEmail }: { po: PurchaseOrder; financeEmail: str
   );
 }
 
-function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, onResend, onForward, onResendFinance, onManualDecision, onDelete, onClose }: {
+function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, approverEmail, onResend, onForward, onResendFinance, onManualDecision, onDelete, onClose }: {
   po: PurchaseOrder;
-  /** The address the finance step actually uses (PO snapshot, else template default). */
+  /** Addresses the sends actually use — current Email Template first, PO snapshot as fallback. */
   financeEmail: string | null;
+  approverEmail: string | null;
   busy: boolean;
   canDelete: boolean;
   isAdmin: boolean;
@@ -869,7 +880,7 @@ function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, onR
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <div>
             <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{po.po_number} · {po.title}</div>
-            <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>{po.supplier || 'No supplier'} · to {po.approver_email}</div>
+            <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>{po.supplier || 'No supplier'} · to {approverEmail ?? po.approver_email}</div>
           </div>
           <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree' }}>×</button>
         </div>
@@ -879,7 +890,7 @@ function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, onR
           {po.decided_at && <span style={{ fontSize: 12, color: C.slate }}>on {new Date(po.decided_at).toLocaleString('en-GB')}</span>}
         </div>
 
-        <POTimeline po={po} financeEmail={financeEmail} />
+        <POTimeline po={po} financeEmail={financeEmail} approverEmail={approverEmail} />
 
         <div style={{ background: C.seasalt, borderRadius: 12, overflow: 'hidden' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
