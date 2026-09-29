@@ -383,6 +383,28 @@ export function ensureCpoCarparkSet(): Promise<Set<string>> {
   return cpoSetPromise;
 }
 
+// EVOne-operated carparks only (category evone_cpo) — the "CPO EVOne" quick select.
+let evoneSetCache: Set<string> | null = null;
+let evoneSetPromise: Promise<Set<string>> | null = null;
+
+async function loadEvoneCarparkSet(): Promise<Set<string>> {
+  const { data, error } = await supabase.from('cpo_managed_carparks').select('carpark_name').eq('category', 'evone_cpo');
+  if (error) throw new Error(error.message);
+  return new Set<string>(((data ?? []) as { carpark_name: string | null }[])
+    .map((r) => r.carpark_name)
+    .filter((n): n is string => !!n));
+}
+
+export function ensureEvoneCpoCarparkSet(): Promise<Set<string>> {
+  if (evoneSetCache) return Promise.resolve(evoneSetCache);
+  if (!evoneSetPromise) {
+    evoneSetPromise = loadEvoneCarparkSet()
+      .then((s) => { evoneSetCache = s; return s; })
+      .catch((e) => { evoneSetPromise = null; throw e; });
+  }
+  return evoneSetPromise;
+}
+
 // Vehicles to exclude from the analytics. The user picks whole companies (in the
 // Excluded Companies tab); here we resolve those companies to the plate set of all
 // their CRM vehicles. Plates are normalised (UPPER + trim) on both sides so casing /
@@ -592,13 +614,16 @@ export function LocationTrends() {
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [dcOnly, setDcOnly] = useState(false);
   const [cpoOnly, setCpoOnly] = useState(false);
+  const [evoneOnly, setEvoneOnly] = useState(false);
   const [cpoSet, setCpoSet] = useState<Set<string>>(new Set());
+  const [evoneSet, setEvoneSet] = useState<Set<string>>(new Set());
   const [excludeOn, setExcludeOn] = useState(false);
   const [excludedSet, setExcludedSet] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
     ensureCpoCarparkSet().then((s) => { if (!cancelled) setCpoSet(s); }).catch(() => {});
+    ensureEvoneCpoCarparkSet().then((s) => { if (!cancelled) setEvoneSet(s); }).catch(() => {});
     ensureExcludedVehicles().then((s) => { if (!cancelled) setExcludedSet(s); }).catch(() => {});
     return () => { cancelled = true; };
   }, []);
@@ -639,11 +664,12 @@ export function LocationTrends() {
       if (sourceFilter !== 'all' && r.source !== sourceFilter) return false;
       if (dcOnly && r.charge_type !== 'DC') return false;
       if (cpoOnly && cpoSet.size > 0 && !(r.carpark_code && cpoSet.has(r.carpark_code))) return false;
+      if (evoneOnly && evoneSet.size > 0 && !(r.carpark_code && evoneSet.has(r.carpark_code))) return false;
       if (excludeOn && excludedSet.size > 0 && r.vehicle_plate_number && excludedSet.has(normalizePlate(r.vehicle_plate_number))) return false;
       if (startISO && dateStr < startISO) return false;
       return true;
     });
-  }, [rows, rangeMonths, sourceFilter, dcOnly, cpoOnly, cpoSet, excludeOn, excludedSet]);
+  }, [rows, rangeMonths, sourceFilter, dcOnly, cpoOnly, cpoSet, evoneOnly, evoneSet, excludeOn, excludedSet]);
 
   // Renaming charts and merging locations is an admin-only capability.
   const { isAdmin } = usePermissions();
@@ -698,7 +724,8 @@ export function LocationTrends() {
         <div style={{ width: 1, height: 24, background: '#EBEBEB' }} />
 
         <button onClick={() => setDcOnly((v) => !v)} style={toggleBtn(dcOnly)}>{dcOnly ? '✓ ' : ''}DC Only</button>
-        <button onClick={() => setCpoOnly((v) => !v)} style={toggleBtn(cpoOnly)}>{cpoOnly ? '✓ ' : ''}CPO Only (EVE + EVOne)</button>
+        <button onClick={() => { setCpoOnly((v) => !v); setEvoneOnly(false); }} style={toggleBtn(cpoOnly)}>{cpoOnly ? '✓ ' : ''}CPO Only (EVE + EVOne)</button>
+        <button onClick={() => { setEvoneOnly((v) => !v); setCpoOnly(false); }} style={toggleBtn(evoneOnly)}>{evoneOnly ? '✓ ' : ''}CPO EVOne</button>
         <button onClick={() => setExcludeOn((v) => !v)} style={toggleBtn(excludeOn)}>{excludeOn ? '✓ ' : ''}Exclude Vehicles{excludedSet.size > 0 ? ` (${excludedSet.size})` : ''}</button>
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>

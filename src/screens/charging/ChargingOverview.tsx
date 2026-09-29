@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { C } from '../../theme';
 import { LineChart, type LineChartTooltip } from '../../components/charts';
 import {
-  aggregateTotal, ensureCpoCarparkSet, toggleBtn,
+  aggregateTotal, ensureCpoCarparkSet, ensureEvoneCpoCarparkSet, toggleBtn,
   ensureChargingTrendsCache, getCachedChargingRows, clearChargingTrendsCache,
   ensureExcludedVehicles, normalizePlate,
   fmtKwh, fmtKwhShort, fmtCount, fmtCountShort, fmtTooltipDate,
@@ -42,7 +42,9 @@ export function ChargingOverview() {
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [dcOnly, setDcOnly] = useState(false);
   const [cpoOnly, setCpoOnly] = useState(false);
+  const [evoneOnly, setEvoneOnly] = useState(false);
   const [cpoSet, setCpoSet] = useState<Set<string>>(new Set());
+  const [evoneSet, setEvoneSet] = useState<Set<string>>(new Set());
   const [excludeOn, setExcludeOn] = useState(false);
   const [excludedSet, setExcludedSet] = useState<Set<string>>(new Set());
   const [carparkSel, setCarparkSel] = useState<Set<string>>(new Set());
@@ -55,6 +57,7 @@ export function ChargingOverview() {
   useEffect(() => {
     let cancelled = false;
     ensureCpoCarparkSet().then((s) => { if (!cancelled) setCpoSet(s); }).catch(() => {});
+    ensureEvoneCpoCarparkSet().then((s) => { if (!cancelled) setEvoneSet(s); }).catch(() => {});
     ensureExcludedVehicles().then((s) => { if (!cancelled) setExcludedSet(s); }).catch(() => {});
     return () => { cancelled = true; };
   }, []);
@@ -72,6 +75,7 @@ export function ChargingOverview() {
   // and enabling CPO clears the carpark selection.
   const toggleCarpark = (cp: string) => {
     setCpoOnly(false);
+    setEvoneOnly(false);
     setCarparkSel((prev) => {
       const next = new Set(prev);
       if (next.has(cp)) next.delete(cp); else next.add(cp);
@@ -79,7 +83,16 @@ export function ChargingOverview() {
     });
   };
   const enableCpoOnly = () => {
+    setEvoneOnly(false);
     setCpoOnly((v) => {
+      const nv = !v;
+      if (nv) { setCarparkSel(new Set()); setCarparkOpen(false); }
+      return nv;
+    });
+  };
+  const enableEvoneOnly = () => {
+    setCpoOnly(false);
+    setEvoneOnly((v) => {
       const nv = !v;
       if (nv) { setCarparkSel(new Set()); setCarparkOpen(false); }
       return nv;
@@ -135,12 +148,14 @@ export function ChargingOverview() {
         if (!(r.carpark_code && carparkSel.has(r.carpark_code))) return false;
       } else if (cpoOnly && cpoSet.size > 0 && !(r.carpark_code && cpoSet.has(r.carpark_code))) {
         return false;
+      } else if (evoneOnly && evoneSet.size > 0 && !(r.carpark_code && evoneSet.has(r.carpark_code))) {
+        return false;
       }
       if (excludeOn && excludedSet.size > 0 && r.vehicle_plate_number && excludedSet.has(normalizePlate(r.vehicle_plate_number))) return false;
       if (startISO && dateStr < startISO) return false;
       return true;
     });
-  }, [rows, rangeMonths, sourceFilter, dcOnly, cpoOnly, cpoSet, carparkActive, carparkSel, excludeOn, excludedSet]);
+  }, [rows, rangeMonths, sourceFilter, dcOnly, cpoOnly, cpoSet, evoneOnly, evoneSet, carparkActive, carparkSel, excludeOn, excludedSet]);
 
   const series = useMemo(
     () => aggregateTotal(filteredRows, granularity, rangeStartISO(rangeMonths)),
@@ -220,6 +235,7 @@ export function ChargingOverview() {
 
         <button onClick={() => setDcOnly((v) => !v)} style={toggleBtn(dcOnly)}>{dcOnly ? '✓ ' : ''}DC Only</button>
         <button onClick={enableCpoOnly} style={toggleBtn(cpoOnly)}>{cpoOnly ? '✓ ' : ''}CPO Only (EVE + EVOne)</button>
+        <button onClick={enableEvoneOnly} style={toggleBtn(evoneOnly)}>{evoneOnly ? '✓ ' : ''}CPO EVOne</button>
 
         <div ref={carparkRef} style={{ position: 'relative' }}>
           <button onClick={() => setCarparkOpen((o) => !o)} style={toggleBtn(carparkActive)}>

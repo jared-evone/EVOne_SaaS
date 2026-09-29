@@ -4,7 +4,7 @@ import { usePermissions } from '../../permissions';
 import {
   aggregate, CarparkCard, ensureCpoCarparkSet, toggleBtn,
   ensureChargingTrendsCache, getCachedChargingRows, clearChargingTrendsCache,
-  ensureExcludedVehicles, normalizePlate, useLocationGroups,
+  ensureExcludedVehicles, normalizePlate, useLocationGroups, ensureEvoneCpoCarparkSet,
   type Granularity,
 } from './LocationTrends';
 
@@ -31,7 +31,9 @@ export function Sessions() {
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [dcOnly, setDcOnly] = useState(false);
   const [cpoOnly, setCpoOnly] = useState(false);
+  const [evoneOnly, setEvoneOnly] = useState(false);
   const [cpoSet, setCpoSet] = useState<Set<string>>(new Set());
+  const [evoneSet, setEvoneSet] = useState<Set<string>>(new Set());
   const [excludeOn, setExcludeOn] = useState(false);
   const [excludedSet, setExcludedSet] = useState<Set<string>>(new Set());
   const [showEnergy, setShowEnergy] = useState(true);
@@ -39,6 +41,7 @@ export function Sessions() {
   useEffect(() => {
     let cancelled = false;
     ensureCpoCarparkSet().then((s) => { if (!cancelled) setCpoSet(s); }).catch(() => {});
+    ensureEvoneCpoCarparkSet().then((s) => { if (!cancelled) setEvoneSet(s); }).catch(() => {});
     ensureExcludedVehicles().then((s) => { if (!cancelled) setExcludedSet(s); }).catch(() => {});
     return () => { cancelled = true; };
   }, []);
@@ -79,11 +82,12 @@ export function Sessions() {
       if (sourceFilter !== 'all' && r.source !== sourceFilter) return false;
       if (dcOnly && r.charge_type !== 'DC') return false;
       if (cpoOnly && cpoSet.size > 0 && !(r.carpark_code && cpoSet.has(r.carpark_code))) return false;
+      if (evoneOnly && evoneSet.size > 0 && !(r.carpark_code && evoneSet.has(r.carpark_code))) return false;
       if (excludeOn && excludedSet.size > 0 && r.vehicle_plate_number && excludedSet.has(normalizePlate(r.vehicle_plate_number))) return false;
       if (startISO && dateStr < startISO) return false;
       return true;
     });
-  }, [rows, rangeMonths, sourceFilter, dcOnly, cpoOnly, cpoSet, excludeOn, excludedSet]);
+  }, [rows, rangeMonths, sourceFilter, dcOnly, cpoOnly, cpoSet, evoneOnly, evoneSet, excludeOn, excludedSet]);
 
   // Renaming charts and merging locations is an admin-only capability.
   const { isAdmin } = usePermissions();
@@ -139,7 +143,8 @@ export function Sessions() {
         <div style={{ width: 1, height: 24, background: '#EBEBEB' }} />
 
         <button onClick={() => setDcOnly((v) => !v)} style={toggleBtn(dcOnly)}>{dcOnly ? '✓ ' : ''}DC Only</button>
-        <button onClick={() => setCpoOnly((v) => !v)} style={toggleBtn(cpoOnly)}>{cpoOnly ? '✓ ' : ''}CPO Only (EVE + EVOne)</button>
+        <button onClick={() => { setCpoOnly((v) => !v); setEvoneOnly(false); }} style={toggleBtn(cpoOnly)}>{cpoOnly ? '✓ ' : ''}CPO Only (EVE + EVOne)</button>
+        <button onClick={() => { setEvoneOnly((v) => !v); setCpoOnly(false); }} style={toggleBtn(evoneOnly)}>{evoneOnly ? '✓ ' : ''}CPO EVOne</button>
         <button onClick={() => setExcludeOn((v) => !v)} style={toggleBtn(excludeOn)}>{excludeOn ? '✓ ' : ''}Exclude Vehicles{excludedSet.size > 0 ? ` (${excludedSet.size})` : ''}</button>
         <button onClick={() => setShowEnergy((v) => !v)}
           style={{ padding: '7px 14px', borderRadius: 99, border: `1px solid ${showEnergy ? C.opal : '#EBEBEB'}`, background: showEnergy ? '#E3F0FF' : C.white, color: showEnergy ? '#1A62C0' : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
