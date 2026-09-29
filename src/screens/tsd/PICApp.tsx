@@ -520,6 +520,28 @@ function PICReportEditor({ workOrder, alreadyPushed = false, onPushed, onDeleted
     setReviewDirty(false);
   };
 
+  // Technician roster for the review's multi-select (same table the Work
+  // Orders assignment picker uses). The stored value stays a display string
+  // ("Zaw, Weiliang"), so the monthly report format is unchanged.
+  const [techNames, setTechNames] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    supabase.from('technicians').select('name, is_active').order('name').then(({ data }) => {
+      if (cancelled) return;
+      setTechNames(((data ?? []) as { name: string | null; is_active: boolean | null }[])
+        .filter((t) => t.is_active !== false && !!t.name)
+        .map((t) => t.name as string));
+    });
+    return () => { cancelled = true; };
+  }, []);
+  const reviewTechs = review.technicians.split(',').map((s) => s.trim()).filter(Boolean);
+  const toggleReviewTech = (name: string) => {
+    const next = reviewTechs.includes(name) ? reviewTechs.filter((t) => t !== name) : [...reviewTechs, name];
+    setRev({ technicians: next.join(', ') });
+  };
+  // Legacy/free-text names already on the review stay selectable so they can be untoggled.
+  const techOptions = [...new Set([...techNames, ...reviewTechs])];
+
   useEffect(() => {
     setForms(workOrder.forms.map((f) => ({ ...f, values: { ...(f.values ?? {}) } })));
     setDirty(false);
@@ -668,8 +690,20 @@ function PICReportEditor({ workOrder, alreadyPushed = false, onPushed, onDeleted
           </div>
           <div style={{ gridColumn: 'span 2', minWidth: 200 }}>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Technician(s)</label>
-            <input value={review.technicians} onChange={(e) => setRev({ technicians: e.target.value })} placeholder="e.g. Zaw, Weiliang"
-              style={{ width: '100%', padding: '8px 10px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', minHeight: 34 }}>
+              {techOptions.map((name) => {
+                const on = reviewTechs.includes(name);
+                return (
+                  <button key={name} type="button" onClick={() => toggleReviewTech(name)}
+                    style={{ padding: '6px 14px', borderRadius: 99, border: `1px solid ${on ? C.green : '#EBEBEB'}`,
+                      background: on ? C.green : C.white, color: on ? C.white : C.slate,
+                      fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                    {on ? '✓ ' : ''}{name}
+                  </button>
+                );
+              })}
+              {techOptions.length === 0 && <span style={{ fontSize: 12, color: C.slate }}>No technicians in the roster yet.</span>}
+            </div>
           </div>
         </div>
 
