@@ -573,39 +573,66 @@ function NewCarparkPricesModal({ carparks, onSave, onClose }: NewCarparkPricesMo
   );
 }
 
-// ── SP Price Tab ──────────────────────────────────────────────────
+// ── SP Pricing Tab (locations + their chargers, one table) ────────
 
-interface SpPriceTabProps {
+interface SpPricingTabProps {
   prices: SpCarparkPrice[];
-  onRefresh: () => Promise<void>;
+  chargers: SpCharger[];
+  onRefreshPrices: () => Promise<void>;
+  onRefreshChargers: () => Promise<SpCharger[]>;
 }
 
-function SpPriceTab({ prices, onRefresh }: SpPriceTabProps) {
-  const [editId, setEditId] = useState<string | null>(null);
-  const [editPrice, setEditPrice] = useState('');
+// One table for SP pricing: each location row carries the carpark rate (the
+// default), and its chargers sit beneath it with their type and an optional
+// per-charger override. Imports resolve location, AC/DC and price by charger
+// ID, so SP renaming a location to show a notice can't split a site.
+function SpPricingTab({ prices, chargers, onRefreshPrices, onRefreshChargers }: SpPricingTabProps) {
   const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [ok, setOk] = useState<string | null>(null);
+
+  // Location (carpark price) editing + add-carpark
+  const [editLocCode, setEditLocCode] = useState<string | null>(null);
+  const [editLocPrice, setEditLocPrice] = useState('');
   const [addMode, setAddMode] = useState(false);
   const [newCode, setNewCode] = useState('');
   const [newPrice, setNewPrice] = useState('');
   const [addError, setAddError] = useState<string | null>(null);
 
-  const startEdit = (p: SpCarparkPrice) => {
-    setEditId(p.id);
-    setEditPrice(String(p.price_per_kwh));
+  // Charger editing
+  const [editChargerId, setEditChargerId] = useState<string | null>(null);
+  const [editLoc, setEditLoc] = useState('');
+  const [editPrice, setEditPrice] = useState('');
+  const [repricePast, setRepricePast] = useState(true);
+
+  const groups = useMemo(() => {
+    const map = new Map<string, { price: SpCarparkPrice | null; chargers: SpCharger[] }>();
+    for (const p of prices) map.set(p.carpark_code, { price: p, chargers: [] });
+    for (const c of chargers) {
+      let e = map.get(c.canonical_location);
+      if (!e) { e = { price: null, chargers: [] }; map.set(c.canonical_location, e); }
+      e.chargers.push(c);
+    }
+    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [prices, chargers]);
+
+  const carparkPriceOf = (c: SpCharger): number | null => {
+    const p = prices.find((x) => x.carpark_code === c.canonical_location);
+    return p ? Number(p.price_per_kwh) : null;
   };
 
-  const cancelEdit = () => { setEditId(null); setEditPrice(''); };
-
-  const saveEdit = async () => {
-    const v = parseFloat(editPrice);
+  const saveLocPrice = async (p: SpCarparkPrice) => {
+    const v = parseFloat(editLocPrice);
     if (isNaN(v) || v < 0) return;
     setSaving(true);
+    setErr(null);
+    setOk(null);
     await supabase.from('sp_carpark_prices')
       .update({ price_per_kwh: v, updated_at: new Date().toISOString() })
-      .eq('id', editId!);
-    await onRefresh();
+      .eq('id', p.id);
+    await onRefreshPrices();
     setSaving(false);
-    setEditId(null);
+    setEditLocCode(null);
   };
 
   const saveAdd = async () => {
@@ -617,143 +644,15 @@ function SpPriceTab({ prices, onRefresh }: SpPriceTabProps) {
     if (prices.some((p) => p.carpark_code === code)) { setAddError('This carpark already exists.'); return; }
     setSaving(true);
     await supabase.from('sp_carpark_prices').insert({ carpark_code: code, price_per_kwh: v });
-    await onRefresh();
+    await onRefreshPrices();
     setSaving(false);
     setAddMode(false);
     setNewCode('');
     setNewPrice('');
   };
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-        <div>
-          <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>SP Carpark Prices</div>
-          <div style={{ fontSize: 12, color: C.slate, marginTop: 3 }}>
-            Prices are baked into records at import time — editing here only affects future uploads.
-          </div>
-        </div>
-        {!addMode && (
-          <button onClick={() => setAddMode(true)}
-            style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', flexShrink: 0 }}>
-            + Add Carpark
-          </button>
-        )}
-      </div>
-
-      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
-        {addMode && (
-          <div style={{ borderBottom: `2px solid ${C.green}`, padding: '16px 20px', background: C.honeydew, display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
-            <div>
-              <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Carpark Code</label>
-              <input value={newCode} onChange={(e) => setNewCode(e.target.value)} placeholder="e.g. Suntec City"
-                style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', width: 220 }} />
-            </div>
-            <div>
-              <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Price ($/kWh)</label>
-              <input type="number" min="0" step="0.001" value={newPrice} onChange={(e) => setNewPrice(e.target.value)} placeholder="0.000"
-                style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', width: 120, textAlign: 'right' }} />
-            </div>
-            {addError && <div style={{ fontSize: 12, color: '#C0321A', alignSelf: 'center' }}>{addError}</div>}
-            <div style={{ display: 'flex', gap: 8, marginLeft: 'auto' }}>
-              <button onClick={() => { setAddMode(false); setNewCode(''); setNewPrice(''); setAddError(null); }}
-                style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-                Cancel
-              </button>
-              <button onClick={saveAdd} disabled={saving}
-                style={{ padding: '8px 20px', borderRadius: 8, border: 'none', background: saving ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: saving ? 'default' : 'pointer' }}>
-                {saving ? 'Saving…' : 'Save'}
-              </button>
-            </div>
-          </div>
-        )}
-
-        <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 600 }}>
-          <thead>
-            <tr style={{ background: C.seasalt }}>
-              {['Carpark Code', 'Price / kWh (SGD)', 'Last Updated', ''].map((h) => (
-                <th key={h} style={{ padding: '12px 20px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB' }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {prices.map((p) => (
-              <tr key={p.id} style={{ borderBottom: '1px solid #F3F3F3' }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = '#FAFAFA'; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
-                <td style={{ padding: '14px 20px', fontSize: 13, fontWeight: 700, color: C.green }}>{p.carpark_code}</td>
-                <td style={{ padding: '14px 20px' }}>
-                  {editId === p.id
-                    ? (
-                      <input type="number" min="0" step="0.001" value={editPrice}
-                        onChange={(e) => setEditPrice(e.target.value)} autoFocus
-                        style={{ width: 110, padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.green}`, fontFamily: 'Figtree', fontSize: 13, outline: 'none', textAlign: 'right' }} />
-                    )
-                    : <span style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a' }}>${Number(p.price_per_kwh).toFixed(4)}</span>
-                  }
-                </td>
-                <td style={{ padding: '14px 20px', fontSize: 12, color: C.slate }}>
-                  {new Date(p.updated_at).toLocaleString('en-SG', { timeZone: 'Asia/Singapore', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })}
-                </td>
-                <td style={{ padding: '14px 20px', textAlign: 'right' }}>
-                  {editId === p.id
-                    ? (
-                      <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                        <button onClick={cancelEdit}
-                          style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                          Cancel
-                        </button>
-                        <button onClick={saveEdit} disabled={saving}
-                          style={{ padding: '5px 14px', borderRadius: 8, border: 'none', background: saving ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: saving ? 'default' : 'pointer' }}>
-                          {saving ? 'Saving…' : 'Save'}
-                        </button>
-                      </div>
-                    )
-                    : (
-                      <button onClick={() => startEdit(p)}
-                        style={{ padding: '5px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                        Edit
-                      </button>
-                    )}
-                </td>
-              </tr>
-            ))}
-            {prices.length === 0 && (
-              <tr>
-                <td colSpan={4} style={{ padding: '48px 20px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
-                  No carpark prices configured yet. Add one above, or upload an SP CSV and you'll be prompted.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── SP Chargers Panel ─────────────────────────────────────────────
-
-// The registry that anchors SP imports: location + AC/DC resolve by charger ID,
-// so SP's notice-renames of the location display name can't split a site.
-function SpChargersPanel({ chargers, prices, onRefresh }: { chargers: SpCharger[]; prices: SpCarparkPrice[]; onRefresh: () => Promise<SpCharger[]> }) {
-  const [editId, setEditId] = useState<string | null>(null);
-  const [editLoc, setEditLoc] = useState('');
-  const [editPrice, setEditPrice] = useState('');
-  const [repricePast, setRepricePast] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [ok, setOk] = useState<string | null>(null);
-
-  const carparkPriceOf = (c: SpCharger): number | null => {
-    const p = prices.find((x) => x.carpark_code === c.canonical_location);
-    return p ? Number(p.price_per_kwh) : null;
-  };
-
-  const startEdit = (c: SpCharger) => {
-    setEditId(c.charger_id);
+  const startChargerEdit = (c: SpCharger) => {
+    setEditChargerId(c.charger_id);
     setEditLoc(c.canonical_location);
     setEditPrice(c.price_per_kwh != null ? String(c.price_per_kwh) : '');
     setRepricePast(true);
@@ -761,7 +660,7 @@ function SpChargersPanel({ chargers, prices, onRefresh }: { chargers: SpCharger[
     setOk(null);
   };
 
-  const saveEdit = async (c: SpCharger) => {
+  const saveChargerEdit = async (c: SpCharger) => {
     const loc = editLoc.trim() || c.canonical_location;
     const priceStr = editPrice.trim();
     const price = priceStr === '' ? null : parseFloat(priceStr);
@@ -794,9 +693,9 @@ function SpChargersPanel({ chargers, prices, onRefresh }: { chargers: SpCharger[
         else setOk(`${Number(n ?? 0).toLocaleString()} past session${Number(n) === 1 ? '' : 's'} of ${c.charger_id} re-priced at $${effective.toFixed(4)}/kWh (previous amounts kept in the backup log).`);
       }
     }
-    await onRefresh();
+    await onRefreshChargers();
     setSaving(false);
-    setEditId(null);
+    setEditChargerId(null);
   };
 
   const setType = async (c: SpCharger, t: 'AC' | 'DC') => {
@@ -813,109 +712,88 @@ function SpChargersPanel({ chargers, prices, onRefresh }: { chargers: SpCharger[
     } else {
       setErr(error.message);
     }
-    await onRefresh();
+    await onRefreshChargers();
     setSaving(false);
   };
 
+  const smallBtn = (primary: boolean): React.CSSProperties => ({
+    padding: primary ? '5px 14px' : '5px 12px', borderRadius: 8,
+    border: primary ? 'none' : '1px solid #EBEBEB',
+    background: primary ? (saving ? '#ccc' : C.green) : 'transparent',
+    color: primary ? C.white : C.slate,
+    fontFamily: 'Figtree', fontSize: 12, fontWeight: primary ? 700 : 600,
+    cursor: saving && primary ? 'default' : 'pointer',
+  });
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div>
-        <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>SP Chargers</div>
-        <div style={{ fontSize: 12, color: C.slate, marginTop: 3 }}>
-          SP imports resolve each session's location, AC/DC and price by charger ID from this list — SP renaming a
-          location to show a notice can't split it anymore. New chargers register themselves on upload (as DC).
-          A charger's own price overrides its carpark price (leave it blank to inherit). Edits here also update
-          the charger's past records, so nothing splits or is lost.
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>SP Pricing &amp; Chargers</div>
+          <div style={{ fontSize: 12, color: C.slate, marginTop: 3, maxWidth: 860 }}>
+            Each location's rate is the default for its chargers; a charger's own price overrides it (blank = inherit).
+            Imports resolve location, AC/DC and price by charger ID, so SP renaming a location to show a notice can't
+            split a site. New chargers register themselves on upload (as DC). Prices are baked into records at import
+            time — edits apply to future uploads, plus past records where you choose to re-price.
+          </div>
         </div>
+        {!addMode && (
+          <button onClick={() => setAddMode(true)}
+            style={{ padding: '9px 20px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', flexShrink: 0 }}>
+            + Add Carpark
+          </button>
+        )}
       </div>
 
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
+        {addMode && (
+          <div style={{ borderBottom: `2px solid ${C.green}`, padding: '16px 20px', background: C.honeydew, display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
+            <div>
+              <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Carpark Code</label>
+              <input value={newCode} onChange={(e) => setNewCode(e.target.value)} placeholder="e.g. Suntec City"
+                style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', width: 220 }} />
+            </div>
+            <div>
+              <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Price ($/kWh)</label>
+              <input type="number" min="0" step="0.001" value={newPrice} onChange={(e) => setNewPrice(e.target.value)} placeholder="0.000"
+                style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', width: 120, textAlign: 'right' }} />
+            </div>
+            {addError && <div style={{ fontSize: 12, color: '#C0321A', alignSelf: 'center' }}>{addError}</div>}
+            <div style={{ display: 'flex', gap: 8, marginLeft: 'auto' }}>
+              <button onClick={() => { setAddMode(false); setNewCode(''); setNewPrice(''); setAddError(null); }} style={smallBtn(false)}>
+                Cancel
+              </button>
+              <button onClick={saveAdd} disabled={saving} style={smallBtn(true)}>
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        )}
+
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 860 }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
-                {['Charger ID', 'Location', 'Type', 'Price / kWh', 'First Seen', 'Latest SP Name', ''].map((h) => (
+                {['Location / Charger', 'Type', 'Price / kWh (SGD)', 'First Seen', 'Latest SP Name', ''].map((h) => (
                   <th key={h} style={{ padding: '12px 20px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {chargers.map((c) => {
-                const notice = !!c.last_seen_name && c.last_seen_name !== c.canonical_location;
-                return (
-                  <tr key={c.charger_id} style={{ borderBottom: '1px solid #F3F3F3' }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = '#FAFAFA'; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
-                    <td style={{ padding: '14px 20px', fontSize: 13, fontWeight: 700, color: C.green, whiteSpace: 'nowrap' }}>{c.charger_id}</td>
-                    <td style={{ padding: '14px 20px', minWidth: 220 }}>
-                      {editId === c.charger_id
-                        ? <input value={editLoc} onChange={(e) => setEditLoc(e.target.value)} autoFocus
-                            style={{ width: '100%', padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.green}`, fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
-                        : <span style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a' }}>{c.canonical_location}</span>}
-                    </td>
-                    <td style={{ padding: '14px 20px' }}>
-                      <div style={{ display: 'inline-flex', border: '1px solid #EBEBEB', borderRadius: 99, overflow: 'hidden' }}>
-                        {(['DC', 'AC'] as const).map((t) => (
-                          <button key={t} onClick={() => setType(c, t)} disabled={saving}
-                            style={{ padding: '4px 12px', border: 'none', fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer',
-                              background: c.charge_type === t ? C.green : 'transparent', color: c.charge_type === t ? C.white : C.slate }}>
-                            {t}
-                          </button>
-                        ))}
-                      </div>
-                    </td>
-                    <td style={{ padding: '14px 20px', whiteSpace: 'nowrap' }}>
-                      {editId === c.charger_id
-                        ? (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                            <input type="number" min="0" step="0.001" value={editPrice}
-                              onChange={(e) => setEditPrice(e.target.value)}
-                              placeholder={carparkPriceOf(c) != null ? `carpark $${carparkPriceOf(c)!.toFixed(4)}` : 'no carpark price'}
-                              style={{ width: 130, padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.green}`, fontFamily: 'Figtree', fontSize: 13, outline: 'none', textAlign: 'right' }} />
-                            <label style={{ fontSize: 10, color: C.slate, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
-                              <input type="checkbox" checked={repricePast} onChange={(e) => setRepricePast(e.target.checked)} />
-                              Re-price past records
-                            </label>
-                          </div>
-                        )
-                        : c.price_per_kwh != null
-                          ? <span style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a' }}>${Number(c.price_per_kwh).toFixed(4)}</span>
-                          : <span style={{ fontSize: 12, color: C.slate }}>{carparkPriceOf(c) != null ? `carpark · $${carparkPriceOf(c)!.toFixed(4)}` : '—'}</span>}
-                    </td>
-                    <td style={{ padding: '14px 20px', fontSize: 12, color: C.slate, whiteSpace: 'nowrap' }}>{fmtDate(c.first_seen)}</td>
-                    <td style={{ padding: '14px 20px', fontSize: 12, color: notice ? '#B07D00' : C.slate, maxWidth: 260 }}>
-                      {notice
-                        ? <span style={{ background: '#FFF8E1', borderRadius: 6, padding: '3px 8px', fontWeight: 600 }}>{c.last_seen_name}</span>
-                        : '—'}
-                    </td>
-                    <td style={{ padding: '14px 20px', textAlign: 'right' }}>
-                      {editId === c.charger_id
-                        ? (
-                          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                            <button onClick={() => setEditId(null)}
-                              style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                              Cancel
-                            </button>
-                            <button onClick={() => saveEdit(c)} disabled={saving}
-                              style={{ padding: '5px 14px', borderRadius: 8, border: 'none', background: saving ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: saving ? 'default' : 'pointer' }}>
-                              {saving ? 'Saving…' : 'Save'}
-                            </button>
-                          </div>
-                        )
-                        : (
-                          <button onClick={() => startEdit(c)}
-                            style={{ padding: '5px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
-                            Edit
-                          </button>
-                        )}
-                    </td>
-                  </tr>
-                );
-              })}
-              {chargers.length === 0 && (
+              {groups.map(([code, g]) => (
+                <FragmentRows key={code} code={code} g={g}
+                  editLocCode={editLocCode} editLocPrice={editLocPrice} setEditLocCode={setEditLocCode} setEditLocPrice={setEditLocPrice}
+                  saveLocPrice={saveLocPrice}
+                  editChargerId={editChargerId} editLoc={editLoc} setEditLoc={setEditLoc}
+                  editPrice={editPrice} setEditPrice={setEditPrice}
+                  repricePast={repricePast} setRepricePast={setRepricePast}
+                  startChargerEdit={startChargerEdit} saveChargerEdit={saveChargerEdit} cancelChargerEdit={() => setEditChargerId(null)}
+                  setType={setType} carparkPriceOf={carparkPriceOf} saving={saving} smallBtn={smallBtn} />
+              ))}
+              {groups.length === 0 && (
                 <tr>
-                  <td colSpan={7} style={{ padding: '48px 20px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
-                    No SP chargers yet — they register automatically on the first SP upload.
+                  <td colSpan={6} style={{ padding: '48px 20px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
+                    No SP locations yet — add a carpark above, or upload an SP CSV and everything registers itself.
                   </td>
                 </tr>
               )}
@@ -927,6 +805,129 @@ function SpChargersPanel({ chargers, prices, onRefresh }: { chargers: SpCharger[
       {err && <div style={{ background: '#FDEAEA', borderRadius: 10, padding: '10px 14px', fontSize: 12, color: '#C0321A' }}>{err}</div>}
       {ok && <div style={{ background: '#E4F3E3', borderRadius: 10, padding: '10px 14px', fontSize: 12, color: '#1B512D', fontWeight: 600 }}>{ok}</div>}
     </div>
+  );
+}
+
+// One location group: a header row with the carpark rate, then its chargers.
+function FragmentRows({ code, g, editLocCode, editLocPrice, setEditLocCode, setEditLocPrice, saveLocPrice,
+  editChargerId, editLoc, setEditLoc, editPrice, setEditPrice, repricePast, setRepricePast,
+  startChargerEdit, saveChargerEdit, cancelChargerEdit, setType, carparkPriceOf, saving, smallBtn }: {
+  code: string;
+  g: { price: SpCarparkPrice | null; chargers: SpCharger[] };
+  editLocCode: string | null; editLocPrice: string;
+  setEditLocCode: (v: string | null) => void; setEditLocPrice: (v: string) => void;
+  saveLocPrice: (p: SpCarparkPrice) => void;
+  editChargerId: string | null; editLoc: string; setEditLoc: (v: string) => void;
+  editPrice: string; setEditPrice: (v: string) => void;
+  repricePast: boolean; setRepricePast: (v: boolean) => void;
+  startChargerEdit: (c: SpCharger) => void; saveChargerEdit: (c: SpCharger) => void; cancelChargerEdit: () => void;
+  setType: (c: SpCharger, t: 'AC' | 'DC') => void;
+  carparkPriceOf: (c: SpCharger) => number | null;
+  saving: boolean;
+  smallBtn: (primary: boolean) => React.CSSProperties;
+}) {
+  const editingLoc = g.price != null && editLocCode === code;
+  return (
+    <>
+      <tr style={{ background: C.seasalt, borderBottom: '1px solid #EBEBEB' }}>
+        <td style={{ padding: '12px 20px', fontSize: 13, fontWeight: 700, color: C.green }}>{code}</td>
+        <td style={{ padding: '12px 20px' }} />
+        <td style={{ padding: '12px 20px', whiteSpace: 'nowrap' }}>
+          {g.price == null
+            ? <span style={{ fontSize: 12, color: C.slate }}>no price yet</span>
+            : editingLoc
+              ? (
+                <input type="number" min="0" step="0.001" value={editLocPrice} autoFocus
+                  onChange={(e) => setEditLocPrice(e.target.value)}
+                  style={{ width: 110, padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.green}`, fontFamily: 'Figtree', fontSize: 13, outline: 'none', textAlign: 'right' }} />
+              )
+              : (
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>
+                  ${Number(g.price.price_per_kwh).toFixed(4)}
+                  <span style={{ fontSize: 11, fontWeight: 400, color: C.slate, marginLeft: 8 }}>default rate</span>
+                </span>
+              )}
+        </td>
+        <td style={{ padding: '12px 20px', fontSize: 12, color: C.slate, whiteSpace: 'nowrap' }}>
+          {g.price ? `Updated ${new Date(g.price.updated_at).toLocaleDateString('en-SG', { timeZone: 'Asia/Singapore', day: '2-digit', month: 'short', year: 'numeric' })}` : ''}
+        </td>
+        <td style={{ padding: '12px 20px', fontSize: 12, color: C.slate }}>
+          {g.chargers.length === 0 && <span style={{ fontStyle: 'italic' }}>no chargers — unused price</span>}
+        </td>
+        <td style={{ padding: '12px 20px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+          {g.price != null && (editingLoc
+            ? (
+              <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                <button onClick={() => setEditLocCode(null)} style={smallBtn(false)}>Cancel</button>
+                <button onClick={() => saveLocPrice(g.price!)} disabled={saving} style={smallBtn(true)}>{saving ? 'Saving…' : 'Save'}</button>
+              </div>
+            )
+            : <button onClick={() => { setEditLocCode(code); setEditLocPrice(String(g.price!.price_per_kwh)); }} style={smallBtn(false)}>Edit</button>)}
+        </td>
+      </tr>
+      {g.chargers.map((c) => {
+        const notice = !!c.last_seen_name && c.last_seen_name !== c.canonical_location;
+        const editing = editChargerId === c.charger_id;
+        return (
+          <tr key={c.charger_id} style={{ borderBottom: '1px solid #F3F3F3' }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = '#FAFAFA'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
+            <td style={{ padding: '13px 20px 13px 40px', whiteSpace: 'nowrap' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{c.charger_id}</div>
+              {editing && (
+                <input value={editLoc} onChange={(e) => setEditLoc(e.target.value)} title="Move this charger to another location"
+                  style={{ marginTop: 6, width: 240, padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.green}`, fontFamily: 'Figtree', fontSize: 12, outline: 'none', boxSizing: 'border-box' }} />
+              )}
+            </td>
+            <td style={{ padding: '13px 20px' }}>
+              <div style={{ display: 'inline-flex', border: '1px solid #EBEBEB', borderRadius: 99, overflow: 'hidden' }}>
+                {(['DC', 'AC'] as const).map((t) => (
+                  <button key={t} onClick={() => setType(c, t)} disabled={saving}
+                    style={{ padding: '4px 12px', border: 'none', fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                      background: c.charge_type === t ? C.green : 'transparent', color: c.charge_type === t ? C.white : C.slate }}>
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </td>
+            <td style={{ padding: '13px 20px', whiteSpace: 'nowrap' }}>
+              {editing
+                ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <input type="number" min="0" step="0.001" value={editPrice}
+                      onChange={(e) => setEditPrice(e.target.value)}
+                      placeholder={carparkPriceOf(c) != null ? `carpark $${carparkPriceOf(c)!.toFixed(4)}` : 'no carpark price'}
+                      style={{ width: 130, padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.green}`, fontFamily: 'Figtree', fontSize: 13, outline: 'none', textAlign: 'right' }} />
+                    <label style={{ fontSize: 10, color: C.slate, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+                      <input type="checkbox" checked={repricePast} onChange={(e) => setRepricePast(e.target.checked)} />
+                      Re-price past records
+                    </label>
+                  </div>
+                )
+                : c.price_per_kwh != null
+                  ? <span style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a' }}>${Number(c.price_per_kwh).toFixed(4)} <span style={{ fontSize: 11, fontWeight: 400, color: C.slate }}>override</span></span>
+                  : <span style={{ fontSize: 12, color: C.slate }}>inherits{carparkPriceOf(c) != null ? ` · $${carparkPriceOf(c)!.toFixed(4)}` : ''}</span>}
+            </td>
+            <td style={{ padding: '13px 20px', fontSize: 12, color: C.slate, whiteSpace: 'nowrap' }}>{fmtDate(c.first_seen)}</td>
+            <td style={{ padding: '13px 20px', fontSize: 12, color: notice ? '#B07D00' : C.slate, maxWidth: 260 }}>
+              {notice
+                ? <span style={{ background: '#FFF8E1', borderRadius: 6, padding: '3px 8px', fontWeight: 600 }}>{c.last_seen_name}</span>
+                : '—'}
+            </td>
+            <td style={{ padding: '13px 20px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+              {editing
+                ? (
+                  <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                    <button onClick={cancelChargerEdit} style={smallBtn(false)}>Cancel</button>
+                    <button onClick={() => saveChargerEdit(c)} disabled={saving} style={smallBtn(true)}>{saving ? 'Saving…' : 'Save'}</button>
+                  </div>
+                )
+                : <button onClick={() => startChargerEdit(c)} style={smallBtn(false)}>Edit</button>}
+            </td>
+          </tr>
+        );
+      })}
+    </>
   );
 }
 
@@ -1963,10 +1964,8 @@ export function ScreenChargingRecords() {
 
       {/* SP Price tab */}
       {activeTab === 'sp_price' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-          <SpPriceTab prices={carparkPrices} onRefresh={fetchCarparkPrices} />
-          <SpChargersPanel chargers={spChargers} prices={carparkPrices} onRefresh={fetchSpChargers} />
-        </div>
+        <SpPricingTab prices={carparkPrices} chargers={spChargers}
+          onRefreshPrices={fetchCarparkPrices} onRefreshChargers={fetchSpChargers} />
       )}
 
       {/* CPO Carparks tab */}
