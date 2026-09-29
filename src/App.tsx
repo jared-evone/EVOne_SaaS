@@ -18,7 +18,7 @@ const DEPARTMENT_ICONS: Record<Department, LucideIcon> = {
 // Screens shared by the whole company — shown once in the highlighted Global
 // chip above the department sections (multi-department accounts only), never
 // repeated inside them. Add future cross-department tabs here.
-const GLOBAL_SCREEN_IDS: ScreenKey[] = ['customers'];
+const GLOBAL_SCREEN_IDS: ScreenKey[] = ['customers', 'projects'];
 import { useIsMobile } from './lib/useIsMobile';
 import { setAppToken, hasValidAppToken } from './lib/supabase';
 import { startVersionWatch } from './lib/version';
