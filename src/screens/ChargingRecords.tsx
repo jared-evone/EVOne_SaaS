@@ -47,6 +47,17 @@ interface SpCarparkPrice {
   updated_at: string;
 }
 
+// SP charge points keyed by their stable charger ID. SP renames location
+// display names to broadcast notices, so imports resolve the location (and
+// AC/DC type) from this registry, never from the CSV's Location Name.
+interface SpCharger {
+  charger_id: string;
+  canonical_location: string;
+  charge_type: 'AC' | 'DC';
+  first_seen: string | null;
+  last_seen_name: string | null;
+}
+
 // ── Constants ─────────────────────────────────────────────────────
 
 const SOURCE_LABELS: Record<'goparkin' | 'sp', string> = { goparkin: 'GoParkin', sp: 'SP' };
@@ -717,6 +728,150 @@ function SpPriceTab({ prices, onRefresh }: SpPriceTabProps) {
   );
 }
 
+// ── SP Chargers Panel ─────────────────────────────────────────────
+
+// The registry that anchors SP imports: location + AC/DC resolve by charger ID,
+// so SP's notice-renames of the location display name can't split a site.
+function SpChargersPanel({ chargers, onRefresh }: { chargers: SpCharger[]; onRefresh: () => Promise<SpCharger[]> }) {
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editLoc, setEditLoc] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const saveLocation = async (c: SpCharger) => {
+    const loc = editLoc.trim();
+    if (!loc || loc === c.canonical_location) { setEditId(null); return; }
+    setSaving(true);
+    setErr(null);
+    const { error } = await supabase.from('sp_charger_registry')
+      .update({ canonical_location: loc, updated_at: new Date().toISOString() })
+      .eq('charger_id', c.charger_id);
+    // Keep history consistent: move this charger's past SP records to the new
+    // name so the location cards don't split (update only — nothing deleted).
+    if (!error) {
+      const { error: backErr } = await supabase.from('crm_charging_records')
+        .update({ carpark_code: loc })
+        .eq('charger_id', c.charger_id).eq('source', 'sp').eq('carpark_code', c.canonical_location);
+      if (backErr) setErr(`Registry updated, but past records could not be moved: ${backErr.message}`);
+    } else {
+      setErr(error.message);
+    }
+    await onRefresh();
+    setSaving(false);
+    setEditId(null);
+  };
+
+  const setType = async (c: SpCharger, t: 'AC' | 'DC') => {
+    if (c.charge_type === t || saving) return;
+    setSaving(true);
+    setErr(null);
+    const { error } = await supabase.from('sp_charger_registry')
+      .update({ charge_type: t, updated_at: new Date().toISOString() })
+      .eq('charger_id', c.charger_id);
+    if (!error) {
+      await supabase.from('crm_charging_records')
+        .update({ charge_type: t })
+        .eq('charger_id', c.charger_id).eq('source', 'sp');
+    } else {
+      setErr(error.message);
+    }
+    await onRefresh();
+    setSaving(false);
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>SP Chargers</div>
+        <div style={{ fontSize: 12, color: C.slate, marginTop: 3 }}>
+          SP imports resolve each session's location and AC/DC by charger ID from this list — SP renaming a
+          location to show a notice can't split it anymore. New chargers register themselves on upload (as DC).
+          Edits here also update the charger's past records, so nothing splits or is lost.
+        </div>
+      </div>
+
+      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
+            <thead>
+              <tr style={{ background: C.seasalt }}>
+                {['Charger ID', 'Location', 'Type', 'First Seen', 'Latest SP Name', ''].map((h) => (
+                  <th key={h} style={{ padding: '12px 20px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {chargers.map((c) => {
+                const notice = !!c.last_seen_name && c.last_seen_name !== c.canonical_location;
+                return (
+                  <tr key={c.charger_id} style={{ borderBottom: '1px solid #F3F3F3' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = '#FAFAFA'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
+                    <td style={{ padding: '14px 20px', fontSize: 13, fontWeight: 700, color: C.green, whiteSpace: 'nowrap' }}>{c.charger_id}</td>
+                    <td style={{ padding: '14px 20px', minWidth: 220 }}>
+                      {editId === c.charger_id
+                        ? <input value={editLoc} onChange={(e) => setEditLoc(e.target.value)} autoFocus
+                            style={{ width: '100%', padding: '6px 10px', borderRadius: 8, border: `1px solid ${C.green}`, fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
+                        : <span style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a' }}>{c.canonical_location}</span>}
+                    </td>
+                    <td style={{ padding: '14px 20px' }}>
+                      <div style={{ display: 'inline-flex', border: '1px solid #EBEBEB', borderRadius: 99, overflow: 'hidden' }}>
+                        {(['DC', 'AC'] as const).map((t) => (
+                          <button key={t} onClick={() => setType(c, t)} disabled={saving}
+                            style={{ padding: '4px 12px', border: 'none', fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                              background: c.charge_type === t ? C.green : 'transparent', color: c.charge_type === t ? C.white : C.slate }}>
+                            {t}
+                          </button>
+                        ))}
+                      </div>
+                    </td>
+                    <td style={{ padding: '14px 20px', fontSize: 12, color: C.slate, whiteSpace: 'nowrap' }}>{fmtDate(c.first_seen)}</td>
+                    <td style={{ padding: '14px 20px', fontSize: 12, color: notice ? '#B07D00' : C.slate, maxWidth: 260 }}>
+                      {notice
+                        ? <span style={{ background: '#FFF8E1', borderRadius: 6, padding: '3px 8px', fontWeight: 600 }}>{c.last_seen_name}</span>
+                        : '—'}
+                    </td>
+                    <td style={{ padding: '14px 20px', textAlign: 'right' }}>
+                      {editId === c.charger_id
+                        ? (
+                          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                            <button onClick={() => setEditId(null)}
+                              style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                              Cancel
+                            </button>
+                            <button onClick={() => saveLocation(c)} disabled={saving}
+                              style={{ padding: '5px 14px', borderRadius: 8, border: 'none', background: saving ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: saving ? 'default' : 'pointer' }}>
+                              {saving ? 'Saving…' : 'Save'}
+                            </button>
+                          </div>
+                        )
+                        : (
+                          <button onClick={() => { setEditId(c.charger_id); setEditLoc(c.canonical_location); }}
+                            style={{ padding: '5px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                            Edit
+                          </button>
+                        )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {chargers.length === 0 && (
+                <tr>
+                  <td colSpan={6} style={{ padding: '48px 20px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
+                    No SP chargers yet — they register automatically on the first SP upload.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {err && <div style={{ background: '#FDEAEA', borderRadius: 10, padding: '10px 14px', fontSize: 12, color: '#C0321A' }}>{err}</div>}
+    </div>
+  );
+}
+
 // ── Upload Modal ──────────────────────────────────────────────────
 
 interface UploadModalProps {
@@ -1382,6 +1537,7 @@ export function ScreenChargingRecords() {
   const [summary, setSummary] = useState<SummaryRow | null>(null);
   const [carparkAgg, setCarparkAgg] = useState<CarparkAgg[]>([]);
   const [carparkPrices, setCarparkPrices] = useState<SpCarparkPrice[]>([]);
+  const [spChargers, setSpChargers] = useState<SpCharger[]>([]);
   const [managedCarparks, setManagedCarparks] = useState<ManagedCarpark[]>([]);
   const [cpoLocations, setCpoLocations] = useState<CpoLocationLite[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1480,6 +1636,12 @@ export function ScreenChargingRecords() {
     setManagedCarparks((data as ManagedCarpark[]) ?? []);
   };
 
+  const fetchSpChargers = async () => {
+    const { data } = await supabase.from('sp_charger_registry').select('*').order('canonical_location');
+    setSpChargers((data as SpCharger[]) ?? []);
+    return (data as SpCharger[]) ?? [];
+  };
+
   const fetchCpoLocations = async () => {
     const { data } = await supabase.from('cpo_locations').select('id, name').order('name');
     setCpoLocations((data as CpoLocationLite[]) ?? []);
@@ -1494,6 +1656,7 @@ export function ScreenChargingRecords() {
     fetchCarparkPrices();
     fetchManagedCarparks();
     fetchCpoLocations();
+    fetchSpChargers();
   }, []);
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>, source: 'goparkin' | 'sp') => {
@@ -1518,17 +1681,72 @@ export function ScreenChargingRecords() {
       if (source === 'sp') {
         setParseStatus(files.length === 1 ? 'Parsing SP CSV…' : `Parsing ${files.length} SP CSVs…`);
         // Bulk: parse every selected CSV, merge rows, accumulate warnings (prefixed with file name).
-        const allRows: ChargingRow[] = [];
+        const parsed: ChargingRow[] = [];
         const allWarnings: string[] = [];
         for (const f of files) {
           const text = await f.text();
           const { rows, warnings } = parseSpCSV(text);
-          allRows.push(...rows);
+          parsed.push(...rows);
           for (const w of warnings) allWarnings.push(`${f.name}: ${w}`);
         }
         const fileLabel = files.length === 1
           ? files[0].name
           : `${files.length} SP files (${files.map((f) => f.name).join(', ')})`;
+
+        // Resolve each row's location + AC/DC from the charger registry — SP
+        // renames Location Name to broadcast notices (which used to split a
+        // site into a ghost location), so the CSV's name is only a hint.
+        const registry = new Map((spChargers.length ? spChargers : await fetchSpChargers()).map((c) => [c.charger_id, c]));
+        const canonicals = [...new Set([...registry.values()].map((c) => c.canonical_location))];
+
+        // Unknown chargers: attach to an existing site when the raw name is
+        // that site's name (± a notice suffix), else start a new site under
+        // the raw name. Registered as DC — correct in the SP Chargers panel.
+        const newRegRows = new Map<string, SpCharger>();
+        for (const r of parsed) {
+          if (!r.charger_id || registry.has(r.charger_id) || newRegRows.has(r.charger_id)) continue;
+          const raw = (r.carpark_code ?? '').trim();
+          const site = canonicals.find((c) => raw === c || raw.startsWith(c + ' -')) ?? (raw || r.charger_id);
+          newRegRows.set(r.charger_id, {
+            charger_id: r.charger_id, canonical_location: site, charge_type: 'DC',
+            first_seen: r.start_date_time, last_seen_name: raw || null,
+          });
+        }
+        if (newRegRows.size > 0) {
+          const inserts = [...newRegRows.values()];
+          const { error: regErr } = await supabase.from('sp_charger_registry').insert(inserts);
+          if (regErr) throw new Error(`Could not register new SP charger(s): ${regErr.message}`);
+          for (const c of inserts) {
+            allWarnings.push(`New SP charger ${c.charger_id} registered under "${c.canonical_location}" as DC — change it in the SP Chargers panel if it's AC.`);
+          }
+          void fetchSpChargers();
+        }
+
+        const resolve = (id: string | null) => (id ? (registry.get(id) ?? newRegRows.get(id) ?? null) : null);
+        const allRows: ChargingRow[] = parsed.map((r) => {
+          const reg = resolve(r.charger_id);
+          return reg ? { ...r, carpark_code: reg.canonical_location, charge_type: reg.charge_type } : r;
+        });
+
+        // Surface active notices + remember the latest raw name per charger.
+        const latestRaw = new Map<string, string>();
+        for (const r of parsed) {
+          if (r.charger_id && r.carpark_code) latestRaw.set(r.charger_id, r.carpark_code.trim());
+        }
+        const noticed = new Set<string>();
+        for (const [id, raw] of latestRaw) {
+          const reg = registry.get(id);
+          if (!reg) continue;
+          if (raw !== reg.canonical_location && !noticed.has(`${reg.canonical_location}|${raw}`)) {
+            noticed.add(`${reg.canonical_location}|${raw}`);
+            allWarnings.push(`SP is showing a renamed location "${raw}" — its sessions were mapped to "${reg.canonical_location}" via charger ${id}.`);
+          }
+          if (raw !== (reg.last_seen_name ?? '')) {
+            await supabase.from('sp_charger_registry')
+              .update({ last_seen_name: raw, updated_at: new Date().toISOString() })
+              .eq('charger_id', id);
+          }
+        }
 
         const uniqueCarparks = [...new Set(
           allRows.map((r) => r.carpark_code).filter((c): c is string => !!c)
@@ -1687,7 +1905,10 @@ export function ScreenChargingRecords() {
 
       {/* SP Price tab */}
       {activeTab === 'sp_price' && (
-        <SpPriceTab prices={carparkPrices} onRefresh={fetchCarparkPrices} />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+          <SpPriceTab prices={carparkPrices} onRefresh={fetchCarparkPrices} />
+          <SpChargersPanel chargers={spChargers} onRefresh={fetchSpChargers} />
+        </div>
       )}
 
       {/* CPO Carparks tab */}
