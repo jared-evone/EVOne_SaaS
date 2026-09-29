@@ -618,14 +618,12 @@ const CHARGER_TYPE_COLORS: Record<ChargerType, string> = { DC: C.green, AC: C.op
 
 export function CarparkCard({ t, granularity, metric = 'kwh', dual = false }: { t: CarparkTrend; granularity: Granularity; metric?: 'kwh' | 'count'; dual?: boolean }) {
   const isCount = metric === 'count';
-  // Per-card charger filter: 'all' | 'type:<AC|DC|AC/DC>' | 'id:<charger_id>' —
-  // lets a struggling charger be spotted inside its site's aggregate.
+  // Per-card charger filter: 'all' | 'id:<charger_id>' — lets a struggling
+  // charger be spotted inside its site's aggregate.
   const [sel, setSel] = useState('all');
   const selChargers = useMemo(() => {
     if (sel === 'all') return null;
-    const m = sel.startsWith('type:')
-      ? t.chargers.filter((c) => c.type === sel.slice(5))
-      : t.chargers.filter((c) => c.charger_id === sel.slice(3));
+    const m = t.chargers.filter((c) => c.charger_id === sel.slice(3));
     return m.length > 0 ? m : null;
   }, [sel, t.chargers]);
   const buckets = useMemo(() => {
@@ -649,7 +647,6 @@ export function CarparkCard({ t, granularity, metric = 'kwh', dual = false }: { 
   const fmtVal  = isCount ? fmtCount      : fmtKwh;
   const fmtAxis = isCount ? fmtCountShort : fmtKwhShort;
 
-  const chargerTypes = [...new Set(t.chargers.map((c) => c.type).filter((x): x is ChargerType => x !== null))];
 
   // delta vs prior bucket. 'new' only when this is the carpark's first-ever active
   // period — a long-running site with a single gap period must not read as "new".
@@ -719,13 +716,12 @@ export function CarparkCard({ t, granularity, metric = 'kwh', dual = false }: { 
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', borderTop: '1px solid #F3F3F3', paddingTop: 10 }}>
           {([
             { key: 'all', label: 'All', dot: null as string | null },
-            ...(chargerTypes.length > 1 ? chargerTypes.map((ty) => ({ key: `type:${ty}`, label: ty, dot: CHARGER_TYPE_COLORS[ty] })) : []),
             ...t.chargers.map((c) => ({ key: `id:${c.charger_id}`, label: c.charger_id, dot: c.type ? CHARGER_TYPE_COLORS[c.type] : '#CBD5DC' })),
           ]).map(({ key, label, dot }) => {
             const active = sel === key;
             return (
               <button key={key} onClick={() => setSel(active ? 'all' : key)}
-                title={key.startsWith('id:') ? `Only charger ${label}` : key.startsWith('type:') ? `Only ${label} chargers` : 'All chargers'}
+                title={key.startsWith('id:') ? `Only charger ${label}` : 'All chargers'}
                 style={{
                   display: 'inline-flex', alignItems: 'center', gap: 5,
                   padding: '3px 10px', borderRadius: 99,
