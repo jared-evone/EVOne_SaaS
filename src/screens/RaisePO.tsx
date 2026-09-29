@@ -682,6 +682,28 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
     await onRefresh();
   };
 
+  // Re-send the finance email for a PO that is already with finance — no
+  // status change, just the same email again (plus FYI copies).
+  const resendFinance = async (po: PurchaseOrder) => {
+    const finance = po.finance_email || settings.finance_email;
+    if (!finance) { setNotice({ text: 'No finance email is set. Add one in the Email Template tab.', tone: 'err' }); return; }
+    setBusy(true);
+    const html = buildFinanceEmail(po, po.created_by || user.full_name, settings);
+    const subject = `Approved PO - ${po.supplier || 'No supplier'} - ${po.title}`;
+    let emailErr: string | null = null;
+    try {
+      const { data: r, error } = await supabase.functions.invoke('send-customer-email', {
+        body: { to: [finance], subject, html, from: settings.from_address || undefined, replyTo: settings.reply_to || undefined },
+      });
+      emailErr = (r as { error?: string } | null)?.error ?? error?.message ?? null;
+      if (!emailErr) void sendFyiCopies(po, settings, po.created_by || user.full_name, subject, 'finance');
+    } catch (e) { emailErr = (e as Error).message; }
+    setBusy(false);
+    setNotice(emailErr
+      ? { text: `Resend to finance failed: ${emailErr}`, tone: 'err' }
+      : { text: `Finance email resent to ${finance} at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}.`, tone: 'ok' });
+  };
+
   if (pos.length === 0) {
     return <div style={{ background: C.white, border: '1px dashed #EBEBEB', borderRadius: 16, padding: '48px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
       <ClipboardEmpty /> You haven't raised any POs yet. Build one in the <strong>Raise PO</strong> tab.
@@ -742,6 +764,7 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
         <PODetailModal po={open} busy={busy} canDelete={canDelete} isAdmin={isAdmin} notice={notice}
           financeEmail={open.finance_email || settings.finance_email}
           onResend={() => resend(open)} onForward={() => forwardToFinance(open)}
+          onResendFinance={() => resendFinance(open)}
           onManualDecision={(d) => manualDecision(open, d)}
           onDelete={() => deletePO(open)} onClose={() => setOpen(null)} />
       )}
@@ -822,7 +845,7 @@ function POTimeline({ po, financeEmail }: { po: PurchaseOrder; financeEmail: str
   );
 }
 
-function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, onResend, onForward, onManualDecision, onDelete, onClose }: {
+function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, onResend, onForward, onResendFinance, onManualDecision, onDelete, onClose }: {
   po: PurchaseOrder;
   /** The address the finance step actually uses (PO snapshot, else template default). */
   financeEmail: string | null;
@@ -832,6 +855,7 @@ function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, onR
   notice: { text: string; tone: 'ok' | 'err' } | null;
   onResend: () => void;
   onForward: () => void;
+  onResendFinance: () => void;
   onManualDecision: (decision: 'approved' | 'rejected') => void;
   onDelete: () => void;
   onClose: () => void;
@@ -959,6 +983,12 @@ function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, onR
               <button onClick={onForward} disabled={busy}
                 style={{ padding: '9px 18px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <Mail size={13} /> {busy ? 'Sending…' : 'Forward to finance'}
+              </button>
+            )}
+            {po.status === 'sent_to_finance' && (
+              <button onClick={onResendFinance} disabled={busy} title={financeEmail ? `Resend to ${financeEmail}` : undefined}
+                style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <RefreshCw size={13} /> {busy ? 'Resending…' : 'Resend to finance'}
               </button>
             )}
           </div>
