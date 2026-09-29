@@ -281,20 +281,54 @@ function CompanyModal({ initial, title, canDelete, invoicingOnly = false, onSave
   const [form, setForm] = useState(initial);
   const [ccText, setCcText] = useState((initial.invoice_cc_emails ?? []).join(', '));
   // Known charging locations for the secondary-rate picker (names as they
-  // appear in the charging data — the strings invoicing matches against).
+  // appear in the charging data — the strings invoicing matches against),
+  // plus the reusable named location sets.
   const [locOptions, setLocOptions] = useState<string[]>([]);
+  const [locSets, setLocSets] = useState<{ id: string; name: string; locations: string[] }[]>([]);
+  const [setNameDraft, setSetNameDraft] = useState<string | null>(null); // null = closed
+  const [savingSet, setSavingSet] = useState(false);
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const { data } = await supabase.rpc('charging_records_by_carpark');
-      if (cancelled || !data) return;
-      const names = [...new Set((data as { carpark_name: string | null }[])
-        .map((r) => r.carpark_name)
-        .filter((n): n is string => !!n))].sort((a, b) => a.localeCompare(b));
-      setLocOptions(names);
+      const [{ data }, { data: sets }] = await Promise.all([
+        supabase.rpc('charging_records_by_carpark'),
+        supabase.from('crm_location_sets').select('id, name, locations').order('name'),
+      ]);
+      if (cancelled) return;
+      if (data) {
+        const names = [...new Set((data as { carpark_name: string | null }[])
+          .map((r) => r.carpark_name)
+          .filter((n): n is string => !!n))].sort((a, b) => a.localeCompare(b));
+        setLocOptions(names);
+      }
+      setLocSets((sets as { id: string; name: string; locations: string[] }[]) ?? []);
     })();
     return () => { cancelled = true; };
   }, []);
+
+  const applyLocationSet = (setId: string) => {
+    const s = locSets.find((x) => x.id === setId);
+    if (!s) return;
+    setForm((f) => ({ ...f, secondary_rate_locations: [...new Set([...(f.secondary_rate_locations ?? []), ...s.locations])] }));
+  };
+
+  // Saving an existing name overwrites that set.
+  const saveLocationSet = async () => {
+    const name = (setNameDraft ?? '').trim();
+    const locations = form.secondary_rate_locations ?? [];
+    if (!name || locations.length === 0) return;
+    setSavingSet(true);
+    const { error } = await supabase.from('crm_location_sets')
+      .upsert({ name, locations }, { onConflict: 'name' });
+    if (!error) {
+      const { data: sets } = await supabase.from('crm_location_sets').select('id, name, locations').order('name');
+      setLocSets((sets as { id: string; name: string; locations: string[] }[]) ?? []);
+      setSetNameDraft(null);
+    } else {
+      alert(`Could not save the set: ${error.message}`);
+    }
+    setSavingSet(false);
+  };
   const [contractFile, setContractFile] = useState<File | null>(null);
   const [removeContract, setRemoveContract] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -449,7 +483,42 @@ function CompanyModal({ initial, title, canDelete, invoicingOnly = false, onSave
                   <option key={l} value={l}>{l}</option>
                 ))}
               </select>
+              {locSets.length > 0 && (
+                <select value="" onChange={(e) => { if (e.target.value) applyLocationSet(e.target.value); }}
+                  style={{ padding: '6px 10px', borderRadius: 99, border: `1px dashed ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', maxWidth: 260 }}>
+                  <option value="">+ Add from set…</option>
+                  {locSets.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name} ({s.locations.length})</option>
+                  ))}
+                </select>
+              )}
             </div>
+            {(form.secondary_rate_locations ?? []).length > 0 && (
+              <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                {setNameDraft === null
+                  ? (
+                    <button type="button" onClick={() => setSetNameDraft('')}
+                      style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                      Save these locations as a set…
+                    </button>
+                  )
+                  : (
+                    <>
+                      <input value={setNameDraft} onChange={(e) => setSetNameDraft(e.target.value)} placeholder="Set name (e.g. West sites)" autoFocus
+                        style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, outline: 'none', width: 200 }} />
+                      <button type="button" onClick={saveLocationSet} disabled={savingSet || !setNameDraft.trim()}
+                        style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: savingSet ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: savingSet ? 'default' : 'pointer' }}>
+                        {savingSet ? 'Saving…' : 'Save set'}
+                      </button>
+                      <button type="button" onClick={() => setSetNameDraft(null)}
+                        style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                        Cancel
+                      </button>
+                      <span style={{ fontSize: 10.5, color: C.slate }}>Saving with an existing set's name overwrites it.</span>
+                    </>
+                  )}
+              </div>
+            )}
             {(form.secondary_rate != null && Number(form.secondary_rate) > 0 && (form.secondary_rate_locations ?? []).length === 0) && (
               <div style={{ fontSize: 11, color: '#B07D00', marginTop: 6 }}>Pick at least one location or the secondary rate never applies.</div>
             )}
@@ -908,7 +977,7 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
                       style={{ cursor: 'pointer', width: 15, height: 15, accentColor: C.green }} />
                   </th>
                 )}
-                {['#', 'Company Name', 'Status', 'Base Rate', 'Threshold', 'Discounted Rate', 'Saving', 'Contract'].map((h) => (
+                {['#', 'Company Name', 'Status', 'Base Rate', 'Threshold', 'Discounted Rate', 'Secondary', 'Saving', 'Contract'].map((h) => (
                   <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
@@ -940,6 +1009,12 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
                     <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 700, color: base > 0 ? C.green : C.slate, whiteSpace: 'nowrap', cursor: cellCursor }} onClick={openEdit}>{fmt(base)}</td>
                     <td style={{ padding: '12px 16px', fontSize: 13, color: c.threshold_kwh > 0 ? '#1a1a1a' : C.slate, whiteSpace: 'nowrap', cursor: cellCursor }} onClick={openEdit}>{fmtKwh(c.threshold_kwh)}</td>
                     <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 700, color: disc > 0 ? C.green : C.slate, whiteSpace: 'nowrap', cursor: cellCursor }} onClick={openEdit}>{fmt(disc)}</td>
+                    <td style={{ padding: '12px 16px', whiteSpace: 'nowrap', cursor: cellCursor }} onClick={openEdit}
+                      title={(c.secondary_rate_locations ?? []).join(', ') || undefined}>
+                      {c.secondary_rate != null && Number(c.secondary_rate) > 0
+                        ? <span style={{ fontSize: 13, fontWeight: 700, color: C.opal }}>{fmt(Number(c.secondary_rate))} <span style={{ fontSize: 11, fontWeight: 600, color: C.slate }}>· {(c.secondary_rate_locations ?? []).length} loc</span></span>
+                        : <span style={{ color: C.slate, fontSize: 12 }}>—</span>}
+                    </td>
                     <td style={{ padding: '12px 16px', whiteSpace: 'nowrap', cursor: cellCursor }} onClick={openEdit}>
                       {hasSaving
                         ? <span style={{ background: '#E4F3E3', color: '#1B512D', fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99 }}>${(base - disc).toFixed(3)}/kWh</span>
@@ -960,7 +1035,7 @@ function CompaniesTab({ companies, onRefresh, error }: CompaniesTabProps) {
                 );
               })}
               {visible.length === 0 && (
-                <tr><td colSpan={canDelete ? 9 : 8} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No companies match your search.</td></tr>
+                <tr><td colSpan={canDelete ? 10 : 9} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No companies match your search.</td></tr>
               )}
             </tbody>
           </table>
