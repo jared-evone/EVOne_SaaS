@@ -9,6 +9,7 @@ type SourceFilter = 'all' | 'goparkin' | 'sp';
 
 export interface RawRow {
   carpark_code: string | null;
+  charger_id: string | null;
   start_date_time: string;
   total_energy_supplied_kwh: number | null;
   source: 'goparkin' | 'sp';
@@ -19,10 +20,30 @@ export interface RawRow {
 
 interface BucketPoint { key: string; label: string; kwh: number; count: number; }
 
+// Normalized charger type; GoParkin's "AC and DC integrated (equipment)"
+// variants collapse to 'AC/DC' — they can't be split further.
+export type ChargerType = 'AC' | 'DC' | 'AC/DC';
+function chargerTypeOf(raw: string | null): ChargerType | null {
+  if (!raw) return null;
+  if (raw === 'AC' || raw === 'DC') return raw;
+  return 'AC/DC';
+}
+
+// Per-charger sub-series inside a carpark, on the SAME bucket grid as the
+// parent — lets the card filter to one charger / one charge type.
+export interface ChargerSeries {
+  charger_id: string;
+  type: ChargerType | null;
+  buckets: BucketPoint[];
+  totalKwh: number;
+  totalCount: number;
+}
+
 export interface CarparkTrend {
   carpark_code: string;
   sources: ('goparkin' | 'sp')[];
   buckets: BucketPoint[];
+  chargers: ChargerSeries[];
   totalKwh: number;
   latestKwh: number;
   priorKwh: number;
@@ -211,18 +232,28 @@ export function aggregateTotal(rows: RawRow[], granularity: Granularity, startIS
 export function aggregate(rows: RawRow[], granularity: Granularity, startISO: string | null): CarparkTrend[] {
   const { bucketKeys, labels, keyOf } = bucketScaffold(rows, granularity, startISO);
 
-  // group rows by carpark + bucket — track both summed kWh and session count
-  const perCp = new Map<string, { kwhByBucket: Map<string, number>; countByBucket: Map<string, number>; sources: Set<'goparkin' | 'sp'> }>();
+  // group rows by carpark + bucket — track both summed kWh and session count,
+  // plus a per-charger breakdown on the same bucket grid
+  interface ChargerAcc { kwhByBucket: Map<string, number>; countByBucket: Map<string, number>; type: ChargerType | null }
+  const perCp = new Map<string, { kwhByBucket: Map<string, number>; countByBucket: Map<string, number>; sources: Set<'goparkin' | 'sp'>; chargers: Map<string, ChargerAcc> }>();
   for (const r of rows) {
     const dateISO = r.start_date_time.slice(0, 10);
     if (dateISO.length < 10) continue; // skip malformed/empty timestamps (mondayOf would throw)
     const code = r.carpark_code || '(unknown)';
     const bucketKey = keyOf(dateISO);
     let entry = perCp.get(code);
-    if (!entry) { entry = { kwhByBucket: new Map(), countByBucket: new Map(), sources: new Set() }; perCp.set(code, entry); }
-    entry.kwhByBucket.set(bucketKey, (entry.kwhByBucket.get(bucketKey) ?? 0) + Number(r.total_energy_supplied_kwh ?? 0));
+    if (!entry) { entry = { kwhByBucket: new Map(), countByBucket: new Map(), sources: new Set(), chargers: new Map() }; perCp.set(code, entry); }
+    const kwh = Number(r.total_energy_supplied_kwh ?? 0);
+    entry.kwhByBucket.set(bucketKey, (entry.kwhByBucket.get(bucketKey) ?? 0) + kwh);
     entry.countByBucket.set(bucketKey, (entry.countByBucket.get(bucketKey) ?? 0) + 1);
     entry.sources.add(r.source);
+    if (r.charger_id) {
+      let ch = entry.chargers.get(r.charger_id);
+      if (!ch) { ch = { kwhByBucket: new Map(), countByBucket: new Map(), type: null }; entry.chargers.set(r.charger_id, ch); }
+      ch.kwhByBucket.set(bucketKey, (ch.kwhByBucket.get(bucketKey) ?? 0) + kwh);
+      ch.countByBucket.set(bucketKey, (ch.countByBucket.get(bucketKey) ?? 0) + 1);
+      ch.type = chargerTypeOf(r.charge_type) ?? ch.type;
+    }
   }
 
   const out: CarparkTrend[] = [];
@@ -233,6 +264,21 @@ export function aggregate(rows: RawRow[], granularity: Granularity, startISO: st
       kwh: Math.round((entry.kwhByBucket.get(key) ?? 0) * 100) / 100,
       count: entry.countByBucket.get(key) ?? 0,
     }));
+    const chargers: ChargerSeries[] = [...entry.chargers].map(([id, ch]) => {
+      const chBuckets: BucketPoint[] = bucketKeys.map((key, i) => ({
+        key,
+        label: labels[i],
+        kwh: Math.round((ch.kwhByBucket.get(key) ?? 0) * 100) / 100,
+        count: ch.countByBucket.get(key) ?? 0,
+      }));
+      return {
+        charger_id: id,
+        type: ch.type,
+        buckets: chBuckets,
+        totalKwh: chBuckets.reduce((s, b) => s + b.kwh, 0),
+        totalCount: chBuckets.reduce((s, b) => s + b.count, 0),
+      };
+    }).sort((a, b) => b.totalKwh - a.totalKwh);
     const totalKwh = buckets.reduce((s, b) => s + b.kwh, 0);
     const latestKwh = buckets[buckets.length - 1]?.kwh ?? 0;
     const priorKwh = buckets[buckets.length - 2]?.kwh ?? 0;
@@ -245,6 +291,7 @@ export function aggregate(rows: RawRow[], granularity: Granularity, startISO: st
       carpark_code: code,
       sources: Array.from(entry.sources).sort(),
       buckets,
+      chargers,
       totalKwh,
       latestKwh,
       priorKwh,
@@ -402,7 +449,7 @@ async function loadAllChargingRows(onProgress?: (n: number) => void): Promise<Ra
       batch.push(
         supabase
           .from('crm_charging_records')
-          .select('carpark_code, start_date_time, total_energy_supplied_kwh, source, charge_type, payment_status, vehicle_plate_number')
+          .select('carpark_code, charger_id, start_date_time, total_energy_supplied_kwh, source, charge_type, payment_status, vehicle_plate_number')
           .order('id', { ascending: true })
           .range(p * PAGE, p * PAGE + PAGE - 1),
       );
@@ -567,18 +614,42 @@ export function LocationTrends() {
 
 // ── Card ──────────────────────────────────────────────────────────
 
+const CHARGER_TYPE_COLORS: Record<ChargerType, string> = { DC: C.green, AC: C.opal, 'AC/DC': C.yellow };
+
 export function CarparkCard({ t, granularity, metric = 'kwh', dual = false }: { t: CarparkTrend; granularity: Granularity; metric?: 'kwh' | 'count'; dual?: boolean }) {
   const isCount = metric === 'count';
-  const data = t.buckets.map((b) => (isCount ? b.count : b.kwh));
-  const data2 = dual ? t.buckets.map((b) => b.kwh) : undefined; // blue energy line on the right axis
-  const labels = t.buckets.map((b) => b.label);
+  // Per-card charger filter: 'all' | 'type:<AC|DC|AC/DC>' | 'id:<charger_id>' —
+  // lets a struggling charger be spotted inside its site's aggregate.
+  const [sel, setSel] = useState('all');
+  const selChargers = useMemo(() => {
+    if (sel === 'all') return null;
+    const m = sel.startsWith('type:')
+      ? t.chargers.filter((c) => c.type === sel.slice(5))
+      : t.chargers.filter((c) => c.charger_id === sel.slice(3));
+    return m.length > 0 ? m : null;
+  }, [sel, t.chargers]);
+  const buckets = useMemo(() => {
+    if (!selChargers) return t.buckets;
+    return t.buckets.map((b, i) => ({
+      ...b,
+      kwh: Math.round(selChargers.reduce((s, c) => s + c.buckets[i].kwh, 0) * 100) / 100,
+      count: selChargers.reduce((s, c) => s + c.buckets[i].count, 0),
+    }));
+  }, [selChargers, t.buckets]);
 
-  const total  = isCount ? t.totalCount  : t.totalKwh;
-  const latest = isCount ? t.latestCount : t.latestKwh;
-  const prior  = isCount ? t.priorCount  : t.priorKwh;
-  const peak   = isCount ? t.peakCount   : t.peakKwh;
+  const data = buckets.map((b) => (isCount ? b.count : b.kwh));
+  const data2 = dual ? buckets.map((b) => b.kwh) : undefined; // blue energy line on the right axis
+  const labels = buckets.map((b) => b.label);
+
+  const viewKwh = buckets.reduce((s, b) => s + b.kwh, 0);
+  const total  = isCount ? buckets.reduce((s, b) => s + b.count, 0) : viewKwh;
+  const latest = data[data.length - 1] ?? 0;
+  const prior  = data[data.length - 2] ?? 0;
+  const peak   = data.reduce((m, v) => Math.max(m, v), 0);
   const fmtVal  = isCount ? fmtCount      : fmtKwh;
   const fmtAxis = isCount ? fmtCountShort : fmtKwhShort;
+
+  const chargerTypes = [...new Set(t.chargers.map((c) => c.type).filter((x): x is ChargerType => x !== null))];
 
   // delta vs prior bucket. 'new' only when this is the carpark's first-ever active
   // period — a long-running site with a single gap period must not read as "new".
@@ -598,7 +669,7 @@ export function CarparkCard({ t, granularity, metric = 'kwh', dual = false }: { 
   // Hover tooltips for weekly / monthly only (daily excluded — too dense).
   const tooltips = granularity === 'day'
     ? undefined
-    : t.buckets.map((b) => ({ title: fmtTooltipDate(b.key, granularity), value: fmtVal(isCount ? b.count : b.kwh), value2: dual ? fmtKwh(b.kwh) : undefined }));
+    : buckets.map((b) => ({ title: fmtTooltipDate(b.key, granularity), value: fmtVal(isCount ? b.count : b.kwh), value2: dual ? fmtKwh(b.kwh) : undefined }));
 
   return (
     <div style={{ background: C.white, borderRadius: 16, padding: '18px 20px', border: '1px solid #EBEBEB', display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -616,7 +687,7 @@ export function CarparkCard({ t, granularity, metric = 'kwh', dual = false }: { 
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontSize: 11, color: C.slate, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Total</div>
           <div style={{ fontSize: 18, fontWeight: 700, color: '#1a1a1a' }}>{fmtVal(total)}</div>
-          {dual && <div style={{ fontSize: 13, fontWeight: 700, color: C.opal, marginTop: 2 }}>{fmtKwh(t.totalKwh)}</div>}
+          {dual && <div style={{ fontSize: 13, fontWeight: 700, color: C.opal, marginTop: 2 }}>{fmtKwh(viewKwh)}</div>}
         </div>
       </div>
 
@@ -642,6 +713,35 @@ export function CarparkCard({ t, granularity, metric = 'kwh', dual = false }: { 
           </div>
         )}
       </div>
+
+      {/* Charger filter chips — only when the site has more than one charger */}
+      {t.chargers.length > 1 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', borderTop: '1px solid #F3F3F3', paddingTop: 10 }}>
+          {([
+            { key: 'all', label: 'All', dot: null as string | null },
+            ...(chargerTypes.length > 1 ? chargerTypes.map((ty) => ({ key: `type:${ty}`, label: ty, dot: CHARGER_TYPE_COLORS[ty] })) : []),
+            ...t.chargers.map((c) => ({ key: `id:${c.charger_id}`, label: c.charger_id, dot: c.type ? CHARGER_TYPE_COLORS[c.type] : '#CBD5DC' })),
+          ]).map(({ key, label, dot }) => {
+            const active = sel === key;
+            return (
+              <button key={key} onClick={() => setSel(active ? 'all' : key)}
+                title={key.startsWith('id:') ? `Only charger ${label}` : key.startsWith('type:') ? `Only ${label} chargers` : 'All chargers'}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 5,
+                  padding: '3px 10px', borderRadius: 99,
+                  border: `1px solid ${active ? C.green : '#EBEBEB'}`,
+                  background: active ? C.green : C.white,
+                  color: active ? C.white : C.slate,
+                  fontFamily: 'Figtree', fontSize: 10, fontWeight: 700, cursor: 'pointer',
+                  letterSpacing: '0.02em',
+                }}>
+                {dot && <span style={{ width: 6, height: 6, borderRadius: 99, background: active ? C.white : dot, flexShrink: 0 }} />}
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
