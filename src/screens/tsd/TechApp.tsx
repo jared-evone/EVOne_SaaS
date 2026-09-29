@@ -119,21 +119,17 @@ export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
     adminFilter === 'all' ? all :
     adminFilter === 'unassigned' ? unassigned :
     store.workOrders.filter((w) => assigneesOf(w).includes(adminFilter));
-  const adminEmptyMsg =
-    adminFilter === 'all' ? 'No work orders yet.' :
-    adminFilter === 'unassigned' ? 'No unassigned work orders.' :
-    `No jobs assigned to ${adminFilter}.`;
-
-  const railBtn = (active: boolean): React.CSSProperties => ({
-    textAlign: 'left', padding: '10px 16px', borderRadius: 12,
-    border: active ? 'none' : '1px solid #EBEBEB',
-    fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer',
-    background: active ? C.green : C.white,
-    color: active ? C.white : C.slate,
-    boxShadow: active ? '0 6px 14px rgba(42,154,71,0.2)' : 'none',
-  });
 
   if (isAdmin) {
+    const pill = (active: boolean): React.CSSProperties => ({
+      padding: '8px 16px', borderRadius: 99,
+      border: active ? 'none' : '1px solid #EBEBEB',
+      fontFamily: 'Figtree', fontSize: 12.5, fontWeight: 700, cursor: 'pointer',
+      background: active ? C.green : C.white,
+      color: active ? C.white : C.slate,
+      boxShadow: active ? '0 6px 14px rgba(42,154,71,0.2)' : 'none',
+      whiteSpace: 'nowrap',
+    });
     return (
       <>
       <Shell
@@ -144,47 +140,20 @@ export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
         crumb="Technician"
         wide
       >
-        <div style={{ display: 'grid', gridTemplateColumns: isMobileAdmin ? '1fr' : '200px 1fr', gap: 16, alignItems: 'start' }}>
-          {/* Filter rail */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <button onClick={() => setAdminFilter('all')} style={railBtn(adminFilter === 'all')}>All Jobs ({all.length})</button>
-            <button onClick={() => setAdminFilter('unassigned')} style={railBtn(adminFilter === 'unassigned')}>Unassigned ({unassigned.length})</button>
-            {techFilters.length > 0 && (
-              <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', padding: '12px 8px 2px' }}>Technicians</div>
-            )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Filter bar — wraps on narrow screens; the calendar is the only view */}
+          <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <button onClick={() => setAdminFilter('all')} style={pill(adminFilter === 'all')}>All Jobs ({all.length})</button>
+            <button onClick={() => setAdminFilter('unassigned')} style={pill(adminFilter === 'unassigned')}>Unassigned ({unassigned.length})</button>
+            {techFilters.length > 0 && !isMobileAdmin && <div style={{ width: 1, height: 24, background: '#EBEBEB' }} />}
             {techFilters.map((name) => (
-              <button key={name} onClick={() => setAdminFilter(name)} style={railBtn(adminFilter === name)}>
+              <button key={name} onClick={() => setAdminFilter(name)} style={pill(adminFilter === name)}>
                 {name} ({jobsByAssignee.get(name) ?? 0})
               </button>
             ))}
           </div>
-          {/* List / Calendar */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div style={{ display: 'flex', gap: 4, background: C.white, borderRadius: 12, padding: 4, border: '1px solid #EBEBEB', alignSelf: 'flex-start' }}>
-              {([['list', 'List view'], ['calendar', 'Calendar view']] as const).map(([k, l]) => (
-                <button key={k} onClick={() => setAdminView(k)}
-                  style={{ padding: '8px 18px', borderRadius: 10, border: 'none', fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer',
-                    background: adminView === k ? C.green : 'transparent', color: adminView === k ? C.white : C.slate }}>
-                  {l}
-                </button>
-              ))}
-            </div>
 
-            {adminView === 'calendar' ? (
-              <JobCalendar key={adminFilter} jobs={adminVisible} techPhotos={techPhotos} onOpen={(id) => { setActiveId(id); setActiveFormId(null); }} onReschedule={(id, date) => store.reschedule(id, date)} />
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {adminVisible.length === 0 && (
-                  <div style={{ padding: '40px 20px', textAlign: 'center', color: C.slate, fontSize: 13, background: C.white, borderRadius: 14, border: '1px dashed #EBEBEB' }}>
-                    {adminEmptyMsg}
-                  </div>
-                )}
-                {adminVisible.map((wo) => (
-                  <WorkOrderCard key={wo.id} wo={wo} assignee={wo.assignedTo} actionLabel="View" onAction={() => { setActiveId(wo.id); setActiveFormId(null); }} />
-                ))}
-              </div>
-            )}
-          </div>
+          <JobCalendar key={adminFilter} jobs={adminVisible} techPhotos={techPhotos} onOpen={(id) => { setActiveId(id); setActiveFormId(null); }} onReschedule={(id, date) => store.reschedule(id, date)} />
         </div>
       </Shell>
       {jobModal}
