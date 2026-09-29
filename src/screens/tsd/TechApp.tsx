@@ -603,7 +603,7 @@ function JobCalendar({ jobs, onOpen, onReschedule, techPhotos }: { jobs: WorkOrd
                 flexDirection: 'column',
                 gap: 4,
                 minWidth: 0, // let the track stay equal-width; card text truncates instead
-                overflow: 'hidden',
+                overflowX: 'hidden',
               }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 2px' }}>
                 <span style={{
@@ -615,7 +615,9 @@ function JobCalendar({ jobs, onOpen, onReschedule, techPhotos }: { jobs: WorkOrd
                 }}>{d.getDate()}</span>
                 {dayJobs.length > 0 && <span style={{ fontSize: 10, color: C.slate, fontWeight: 700 }}>{dayJobs.length}</span>}
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: mode === 'week' ? 6 : 3, overflowY: mode === 'week' ? 'auto' : 'visible', overflowX: 'hidden', maxHeight: mode === 'week' ? 560 : undefined, minWidth: 0 }}>
+              {/* Week columns grow to fit every job — a capped inner scroll here
+                  used to swallow busy days' cards past the cutoff. */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: mode === 'week' ? 6 : 3, overflowX: 'hidden', minWidth: 0 }}>
                 {(mode === 'month' && !expandedDays.has(iso) ? dayJobs.slice(0, MONTH_ROWS) : dayJobs).map((j) => (
                   <CalendarJobCard key={j.id} wo={j} onOpen={() => onOpen(j.id)} draggable={!!onReschedule} compact={mode === 'month'} techPhotos={techPhotos} />
                 ))}
