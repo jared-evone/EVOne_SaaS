@@ -1732,8 +1732,12 @@ export function ScreenCorporateInvoicing() {
                     'GoParkin kWh',
                     'SP kWh',
                     'Total kWh',
+                    'Standard kWh',
                     'Applied Rate (SGD/kWh)',
                     'Rate Tier',
+                    'Secondary kWh',
+                    'Secondary Rate (SGD/kWh)',
+                    'Secondary Amount (SGD)',
                     'Energy Amount (SGD)',
                     'Overstay (SGD)',
                     'Minimum Charge (SGD)',
@@ -1743,10 +1747,15 @@ export function ScreenCorporateInvoicing() {
                   for (const stmt of statements) {
                     const gpKwh = Math.round(stmt.goparkinRows.reduce((s, r) => s + r.kwh, 0) * 100) / 100;
                     const spKwh = Math.round(stmt.spRows.reduce((s, r) => s + r.energyKwh, 0) * 100) / 100;
-                    const tier = stmt.totalKwh >= Number(stmt.company.threshold_kwh) ? 'Discounted' : 'Base';
+                    // The tier is decided by STANDARD usage only — secondary-rate
+                    // sessions sit outside the threshold system.
+                    const stdKwh = stmt.standardKwh ?? stmt.totalKwh;
+                    const tier = stdKwh >= Number(stmt.company.threshold_kwh) ? 'Discounted' : 'Base';
                     const overstayAmt = stmt.overstayAmount ?? 0;
                     const minCharge = stmt.minimumCharge ?? 0;
                     const energyAmt = stmt.energyAmount ?? Math.round((stmt.totalAmount - overstayAmt - minCharge) * 100) / 100;
+                    const secKwh = stmt.secondaryKwh ?? 0;
+                    const secAmt = stmt.secondaryAmount ?? 0;
                     rows.push([
                       stmt.company.name,
                       Number(stmt.company.threshold_kwh),
@@ -1755,8 +1764,12 @@ export function ScreenCorporateInvoicing() {
                       gpKwh.toFixed(2),
                       spKwh.toFixed(2),
                       stmt.totalKwh.toFixed(2),
+                      stdKwh.toFixed(2),
                       Number(stmt.appliedRate).toFixed(4),
                       tier,
+                      secKwh > 0 ? secKwh.toFixed(2) : '',
+                      stmt.secondaryRate != null ? Number(stmt.secondaryRate).toFixed(4) : '',
+                      secKwh > 0 ? secAmt.toFixed(2) : '',
                       energyAmt.toFixed(2),
                       overstayAmt.toFixed(2),
                       minCharge.toFixed(2),
@@ -1764,13 +1777,19 @@ export function ScreenCorporateInvoicing() {
                     ]);
                   }
                   const totalMinCharge = statements.reduce((s, st) => s + (st.minimumCharge ?? 0), 0);
+                  const totalSecKwh = statements.reduce((s, st) => s + (st.secondaryKwh ?? 0), 0);
+                  const totalSecAmt = statements.reduce((s, st) => s + (st.secondaryAmount ?? 0), 0);
                   rows.push([
                     'TOTAL',
                     '', '', '',
                     statements.reduce((s, st) => s + st.goparkinRows.reduce((a, r) => a + r.kwh, 0), 0).toFixed(2),
                     statements.reduce((s, st) => s + st.spRows.reduce((a, r) => a + r.energyKwh, 0), 0).toFixed(2),
                     totalBillingKwh.toFixed(2),
+                    statements.reduce((s, st) => s + (st.standardKwh ?? st.totalKwh), 0).toFixed(2),
                     '', '',
+                    totalSecKwh > 0 ? totalSecKwh.toFixed(2) : '',
+                    '',
+                    totalSecAmt > 0 ? totalSecAmt.toFixed(2) : '',
                     (totalBillingAmt - totalOverstayAmt - totalMinCharge).toFixed(2),
                     totalOverstayAmt.toFixed(2),
                     totalMinCharge.toFixed(2),
@@ -1822,7 +1841,9 @@ export function ScreenCorporateInvoicing() {
                   const gpKwh = stmt.goparkinRows.reduce((s, r) => s + r.kwh, 0);
                   const spKwh = stmt.spRows.reduce((s, r) => s + r.energyKwh, 0);
                   const overstayAmt = stmt.overstayAmount ?? 0;
-                  const aboveThreshold = stmt.totalKwh >= Number(stmt.company.threshold_kwh);
+                  // Tier judged on standard usage — secondary-rate kWh is outside it.
+                  const aboveThreshold = (stmt.standardKwh ?? stmt.totalKwh) >= Number(stmt.company.threshold_kwh);
+                  const hasSec = (stmt.secondaryKwh ?? 0) > 0;
                   return (
                     <tr key={stmt.company.id}
                       style={{ borderBottom: '1px solid #F3F3F3', cursor: 'pointer' }}
@@ -1837,6 +1858,12 @@ export function ScreenCorporateInvoicing() {
                         <span style={{ background: aboveThreshold ? C.honeydew : '#FFF8E1', color: aboveThreshold ? C.green : '#B07D00', fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99 }}>
                           {fmtRate(stmt.appliedRate)}{aboveThreshold ? ' (disc.)' : ' (base)'}
                         </span>
+                        {hasSec && (
+                          <span title={`${(stmt.secondaryKwh ?? 0).toLocaleString()} kWh at ${fmtRate(stmt.secondaryRate ?? 0)}/kWh (secondary-rate locations)`}
+                            style={{ marginLeft: 4, background: '#E3F0FF', color: '#1A62C0', fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99 }}>
+                            + {fmtRate(stmt.secondaryRate ?? 0)} sec
+                          </span>
+                        )}
                       </td>
                       <td style={{ padding: '12px 16px', fontSize: 13, color: overstayAmt > 0 ? '#B45309' : C.slate, fontWeight: overstayAmt > 0 ? 700 : 400 }}>{overstayAmt > 0 ? fmtAmt(overstayAmt) : '—'}</td>
                       <td style={{ padding: '12px 16px', fontSize: 13, fontWeight: 700, color: C.green }}>{fmtAmt(stmt.totalAmount)}</td>
