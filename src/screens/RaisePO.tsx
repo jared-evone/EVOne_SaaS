@@ -598,9 +598,34 @@ function RaiseTab({ products, settings, onSent }: { products: Product[]; setting
 // ── Track (My POs) ────────────────────────────────────────────────
 
 function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[]; settings: POSettings; canDelete: boolean; onRefresh: () => Promise<void> }) {
-  const { user } = usePermissions();
+  const { user, isAdmin } = usePermissions();
   const [open, setOpen] = useState<PurchaseOrder | null>(null);
   const [busy, setBusy] = useState(false);
+  // In-modal feedback for resend / admin decisions — the old resend gave no
+  // success signal at all, which read as "the button does nothing".
+  const [notice, setNotice] = useState<{ text: string; tone: 'ok' | 'err' } | null>(null);
+
+  const openPo = (po: PurchaseOrder) => { setNotice(null); setOpen(po); };
+
+  // Admin override: approve/reject in place of the boss (e.g. boss unavailable).
+  // Same status transition the email link performs; the flow then continues
+  // normally (approved -> Forward to finance).
+  const manualDecision = async (po: PurchaseOrder, decision: 'approved' | 'rejected') => {
+    setBusy(true);
+    const decided_at = new Date().toISOString();
+    const { error } = await supabase.from('purchase_orders')
+      .update({ status: decision, decided_at }).eq('id', po.id).eq('status', 'pending');
+    setBusy(false);
+    if (error) { setNotice({ text: `Could not update the PO: ${error.message}`, tone: 'err' }); return; }
+    setOpen({ ...po, status: decision, decided_at });
+    setNotice({
+      text: decision === 'approved'
+        ? `Approved by you (${user.full_name || user.email}) as admin — now forward it to finance below.`
+        : `Rejected by you (${user.full_name || user.email}) as admin.`,
+      tone: 'ok',
+    });
+    await onRefresh();
+  };
 
   const deletePO = async (po: PurchaseOrder) => {
     setBusy(true);
@@ -626,8 +651,10 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
     } catch (e) { emailErr = (e as Error).message; }
     await supabase.from('purchase_orders').update({ email_status: emailErr ? 'failed' : 'sent', email_error: emailErr }).eq('id', po.id);
     setBusy(false);
+    setNotice(emailErr
+      ? { text: `Resend failed: ${emailErr}`, tone: 'err' }
+      : { text: `Approval email resent to ${po.approver_email} at ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}.`, tone: 'ok' });
     await onRefresh();
-    if (emailErr) window.alert(`Resend failed: ${emailErr}`);
   };
 
   const forwardToFinance = async (po: PurchaseOrder) => {
@@ -673,7 +700,7 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
                 <tr key={po.id} style={{ borderBottom: '1px solid #F3F3F3', cursor: 'pointer' }}
                   onMouseEnter={(e) => { e.currentTarget.style.background = '#FAFAFA'; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                  onClick={() => setOpen(po)}>
+                  onClick={() => openPo(po)}>
                   <td style={{ padding: '12px 16px' }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>{po.po_number}</div>
                     <div style={{ fontSize: 12, color: C.slate }}>{po.title}</div>
@@ -706,7 +733,10 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
       </div>
 
       {open && (
-        <PODetailModal po={open} busy={busy} canDelete={canDelete} onResend={() => resend(open)} onForward={() => forwardToFinance(open)} onDelete={() => deletePO(open)} onClose={() => setOpen(null)} />
+        <PODetailModal po={open} busy={busy} canDelete={canDelete} isAdmin={isAdmin} notice={notice}
+          onResend={() => resend(open)} onForward={() => forwardToFinance(open)}
+          onManualDecision={(d) => manualDecision(open, d)}
+          onDelete={() => deletePO(open)} onClose={() => setOpen(null)} />
       )}
     </>
   );
@@ -783,7 +813,19 @@ function POTimeline({ po }: { po: PurchaseOrder }) {
   );
 }
 
-function PODetailModal({ po, busy, canDelete, onResend, onForward, onDelete, onClose }: { po: PurchaseOrder; busy: boolean; canDelete: boolean; onResend: () => void; onForward: () => void; onDelete: () => void; onClose: () => void }) {
+function PODetailModal({ po, busy, canDelete, isAdmin, notice, onResend, onForward, onManualDecision, onDelete, onClose }: {
+  po: PurchaseOrder;
+  busy: boolean;
+  canDelete: boolean;
+  isAdmin: boolean;
+  notice: { text: string; tone: 'ok' | 'err' } | null;
+  onResend: () => void;
+  onForward: () => void;
+  onManualDecision: (decision: 'approved' | 'rejected') => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  const [confirmOverride, setConfirmOverride] = useState<'approved' | 'rejected' | null>(null);
   const st = STATUS_STYLE[po.status];
   const [confirmDelete, setConfirmDelete] = useState(false);
   return (
@@ -845,6 +887,49 @@ function PODetailModal({ po, busy, canDelete, onResend, onForward, onDelete, onC
           </div>
         )}
 
+        {notice && (
+          <div style={{ background: notice.tone === 'ok' ? '#E4F3E3' : '#FDEAEA', color: notice.tone === 'ok' ? '#1B512D' : '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12.5, fontWeight: 600, lineHeight: 1.5 }}>
+            {notice.text}
+          </div>
+        )}
+
+        {/* Admin override — for when the boss can't action the email. Same
+            transition the email link performs; the flow continues as normal. */}
+        {isAdmin && po.status === 'pending' && (
+          <div style={{ background: C.seasalt, borderRadius: 12, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Admin override</div>
+            {confirmOverride ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12.5, fontWeight: 700, color: confirmOverride === 'approved' ? '#1B512D' : '#C0321A', flex: 1, minWidth: 200 }}>
+                  {confirmOverride === 'approved'
+                    ? 'Approve this PO in place of the boss? It moves on to finance.'
+                    : 'Reject this PO in place of the boss?'}
+                </span>
+                <button onClick={() => setConfirmOverride(null)} disabled={busy}
+                  style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+                <button onClick={() => { onManualDecision(confirmOverride); setConfirmOverride(null); }} disabled={busy}
+                  style={{ padding: '7px 16px', borderRadius: 8, border: 'none', background: confirmOverride === 'approved' ? C.green : '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: busy ? 'default' : 'pointer' }}>
+                  {busy ? 'Saving…' : confirmOverride === 'approved' ? 'Yes, approve' : 'Yes, reject'}
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, color: C.slate, flex: 1, minWidth: 200 }}>
+                  Boss can't get to the email? Decide here — recorded with today's date, then forward to finance as usual.
+                </span>
+                <button onClick={() => setConfirmOverride('approved')} disabled={busy}
+                  style={{ padding: '7px 16px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                  Approve as admin
+                </button>
+                <button onClick={() => setConfirmOverride('rejected')} disabled={busy}
+                  style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                  Reject
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           {canDelete && !confirmDelete && (
             <button onClick={() => setConfirmDelete(true)}
@@ -856,7 +941,7 @@ function PODetailModal({ po, busy, canDelete, onResend, onForward, onDelete, onC
             {po.status === 'pending' && (
               <button onClick={onResend} disabled={busy}
                 style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <RefreshCw size={13} /> Resend to approver
+                <RefreshCw size={13} /> {busy ? 'Resending…' : 'Resend to approver'}
               </button>
             )}
             {po.status === 'approved' && (
