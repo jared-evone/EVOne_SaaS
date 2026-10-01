@@ -369,3 +369,18 @@ grant execute on function inv_rename_lookup(text, uuid, text) to authenticated;
 -- the original Excel text for migrated rows). Only PR-2026-0030 ("Completion
 -- Products") matched a customer exactly and was linked; the rest link in-app.
 alter table inv_requests add column customer_id uuid references customers(id) on delete set null;
+
+-- 2026-10-01 · migration inv_spoilt_per_location — spoilt stock is held per
+-- location. Each usable location has a quarantine bucket (spoilt_for -> it);
+-- "Mark spoilt" in Stock Levels moves usable units into the bucket of the same
+-- location (inv_transfer, kind 'spoilt'). The original 'Spoilt' bucket keeps the
+-- 8 Excel-migrated spoilt units (location never recorded) until each is tagged
+-- to Toh Guan or Paya Ubi in the app.
+alter table inv_locations add column spoilt_for uuid references inv_locations(id);
+
+insert into inv_locations (name, code, usable, sort_order, spoilt_for)
+select 'Toh Guan — Spoilt', 'TG-SP', false, 3, id from inv_locations where code = 'TG';
+insert into inv_locations (name, code, usable, sort_order, spoilt_for)
+select 'Paya Ubi — Spoilt', 'PU-SP', false, 4, id from inv_locations where code = 'PU';
+
+update inv_locations set name = 'Spoilt — location not recorded', sort_order = 5 where code = 'SP';

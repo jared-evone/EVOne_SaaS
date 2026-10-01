@@ -19,7 +19,12 @@ export interface InvItem {
   sort_order: number;
 }
 
-export interface InvLocation { id: string; name: string; code: string | null; usable: boolean; sort_order: number; }
+export interface InvLocation {
+  id: string; name: string; code: string | null; usable: boolean; sort_order: number;
+  /** Set on a spoilt (quarantine) bucket: the usable location it belongs to.
+   *  Null on a non-usable location = spoilt units whose location was never recorded. */
+  spoilt_for: string | null;
+}
 
 export interface InvMovement {
   id: string;

@@ -92,7 +92,9 @@ export function ScreenInvStock() {
   const [managingLists, setManagingLists] = useState(false);
 
   const usable = locations.filter((l) => l.usable);
-  const spoiltLoc = locations.find((l) => !l.usable) ?? null;
+  const spoiltLocs = locations.filter((l) => !l.usable);
+  const spoiltTotal = (itemId: string) => spoiltLocs.reduce((n, l) => n + qtyAt(onHand, itemId, l.id), 0);
+  const spoiltLabel = (l: InvLocation) => (l.spoilt_for ? locations.find((u) => u.id === l.spoilt_for)?.name ?? l.name : 'Not recorded');
   const categories = useMemo(() => ['All', ...new Set([...lookups.categories.map((c) => c.name), ...items.map((i) => i.category || 'Uncategorised')])], [items, lookups]);
 
   const visible = items.filter((i) => {
@@ -115,12 +117,12 @@ export function ScreenInvStock() {
 
   const exportCsv = () => {
     const rows: (string | number | null)[][] = [[
-      'Item Name', 'Brand', 'Category', ...usable.map((l) => `${l.name} (Now)`), 'Spoilt', 'Total (Now)', 'Incoming', 'Reorder Point', 'Reorder Qty', 'Price',
+      'Item Name', 'Brand', 'Category', ...usable.map((l) => `${l.name} (Now)`), ...spoiltLocs.map((l) => l.name), 'Total (Now)', 'Incoming', 'Reorder Point', 'Reorder Qty', 'Price',
     ]];
     for (const i of visible) {
       rows.push([
         i.name, i.brand, i.category, ...usable.map((l) => qtyAt(onHand, i.id, l.id)),
-        spoiltLoc ? qtyAt(onHand, i.id, spoiltLoc.id) : 0, usableTotal(onHand, i.id, locations),
+        ...spoiltLocs.map((l) => qtyAt(onHand, i.id, l.id)), usableTotal(onHand, i.id, locations),
         incoming.get(i.id) ?? 0, i.reorder_point, i.reorder_qty, i.unit_price,
       ]);
     }
@@ -191,8 +193,13 @@ export function ScreenInvStock() {
                       const q = qtyAt(onHand, i.id, l.id);
                       return <td key={l.id} style={{ ...tdStyle, textAlign: 'right', fontWeight: 600, color: q < 0 ? '#C0321A' : q === 0 ? '#C7CDD3' : '#1a1a1a' }}>{q}</td>;
                     })}
-                    <td style={{ ...tdStyle, textAlign: 'right', color: spoiltLoc && qtyAt(onHand, i.id, spoiltLoc.id) ? '#C0321A' : '#C7CDD3' }}>
-                      {spoiltLoc ? qtyAt(onHand, i.id, spoiltLoc.id) || '—' : '—'}
+                    <td style={{ ...tdStyle, textAlign: 'right', color: spoiltTotal(i.id) ? '#C0321A' : '#C7CDD3' }}>
+                      <div style={{ fontWeight: spoiltTotal(i.id) ? 700 : 400 }}>{spoiltTotal(i.id) || '—'}</div>
+                      {spoiltLocs.filter((l) => qtyAt(onHand, i.id, l.id) !== 0).map((l) => (
+                        <div key={l.id} style={{ fontSize: 10, fontWeight: 600, color: l.spoilt_for ? C.slate : '#B07D00', whiteSpace: 'nowrap' }}>
+                          {spoiltLabel(l)} {qtyAt(onHand, i.id, l.id)}
+                        </div>
+                      ))}
                     </td>
                     <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 700, color: total < 0 ? '#C0321A' : C.green }}>
                       {total}
@@ -235,7 +242,7 @@ function ItemDrawer({ item, items, locations, onHand, me, lookups, onLookupsChan
   canEdit: boolean; canDelete: boolean; onClose: () => void; onChanged: () => Promise<void>;
 }) {
   const [history, setHistory] = useState<InvMovement[]>([]);
-  const [action, setAction] = useState<null | 'edit'>(null);
+  const [action, setAction] = useState<null | 'edit' | 'spoil' | 'tag'>(null);
   const [adjustLoc, setAdjustLoc] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -262,9 +269,11 @@ function ItemDrawer({ item, items, locations, onHand, me, lookups, onLookupsChan
   return (
     <Modal title={itemLabel(item, items)} subtitle={[item.brand, item.category].filter(Boolean).join(' · ')} width={720} onClose={onClose}>
       <ErrorBanner text={err} />
-      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${locations.length + 1}, minmax(0, 1fr))`, gap: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
         {locations.map((l) => {
           const q = qtyAt(onHand, item.id, l.id);
+          const unrecorded = !l.usable && !l.spoilt_for;
+          if (unrecorded && q === 0) return null;
           return (
             <div key={l.id} style={{ background: C.seasalt, borderRadius: 12, padding: '12px 14px', border: adjustLoc === l.id ? `1.5px solid ${C.green}` : '1.5px solid transparent' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -277,6 +286,12 @@ function ItemDrawer({ item, items, locations, onHand, me, lookups, onLookupsChan
                 )}
               </div>
               <div style={{ fontSize: 24, fontWeight: 700, color: q < 0 ? '#C0321A' : l.usable ? '#1a1a1a' : '#C0321A', marginTop: 4 }}>{q}</div>
+              {unrecorded && canEdit && item.active && (
+                <button onClick={() => setAction('tag')}
+                  style={{ marginTop: 6, padding: '4px 10px', borderRadius: 8, border: '1px solid #F3E3B0', background: '#FFF8E1', color: '#B07D00', fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+                  Tag to location
+                </button>
+              )}
             </div>
           );
         })}
@@ -296,12 +311,13 @@ function ItemDrawer({ item, items, locations, onHand, me, lookups, onLookupsChan
       )}
 
       <div style={{ fontSize: 11.5, color: C.slate, background: C.seasalt, borderRadius: 10, padding: '8px 12px' }}>
-        Stock changes through <b>Incoming Shipments</b> (in) and <b>Requests &amp; Delivery</b> (out).
+        Stock changes through <b>Incoming Shipments</b> (in) and <b>Requests &amp; Delivery</b> (out). <b>Mark spoilt</b> moves units out of a location's usable stock into its spoilt bucket.
         {canDelete ? <> As an admin you can correct a balance with the pencil on a location — a note is required and saved to the ledger.</> : <> This view is for monitoring.</>}
       </div>
 
       {canEdit && item.active && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button onClick={() => setAction('spoil')} style={{ ...ghostBtn, display: 'inline-flex', alignItems: 'center', gap: 6, color: '#C0321A' }}><Trash2 size={13} /> Mark spoilt</button>
           <button onClick={() => setAction('edit')} style={ghostBtn}>Edit item</button>
           {canDelete && <button onClick={() => void setActive(false)} disabled={busy} style={{ ...ghostBtn, marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}><Archive size={13} /> Archive</button>}
         </div>
@@ -310,6 +326,14 @@ function ItemDrawer({ item, items, locations, onHand, me, lookups, onLookupsChan
         <button onClick={() => void setActive(true)} disabled={busy} style={{ ...ghostBtn, alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 6 }}><ArchiveRestore size={13} /> Restore item</button>
       )}
 
+      {action === 'spoil' && (
+        <SpoilForm item={item} locations={locations} onHand={onHand} me={me} mode="mark"
+          onCancel={() => setAction(null)} onDone={after} />
+      )}
+      {action === 'tag' && (
+        <SpoilForm item={item} locations={locations} onHand={onHand} me={me} mode="tag"
+          onCancel={() => setAction(null)} onDone={after} />
+      )}
       {action === 'edit' && (
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16 }}>
           <ItemFields item={item} items={items} lookups={lookups} isAdmin={canDelete} onLookupsChanged={onLookupsChanged} onCancel={() => setAction(null)} onSaved={async () => { await after(); }} />
@@ -379,6 +403,75 @@ function AdjustForm({ item, location, current, me, onCancel, onDone }: {
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
         <button onClick={onCancel} style={ghostBtn}>Cancel</button>
         <button onClick={() => void save()} disabled={busy || !note.trim()} style={primaryBtn(busy || !note.trim())}>{busy ? 'Saving…' : 'Save correction'}</button>
+      </div>
+    </div>
+  );
+}
+
+// Mark spoilt: usable units at a location -> that location's spoilt bucket.
+// Tag: Excel-migrated spoilt units (location never recorded) -> a location's bucket.
+// Both are a two-row 'spoilt' movement via inv_transfer, so they show in the
+// item history and the ledger; marking reduces the location's usable stock.
+function SpoilForm({ item, locations, onHand, me, mode, onCancel, onDone }: {
+  item: InvItem; locations: InvLocation[]; onHand: OnHand; me: string; mode: 'mark' | 'tag';
+  onCancel: () => void; onDone: () => Promise<void>;
+}) {
+  const usableLocs = locations.filter((l) => l.usable);
+  const unrecorded = locations.find((l) => !l.usable && !l.spoilt_for) ?? null;
+  const bucketOf = (locId: string) => locations.find((l) => l.spoilt_for === locId) ?? null;
+  const [loc, setLoc] = useState(usableLocs[0]?.id ?? '');
+  const max = mode === 'mark' ? qtyAt(onHand, item.id, loc) : unrecorded ? qtyAt(onHand, item.id, unrecorded.id) : 0;
+  const [qty, setQty] = useState(mode === 'tag' ? String(Math.max(0, max)) : '1');
+  const [note, setNote] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const locName = usableLocs.find((l) => l.id === loc)?.name ?? '';
+
+  const save = async () => {
+    const n = Number(qty);
+    const bucket = bucketOf(loc);
+    if (!loc || !bucket) { setErr('Pick the location.'); return; }
+    if (!Number.isInteger(n) || n <= 0) { setErr('Quantity must be a whole number above zero.'); return; }
+    if (n > max) { setErr(mode === 'mark' ? `Only ${Math.max(0, max)} usable at ${locName}.` : `Only ${max} spoilt unit${max === 1 ? '' : 's'} have no location.`); return; }
+    if (mode === 'mark' && !note.trim()) { setErr('Describe what is wrong with the unit(s).'); return; }
+    setBusy(true);
+    const { error } = await supabase.rpc('inv_transfer', {
+      p_item: item.id,
+      p_from: mode === 'mark' ? loc : unrecorded!.id,
+      p_to: bucket.id, p_qty: n, p_spoilt: true, p_date: todayISO(),
+      p_note: mode === 'mark' ? `Marked spoilt at ${locName} — ${note.trim()}` : `Excel spoilt units tagged to ${locName}${note.trim() ? ` — ${note.trim()}` : ''}`,
+      p_by: me,
+    });
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    await onDone();
+  };
+
+  return (
+    <div style={{ background: '#FDF6F5', border: '1px solid #F5D5D0', borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: '#C0321A' }}>
+        {mode === 'mark' ? 'Mark units spoilt' : 'Tag spoilt units to a location'}
+      </div>
+      {mode === 'tag' && <div style={{ fontSize: 12, color: C.slate }}>These {max} spoilt unit{max === 1 ? '' : 's'} came from the Excel sheet without a location. Usable stock is not affected.</div>}
+      <ErrorBanner text={err} />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 120px', gap: 12 }}>
+        <Field label={mode === 'mark' ? 'Location' : 'Belongs to'}>
+          <select value={loc} onChange={(e) => setLoc(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+            {usableLocs.map((l) => (
+              <option key={l.id} value={l.id}>{l.name}{mode === 'mark' ? ` — ${qtyAt(onHand, item.id, l.id)} usable` : ''}</option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Quantity"><input type="number" min="1" step="1" value={qty} onChange={(e) => setQty(e.target.value)} style={inputStyle} /></Field>
+      </div>
+      <Field label={mode === 'mark' ? "What's wrong (required)" : 'Note'}>
+        <input value={note} onChange={(e) => setNote(e.target.value)} placeholder={mode === 'mark' ? 'e.g. Cracked casing, water damage, faulty board' : 'Optional'} style={inputStyle} />
+      </Field>
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button onClick={onCancel} style={ghostBtn}>Cancel</button>
+        <button onClick={() => void save()} disabled={busy} style={{ ...primaryBtn(busy), background: busy ? '#ccc' : '#C0321A' }}>
+          {busy ? 'Saving…' : mode === 'mark' ? 'Mark spoilt' : 'Tag location'}
+        </button>
       </div>
     </div>
   );
