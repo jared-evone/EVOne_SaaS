@@ -568,33 +568,39 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                   <>
                     <span style={{ fontSize: 12, fontWeight: 700, color: sc.color, background: sc.bg, padding: '3px 10px', borderRadius: 99 }}>{status}</span>
                     <span style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>{col.length}</span>
+                    {isWonSlot && (() => {
+                      // Delivery-stage switch, inline on the header row so the Won
+                      // column stays the same height as the others. Dropping a card
+                      // while a stage is selected moves it into that stage.
+                      const pc = wonStage === 'all' ? null : WON_STAGE_COLORS[wonStage];
+                      const countOf = (ws: WonStage) => wonAll.filter((q) => q.won_stage === ws).length;
+                      return (
+                        <span style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', minWidth: 0 }}>
+                          <select value={wonStage} onChange={(e) => setWonStage(e.target.value as 'all' | WonStage)}
+                            title="Filter won quotes by delivery stage"
+                            style={{
+                              appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none',
+                              padding: '3px 24px 3px 10px', borderRadius: 99, maxWidth: 170,
+                              border: `1px solid ${pc ? pc.color : '#E0E5E9'}`,
+                              background: pc ? pc.bg : C.white,
+                              color: pc ? pc.color : C.slate,
+                              fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                              outline: 'none', textOverflow: 'ellipsis', whiteSpace: 'nowrap', overflow: 'hidden',
+                            }}>
+                            <option value="all">All stages · {wonAll.length}</option>
+                            {WON_STAGES.map((ws) => (
+                              <option key={ws} value={ws}>{WON_STAGE_LABELS[ws]} · {countOf(ws)}</option>
+                            ))}
+                          </select>
+                          <ChevronDown size={12} strokeWidth={2.5}
+                            style={{ position: 'absolute', right: 8, pointerEvents: 'none', color: pc ? pc.color : C.slate }} />
+                        </span>
+                      );
+                    })()}
                   </>
                 )}
-                <span style={{ marginLeft: 'auto', fontSize: 11, color: C.slate, fontWeight: 600 }}>{fmtMoney(colValue)}</span>
+                <span style={{ marginLeft: 'auto', fontSize: 11, color: C.slate, fontWeight: 600, whiteSpace: 'nowrap' }}>{fmtMoney(colValue)}</span>
               </div>
-              {isWonSlot && (
-                // Delivery-stage chips. Dropping a card while a stage is selected
-                // moves it into that stage; "All" leaves the stage as-is.
-                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', padding: '0 4px', marginTop: -4 }}>
-                  {(['all', ...WON_STAGES] as const).map((ws) => {
-                    const on = ws === wonStage;
-                    const pc = ws === 'all' ? QUOTE_STATUS_COLORS.Won : WON_STAGE_COLORS[ws];
-                    const n = ws === 'all' ? wonAll.length : wonAll.filter((q) => q.won_stage === ws).length;
-                    return (
-                      <button key={ws} onClick={() => setWonStage(ws)} title={ws === 'all' ? 'Show every won quote' : `Show ${WON_STAGE_LABELS[ws]} quotes`}
-                        style={{
-                          display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px', borderRadius: 99,
-                          border: `1px solid ${on ? pc.color : '#E0E5E9'}`,
-                          background: on ? pc.bg : 'transparent',
-                          color: on ? pc.color : C.slate,
-                          fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap',
-                        }}>
-                        {ws === 'all' ? 'All' : WON_STAGE_LABELS[ws]}<span style={{ opacity: on ? 0.75 : 0.6 }}>{n}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
               {/* Fixed-height slot list — holds PER_PAGE cards whether or not they exist */}
               <div style={{ height: LIST_H, display: 'flex', flexDirection: 'column', gap: CARD_GAP, overflow: 'hidden' }}>
               {pageCol.map((q) => (
