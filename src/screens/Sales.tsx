@@ -32,6 +32,22 @@ export const QUOTE_STATUS_COLORS: Record<QuoteStatus, { bg: string; color: strin
   Lost:        { bg: '#FDEAEA', color: '#C0321A' },
 };
 
+// Delivery stage of a WON quote. Won stays one status (won value, win rate and
+// reporting are unaffected); the stage only tracks post-win delivery. Quotes
+// won before stages existed carry null and show under the Won column's "All".
+export type WonStage = 'onboarding' | 'installing' | 'completed_invoiced';
+export const WON_STAGES: WonStage[] = ['onboarding', 'installing', 'completed_invoiced'];
+export const WON_STAGE_LABELS: Record<WonStage, string> = {
+  onboarding: 'Onboarding',
+  installing: 'Installing',
+  completed_invoiced: 'Completed & invoiced',
+};
+export const WON_STAGE_COLORS: Record<WonStage, { bg: string; color: string }> = {
+  onboarding:         { bg: '#E3F0FF', color: '#1A62C0' },
+  installing:         { bg: '#FFF8E1', color: '#B07D00' },
+  completed_invoiced: { bg: '#E4F3E3', color: '#1B512D' },
+};
+
 export interface Quote {
   id: string;
   ref: string;
@@ -48,6 +64,7 @@ export interface Quote {
   outcome_date: string | null;
   lost_reason: string | null;
   won_at: string | null;
+  won_stage?: WonStage | null;
   ehvcg: boolean;
   high_potential: boolean;
   referral: boolean;
@@ -245,8 +262,20 @@ export function ScreenSales() {
 
   useEffect(() => { void fetchAll(); void fetchCostOptions(); }, []);
 
-  const setStatus = async (quote: Quote, status: QuoteStatus) => {
-    if (!canEdit || quote.status === status) return;
+  // `stage` comes from the Won column's active stage chip (undefined = "All").
+  const setStatus = async (quote: Quote, status: QuoteStatus, stage?: WonStage) => {
+    if (!canEdit) return;
+    // Already won: a drop onto a stage chip only moves the delivery stage.
+    if (quote.status === status) {
+      if (status !== 'Won' || !stage || quote.won_stage === stage) return;
+      setQuotes((qs) => qs.map((q) => (q.id === quote.id ? { ...q, won_stage: stage } : q)));
+      const { error: err } = await supabase
+        .from('sales_quotations')
+        .update({ won_stage: stage, updated_at: new Date().toISOString() })
+        .eq('id', quote.id);
+      if (err) { setError(err.message); void fetchAll(); }
+      return;
+    }
     // Lost needs a mandatory reason — open the modal pre-set to Lost rather than moving silently.
     if (status === 'Lost') {
       setModal({ mode: 'edit', quote: { ...quote, status: 'Lost', outcome_date: quote.outcome_date ?? todayStr() } });
@@ -255,10 +284,12 @@ export function ScreenSales() {
     // Dragging into Won stamps today as the outcome date (editable later in the modal).
     const outcome_date = isDecided(status) ? (quote.outcome_date ?? todayStr()) : null;
     const won_at = status === 'Won' ? new Date().toISOString() : null;
-    setQuotes((qs) => qs.map((q) => (q.id === quote.id ? { ...q, status, outcome_date, won_at } : q)));
+    // A fresh win starts delivery at Onboarding unless dropped on a specific stage.
+    const won_stage: WonStage | null = status === 'Won' ? (stage ?? 'onboarding') : null;
+    setQuotes((qs) => qs.map((q) => (q.id === quote.id ? { ...q, status, outcome_date, won_at, won_stage } : q)));
     const { error: err } = await supabase
       .from('sales_quotations')
-      .update({ status, outcome_date, won_at, updated_at: new Date().toISOString() })
+      .update({ status, outcome_date, won_at, won_stage, updated_at: new Date().toISOString() })
       .eq('id', quote.id);
     if (err) { setError(err.message); void fetchAll(); }
   };
@@ -459,7 +490,7 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
   quotes: Quote[];
   canEdit: boolean;
   onOpen: (q: Quote) => void;
-  onDropStatus: (q: Quote, s: QuoteStatus) => void;
+  onDropStatus: (q: Quote, s: QuoteStatus, stage?: WonStage) => void;
 }) {
   const [dragOver, setDragOver] = useState<QuoteStatus | null>(null);
   const [pages, setPages] = useState<Record<string, number>>({});
@@ -467,6 +498,9 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
   // shows either Long-term or On hold — switched from its own header, so both
   // statuses are reachable without a sixth column crowding the board.
   const [parked, setParked] = useState<QuoteStatus>('Long-term');
+  // The Won column filters by delivery stage the same way; 'all' keeps every
+  // won quote visible, including those won before stages existed.
+  const [wonStage, setWonStage] = useState<'all' | WonStage>('all');
   const SLOTS = ['Draft', 'Sent', 'Won', 'parked', 'Lost'] as const;
   const PER_PAGE = 5;
   // Every card is the SAME height and every column reserves a full page of slots,
@@ -481,15 +515,18 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
       <div style={{ display: 'grid', gridTemplateColumns: `repeat(${SLOTS.length}, minmax(230px, 1fr))`, gap: 12, minWidth: SLOTS.length * 230 + (SLOTS.length - 1) * 12 }}>
         {SLOTS.map((slot) => {
           const isParkedSlot = slot === 'parked';
+          const isWonSlot = slot === 'Won';
           const status: QuoteStatus = isParkedSlot ? parked : (slot as QuoteStatus);
-          const col = quotes.filter((q) => q.status === status);
+          const col = quotes.filter((q) => q.status === status && (!isWonSlot || wonStage === 'all' || q.won_stage === wonStage));
           const colValue = col.reduce((s, q) => s + Number(q.total), 0);
           const sc = QUOTE_STATUS_COLORS[status];
           const isTarget = dragOver === status;
+          const pageKey = isWonSlot ? `Won:${wonStage}` : status;
           const totalPages = Math.max(1, Math.ceil(col.length / PER_PAGE));
-          const page = Math.min(pages[status] ?? 0, totalPages - 1);
+          const page = Math.min(pages[pageKey] ?? 0, totalPages - 1);
           const pageCol = col.slice(page * PER_PAGE, page * PER_PAGE + PER_PAGE);
-          const setPage = (p: number) => setPages((prev) => ({ ...prev, [status]: Math.max(0, Math.min(totalPages - 1, p)) }));
+          const setPage = (p: number) => setPages((prev) => ({ ...prev, [pageKey]: Math.max(0, Math.min(totalPages - 1, p)) }));
+          const wonAll = quotes.filter((q) => q.status === 'Won');
           return (
             <div key={slot}
               onDragOver={canEdit ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dragOver !== status) setDragOver(status); } : undefined}
@@ -499,7 +536,7 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                 setDragOver(null);
                 const id = e.dataTransfer.getData('text/plain');
                 const q = quotes.find((x) => x.id === id);
-                if (q) onDropStatus(q, status);
+                if (q) onDropStatus(q, status, isWonSlot && wonStage !== 'all' ? wonStage : undefined);
               } : undefined}
               style={{
                 background: isTarget ? C.honeydew : C.seasalt,
@@ -535,6 +572,29 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                 )}
                 <span style={{ marginLeft: 'auto', fontSize: 11, color: C.slate, fontWeight: 600 }}>{fmtMoney(colValue)}</span>
               </div>
+              {isWonSlot && (
+                // Delivery-stage chips. Dropping a card while a stage is selected
+                // moves it into that stage; "All" leaves the stage as-is.
+                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', padding: '0 4px', marginTop: -4 }}>
+                  {(['all', ...WON_STAGES] as const).map((ws) => {
+                    const on = ws === wonStage;
+                    const pc = ws === 'all' ? QUOTE_STATUS_COLORS.Won : WON_STAGE_COLORS[ws];
+                    const n = ws === 'all' ? wonAll.length : wonAll.filter((q) => q.won_stage === ws).length;
+                    return (
+                      <button key={ws} onClick={() => setWonStage(ws)} title={ws === 'all' ? 'Show every won quote' : `Show ${WON_STAGE_LABELS[ws]} quotes`}
+                        style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px', borderRadius: 99,
+                          border: `1px solid ${on ? pc.color : '#E0E5E9'}`,
+                          background: on ? pc.bg : 'transparent',
+                          color: on ? pc.color : C.slate,
+                          fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap',
+                        }}>
+                        {ws === 'all' ? 'All' : WON_STAGE_LABELS[ws]}<span style={{ opacity: on ? 0.75 : 0.6 }}>{n}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
               {/* Fixed-height slot list — holds PER_PAGE cards whether or not they exist */}
               <div style={{ height: LIST_H, display: 'flex', flexDirection: 'column', gap: CARD_GAP, overflow: 'hidden' }}>
               {pageCol.map((q) => (
@@ -549,6 +609,11 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                   }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: C.slate }}>{q.ref}</span>
+                    {q.status === 'Won' && q.won_stage && (
+                      <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 6, background: WON_STAGE_COLORS[q.won_stage].bg, color: WON_STAGE_COLORS[q.won_stage].color, textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>
+                        {WON_STAGE_LABELS[q.won_stage]}
+                      </span>
+                    )}
                     {(q.ehvcg || q.high_potential) && (
                       <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                         {q.ehvcg && (
@@ -674,6 +739,7 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
     salesperson_id: quote?.salesperson_id ?? salespersonId,
     salesperson_name: quote?.salesperson_name ?? salespersonName,
     status: quote?.status ?? ('Draft' as QuoteStatus),
+    won_stage: (quote?.won_stage ?? null) as WonStage | null,
     notes: quote?.notes ?? '',
     quote_date: quote?.quote_date ?? todayStr(),
     outcome_date: quote?.outcome_date ?? '',
@@ -698,6 +764,8 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
       status,
       outcome_date: isDecided(status) ? (f.outcome_date || todayStr()) : '',
       lost_reason: status === 'Lost' ? f.lost_reason : '',
+      // A fresh win starts at Onboarding; leaving Won clears the stage.
+      won_stage: status === 'Won' ? (f.won_stage ?? 'onboarding') : null,
     }));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -893,6 +961,7 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
       pdf_path: files[0]?.path ?? null,
       pdf_filename: files[0]?.name ?? null,
       won_at: form.status === 'Won' ? (quote?.won_at ?? new Date().toISOString()) : null,
+      won_stage: form.status === 'Won' ? form.won_stage : null,
       updated_at: new Date().toISOString(),
     };
     const { error: err } = isNew
@@ -957,6 +1026,29 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
             {QUOTE_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
+        {form.status === 'Won' && (
+          <div>
+            <label style={label}>Delivery Stage</label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {WON_STAGES.map((ws) => {
+                const on = form.won_stage === ws;
+                const pc = WON_STAGE_COLORS[ws];
+                return (
+                  <button key={ws} type="button" disabled={readOnly}
+                    onClick={() => setForm((f) => ({ ...f, won_stage: ws }))}
+                    style={{ padding: '7px 14px', borderRadius: 99, border: `1px solid ${on ? pc.color : '#EBEBEB'}`,
+                      background: on ? pc.bg : C.white, color: on ? pc.color : C.slate,
+                      fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: readOnly ? 'default' : 'pointer' }}>
+                    {on ? '✓ ' : ''}{WON_STAGE_LABELS[ws]}
+                  </button>
+                );
+              })}
+            </div>
+            {!form.won_stage && (
+              <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Not staged yet — pick where this won deal is in delivery.</div>
+            )}
+          </div>
+        )}
         {isDecided(form.status) && (
           <div>
             <label style={label}>{form.status} Date</label>
