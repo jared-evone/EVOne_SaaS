@@ -345,9 +345,10 @@ src/
                                               exports PICReviewBoard)
                             TSDAdminApp.tsx  (Work Orders + FormBuilder)
                             TechniciansAdmin.tsx
-                            SopLibrary.tsx   (SOP Library — controlled PDF
-                                              SOPs: categories, tags, revisions,
-                                              review dates, flags)
+                            SopLibrary.tsx   (SOP Library — controlled SOPs:
+                                              procedure PDF + programme files
+                                              + inline videos; categories, tags,
+                                              revisions, review dates, flags)
                             OverlayForm.tsx, PDFExport.tsx
 ```
 

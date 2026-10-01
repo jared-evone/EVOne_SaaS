@@ -91,3 +91,28 @@ create policy "tsd_sops_delete" on storage.objects for delete to authenticated u
 --     from app_user_permissions where department = 'tech' group by user_id
 --   ) b where v or e or d
 --   on conflict (user_id, department, screen_key) do nothing;
+
+-- 2026-10-01 · migration tsd_sop_attachments — programme files + videos.
+-- Each SOP can carry any number of attachments next to its PDF: charger
+-- programme / firmware / config files (any type) and how-to videos, which play
+-- inline in the viewer. Files live in the same private tsd-sops bucket under
+-- <sop_id>/attachments/ and are uploaded through uploadWithProgress()
+-- (src/lib/supabase.ts) so large videos show progress. The procedure PDF is now
+-- optional — an SOP can be a PDF, files/videos, or both.
+create table tsd_sop_attachments (
+  id          uuid primary key default gen_random_uuid(),
+  sop_id      uuid not null references tsd_sops(id) on delete cascade,
+  kind        text not null check (kind in ('file', 'video')),
+  name        text not null,
+  description text,
+  path        text not null,
+  size        bigint,
+  mime        text,
+  uploaded_at timestamptz not null default now(),
+  uploaded_by text
+);
+create index tsd_sop_attachments_sop_idx on tsd_sop_attachments (sop_id, kind, uploaded_at);
+
+alter table tsd_sop_attachments enable row level security;
+create policy "authenticated full access" on tsd_sop_attachments
+  for all to authenticated using (true) with check (true);

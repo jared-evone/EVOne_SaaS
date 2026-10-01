@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { C } from '../../theme';
-import { supabase } from '../../lib/supabase';
+import { supabase, uploadWithProgress } from '../../lib/supabase';
 import { usePermissions } from '../../permissions';
 import { useIsMobile } from '../../lib/useIsMobile';
 import {
   Search, Plus, Pin, PinOff, FileText, Download, ExternalLink, ChevronLeft, ChevronRight, Pencil,
   Archive, ArchiveRestore, Trash2, Flag, History, BookOpen, Clock, X, FolderClosed, Upload,
+  Video, FileCode2, Paperclip, Check,
 } from 'lucide-react';
 
 const BUCKET = 'tsd-sops';
@@ -49,6 +50,22 @@ interface SopRevision {
   replaced_at: string;
   replaced_by: string | null;
 }
+
+interface SopAttachment {
+  id: string;
+  sop_id: string;
+  kind: 'file' | 'video';
+  name: string;
+  description: string | null;
+  path: string;
+  size: number | null;
+  mime: string | null;
+  uploaded_at: string;
+  uploaded_by: string | null;
+}
+
+// Light per-SOP attachment index for list badges + search.
+interface AttachmentStub { sop_id: string; kind: 'file' | 'video'; name: string; }
 
 type View =
   | { kind: 'all' } | { kind: 'pinned' } | { kind: 'recent' } | { kind: 'review' }
@@ -102,12 +119,89 @@ function addMonthsISO(iso: string, months: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-async function uploadPdf(sopKey: string, file: File): Promise<{ path: string; name: string; size: number }> {
+async function uploadPdf(sopKey: string, file: File, onProgress?: (f: number) => void): Promise<{ path: string; name: string; size: number }> {
   const safe = file.name.replace(/[^\w.\-]+/g, '_');
   const path = `${sopKey}/${Date.now()}-${safe}`;
-  const { error } = await supabase.storage.from(BUCKET).upload(path, file, { contentType: 'application/pdf', upsert: false });
-  if (error) throw new Error(`PDF upload failed: ${error.message}`);
+  // Force the PDF content type so the viewer iframe renders it inline.
+  const pdf = file.type === 'application/pdf' ? file : new File([file], file.name, { type: 'application/pdf' });
+  try {
+    await uploadWithProgress(BUCKET, path, pdf, onProgress);
+  } catch (e) {
+    throw new Error(`PDF upload failed: ${(e as Error).message}`);
+  }
   return { path, name: file.name, size: file.size };
+}
+
+const VIDEO_EXT = /\.(mp4|m4v|mov|webm|ogv|avi|mkv|wmv|3gp)$/i;
+const isVideoFile = (f: File) => f.type.startsWith('video/') || VIDEO_EXT.test(f.name);
+
+// Upload one attachment (programme file or video) with progress, then index it.
+async function uploadAttachment(sopId: string, file: File, me: string, onProgress: (f: number) => void): Promise<void> {
+  const safe = file.name.replace(/[^\w.\-]+/g, '_');
+  const path = `${sopId}/attachments/${Date.now()}-${safe}`;
+  await uploadWithProgress(BUCKET, path, file, onProgress);
+  const { error } = await supabase.from('tsd_sop_attachments').insert({
+    sop_id: sopId, kind: isVideoFile(file) ? 'video' : 'file', name: file.name,
+    path, size: file.size, mime: file.type || null, uploaded_by: me,
+  });
+  if (error) {
+    await supabase.storage.from(BUCKET).remove([path]);
+    throw new Error(`Could not save ${file.name}: ${error.message}`);
+  }
+}
+
+interface UploadState { name: string; index: number; total: number; fraction: number; }
+
+function UploadProgress({ state }: { state: UploadState }) {
+  const pct = Math.round(state.fraction * 100);
+  return (
+    <div style={{ background: C.seasalt, borderRadius: 12, padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, color: C.slate }}>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 }}>
+          Uploading {state.name}{state.total > 1 ? ` (${state.index} of ${state.total})` : ''}
+        </span>
+        <span style={{ fontWeight: 700, color: C.green }}>{pct}%</span>
+      </div>
+      <div style={{ height: 6, borderRadius: 99, background: '#E0E5E9', overflow: 'hidden' }}>
+        <div style={{ width: `${pct}%`, height: '100%', background: C.green, transition: 'width .2s' }} />
+      </div>
+    </div>
+  );
+}
+
+// Multi-file picker for programme files + videos (any type).
+function AttachmentDrop({ files, onChange }: { files: File[]; onChange: (f: File[]) => void }) {
+  const ref = useRef<HTMLInputElement>(null);
+  const add = (list: FileList | null) => {
+    if (!list) return;
+    const next = [...files];
+    for (const f of Array.from(list)) if (!next.some((x) => x.name === f.name && x.size === f.size)) next.push(f);
+    onChange(next);
+  };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); add(e.dataTransfer.files); }}
+        onClick={() => ref.current?.click()}
+        style={{ border: '1.5px dashed #CBD5DC', background: C.seasalt, borderRadius: 14, padding: '14px 16px', textAlign: 'center', cursor: 'pointer', fontSize: 13, color: C.slate }}>
+        <input ref={ref} type="file" multiple style={{ display: 'none' }} onChange={(e) => { add(e.target.files); e.target.value = ''; }} />
+        <Paperclip size={14} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 6 }} />
+        Drop programme files and videos here, or click to choose — any file type
+      </div>
+      {files.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {files.map((f, i) => (
+            <div key={`${f.name}-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 8, background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '7px 10px', fontSize: 12.5 }}>
+              {isVideoFile(f) ? <Video size={14} color={C.opal} /> : <FileCode2 size={14} color={C.slate} />}
+              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#1a1a1a', fontWeight: 600 }}>{f.name}</span>
+              <span style={{ color: C.slate, fontSize: 11, whiteSpace: 'nowrap' }}>{isVideoFile(f) ? 'Video' : 'File'} · {fmtSize(f.size)}</span>
+              <button type="button" onClick={() => onChange(files.filter((_, j) => j !== i))} title="Remove"
+                style={{ border: 'none', background: 'transparent', color: C.slate, cursor: 'pointer', display: 'inline-flex', padding: 2 }}><X size={13} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 async function signedUrl(path: string, download?: string): Promise<string | null> {
@@ -162,16 +256,30 @@ export function SopLibrary() {
   const [modal, setModal] = useState<{ mode: 'new' } | { mode: 'edit'; sop: Sop } | null>(null);
   const [manageCats, setManageCats] = useState(false);
 
+  const [stubs, setStubs] = useState<AttachmentStub[]>([]);
+
   const fetchAll = async () => {
-    const [{ data: s, error: sErr }, { data: c }] = await Promise.all([
+    const [{ data: s, error: sErr }, { data: c }, { data: a }] = await Promise.all([
       supabase.from('tsd_sops').select('*').order('doc_no'),
       supabase.from('tsd_sop_categories').select('*').order('sort_order').order('name'),
+      supabase.from('tsd_sop_attachments').select('sop_id, kind, name'),
     ]);
     if (sErr) setError(sErr.message);
     setSops((s as Sop[]) ?? []);
     setCategories((c as SopCategory[]) ?? []);
+    setStubs((a as AttachmentStub[]) ?? []);
     setLoading(false);
   };
+  const attachCounts = useMemo(() => {
+    const m = new Map<string, { files: number; videos: number; names: string }>();
+    for (const a of stubs) {
+      const e = m.get(a.sop_id) ?? { files: 0, videos: 0, names: '' };
+      if (a.kind === 'video') e.videos++; else e.files++;
+      e.names += ` ${a.name}`;
+      m.set(a.sop_id, e);
+    }
+    return m;
+  }, [stubs]);
   useEffect(() => { void fetchAll(); }, []);
 
   const catName = (id: string | null) => categories.find((c) => c.id === id)?.name ?? 'Uncategorised';
@@ -209,7 +317,7 @@ export function SopLibrary() {
   const matches = (s: Sop) => {
     if (tagFilter && !s.tags.includes(tagFilter)) return false;
     if (terms.length === 0) return true;
-    const hay = [s.doc_no, s.title, s.description ?? '', s.owner ?? '', catName(s.category_id), ...s.tags].join(' ').toLowerCase();
+    const hay = [s.doc_no, s.title, s.description ?? '', s.owner ?? '', catName(s.category_id), ...s.tags, attachCounts.get(s.id)?.names ?? ''].join(' ').toLowerCase();
     return terms.every((t) => hay.includes(t));
   };
 
@@ -309,7 +417,7 @@ export function SopLibrary() {
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ position: 'relative', flex: 1, minWidth: 240 }}>
           <input value={search} onChange={(e) => { setSearch(e.target.value); setOpenId(null); }}
-            placeholder="Search SOPs by title, number, tag, owner or category…"
+            placeholder="Search SOPs by title, number, tag, owner, category or file name…"
             style={{ width: '100%', padding: '11px 36px 11px 40px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 14, outline: 'none', background: C.seasalt, boxSizing: 'border-box' }} />
           <span style={{ position: 'absolute', left: 15, top: '50%', transform: 'translateY(-50%)', color: C.slate, display: 'inline-flex' }}><Search size={16} /></span>
           {search && (
@@ -371,7 +479,11 @@ export function SopLibrary() {
                         <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 700, color: C.slate }}>{s.revision}</span>
                       </div>
                       <div style={{ fontSize: 14, fontWeight: 700, color: '#1a1a1a', lineHeight: 1.3 }}>{s.title}</div>
-                      <div style={{ fontSize: 11, color: C.slate }}>{catName(s.category_id)}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: C.slate }}>
+                        <span>{catName(s.category_id)}</span>
+                        {(attachCounts.get(s.id)?.videos ?? 0) > 0 && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><Video size={11} /> {attachCounts.get(s.id)!.videos}</span>}
+                        {(attachCounts.get(s.id)?.files ?? 0) > 0 && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}><FileCode2 size={11} /> {attachCounts.get(s.id)!.files}</span>}
+                      </div>
                     </button>
                   ))}
                 </div>
@@ -397,12 +509,12 @@ export function SopLibrary() {
                         style={{ alignSelf: 'flex-start', border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', fontFamily: 'Figtree', display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>
                         <FolderClosed size={14} color={C.slate} /> {g.name} <span style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>· {list.length}</span>
                       </button>
-                      <SopList sops={list} catName={catName} showCategory={false} onOpen={setOpenId} />
+                      <SopList sops={list} catName={catName} showCategory={false} onOpen={setOpenId} attachCounts={attachCounts} />
                     </div>
                   );
                 })
               ) : (
-                <SopList sops={sorted} catName={catName} showCategory onOpen={setOpenId} />
+                <SopList sops={sorted} catName={catName} showCategory onOpen={setOpenId} attachCounts={attachCounts} />
               )}
             </>
           )}
@@ -428,7 +540,7 @@ export function SopLibrary() {
 
 // ── Document list ─────────────────────────────────────────────────
 
-function SopList({ sops, catName, showCategory, onOpen }: { sops: Sop[]; catName: (id: string | null) => string; showCategory: boolean; onOpen: (id: string) => void }) {
+function SopList({ sops, catName, showCategory, onOpen, attachCounts }: { sops: Sop[]; catName: (id: string | null) => string; showCategory: boolean; onOpen: (id: string) => void; attachCounts: Map<string, { files: number; videos: number }> }) {
   return (
     <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
       {sops.map((s, i) => (
@@ -463,6 +575,24 @@ function SopList({ sops, catName, showCategory, onOpen }: { sops: Sop[]; catName
               </div>
             )}
           </div>
+          {(() => {
+            const ac = attachCounts.get(s.id);
+            if (!ac) return null;
+            return (
+              <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                {ac.videos > 0 && (
+                  <span title={`${ac.videos} video${ac.videos === 1 ? '' : 's'}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: '#E3F0FF', color: '#1A62C0' }}>
+                    <Video size={11} strokeWidth={2.5} /> {ac.videos}
+                  </span>
+                )}
+                {ac.files > 0 && (
+                  <span title={`${ac.files} programme file${ac.files === 1 ? '' : 's'}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: '#F3F3F3', color: '#767B77' }}>
+                    <FileCode2 size={11} strokeWidth={2.5} /> {ac.files}
+                  </span>
+                )}
+              </div>
+            );
+          })()}
           <div style={{ textAlign: 'right', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: C.green }}>{s.revision}</span>
             <span style={{ fontSize: 11, color: C.slate, whiteSpace: 'nowrap' }}>Updated {fmtDate(s.updated_at)}</span>
@@ -489,6 +619,15 @@ function SopViewer({ sop, categoryName, canEdit, canDelete, me, onBack, onEdit, 
   const [flagText, setFlagText] = useState('');
   const [revising, setRevising] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [attachments, setAttachments] = useState<SopAttachment[]>([]);
+  const [tab, setTab] = useState<'doc' | 'videos' | 'files' | null>(null);
+
+  const loadAttachments = async () => {
+    const { data } = await supabase.from('tsd_sop_attachments').select('*').eq('sop_id', sop.id).order('uploaded_at');
+    const list = (data as SopAttachment[]) ?? [];
+    setAttachments(list);
+    return list;
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -496,8 +635,18 @@ function SopViewer({ sop, categoryName, canEdit, canDelete, me, onBack, onEdit, 
     if (sop.pdf_path) void signedUrl(sop.pdf_path).then((u) => { if (!cancelled) setUrl(u); });
     void supabase.from('tsd_sop_revisions').select('*').eq('sop_id', sop.id).order('replaced_at', { ascending: false })
       .then(({ data }) => { if (!cancelled) setRevisions((data as SopRevision[]) ?? []); });
+    void loadAttachments().then((list) => {
+      if (cancelled) return;
+      // Land on the procedure PDF; video/file-only SOPs open on what they have.
+      setTab((t) => t ?? (sop.pdf_path ? 'doc' : list.some((a) => a.kind === 'video') ? 'videos' : list.length ? 'files' : 'doc'));
+    });
     return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sop.id, sop.pdf_path]);
+
+  const videos = attachments.filter((a) => a.kind === 'video');
+  const files = attachments.filter((a) => a.kind === 'file');
+  const activeTab = tab ?? 'doc';
 
   const patch = async (p: Partial<Sop>) => {
     setBusy(true);
@@ -529,7 +678,7 @@ function SopViewer({ sop, categoryName, canEdit, canDelete, me, onBack, onEdit, 
 
   const handleDelete = async () => {
     setBusy(true);
-    const paths = [sop.pdf_path, ...revisions.map((r) => r.pdf_path)].filter((p): p is string => !!p);
+    const paths = [sop.pdf_path, ...revisions.map((r) => r.pdf_path), ...attachments.map((a) => a.path)].filter((p): p is string => !!p);
     if (paths.length) await supabase.storage.from(BUCKET).remove(paths);
     const { error } = await supabase.from('tsd_sops').delete().eq('id', sop.id);
     setBusy(false);
@@ -589,7 +738,7 @@ function SopViewer({ sop, categoryName, canEdit, canDelete, me, onBack, onEdit, 
 
       {confirmDelete && (
         <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#C0321A' }}>Delete {sop.doc_no} and all {revisions.length + 1} version{revisions.length ? 's' : ''}? This can't be undone — consider Archive instead.</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#C0321A' }}>Delete {sop.doc_no}, all {revisions.length + 1} version{revisions.length ? 's' : ''}{attachments.length ? ` and ${attachments.length} attached file${attachments.length === 1 ? '' : 's'}` : ''}? This can't be undone — consider Archive instead.</div>
           <div style={{ display: 'flex', gap: 8 }}>
             <button onClick={() => setConfirmDelete(false)} style={actionBtn()}>Cancel</button>
             <button onClick={() => void handleDelete()} disabled={busy} style={{ ...actionBtn(), border: 'none', background: '#C0321A', color: C.white }}>{busy ? 'Deleting…' : 'Yes, delete'}</button>
@@ -598,14 +747,40 @@ function SopViewer({ sop, categoryName, canEdit, canDelete, me, onBack, onEdit, 
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'minmax(0, 1fr) 300px', gap: 16, alignItems: 'start' }}>
-        {/* PDF preview */}
-        <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden', height: isMobile ? 420 : '76vh', display: 'flex', flexDirection: 'column' }}>
-          {!sop.pdf_path ? (
-            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.slate, fontSize: 13 }}>No PDF attached.</div>
-          ) : url ? (
-            <iframe src={url} title={sop.title} style={{ flex: 1, width: '100%', border: 'none', display: 'block' }} />
+        {/* Procedure / videos / programme files */}
+        <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden', height: isMobile ? 'auto' : '76vh', minHeight: 420, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ display: 'flex', gap: 4, padding: 6, borderBottom: '1px solid #F3F3F3', background: C.seasalt, flexWrap: 'wrap' }}>
+            {([
+              ['doc', 'Procedure', <FileText key="d" size={13} />, sop.pdf_path ? null : 0],
+              ['videos', 'Videos', <Video key="v" size={13} />, videos.length],
+              ['files', 'Programme files', <FileCode2 key="f" size={13} />, files.length],
+            ] as const).map(([k, lbl, icon, n]) => {
+              const on = activeTab === k;
+              return (
+                <button key={k} onClick={() => setTab(k)}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 10, border: 'none',
+                    background: on ? C.white : 'transparent', color: on ? C.green : C.slate, boxShadow: on ? '0 1px 3px rgba(0,0,0,.08)' : 'none',
+                    fontFamily: 'Figtree', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
+                  {icon} {lbl}
+                  {n !== null && <span style={{ fontSize: 10.5, fontWeight: 700, padding: '0 7px', borderRadius: 99, background: on ? C.honeydew : '#EBEBEB', color: on ? C.green : C.slate }}>{n}</span>}
+                </button>
+              );
+            })}
+          </div>
+          {activeTab === 'doc' ? (
+            !sop.pdf_path ? (
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: C.slate, fontSize: 13, padding: 24, textAlign: 'center' }}>
+                <FileText size={32} strokeWidth={1.5} />
+                No procedure PDF attached{canEdit ? ' — use "Attach PDF" to add one.' : '.'}
+              </div>
+            ) : url ? (
+              <iframe src={url} title={sop.title} style={{ flex: 1, width: '100%', border: 'none', display: 'block', minHeight: isMobile ? 420 : 0 }} />
+            ) : (
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.slate, fontSize: 13 }}>Loading document…</div>
+            )
           ) : (
-            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.slate, fontSize: 13 }}>Loading document…</div>
+            <AttachmentsPanel kind={activeTab === 'videos' ? 'video' : 'file'} sopId={sop.id} items={activeTab === 'videos' ? videos : files}
+              canEdit={canEdit} me={me} onChanged={async () => { await loadAttachments(); await onChanged(); }} />
           )}
         </div>
 
@@ -622,7 +797,7 @@ function SopViewer({ sop, categoryName, canEdit, canDelete, me, onBack, onEdit, 
             </div>
             {canEdit && (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                <button onClick={() => setRevising(true)} disabled={busy} style={actionBtn()}><Upload size={13} /> New revision</button>
+                <button onClick={() => setRevising(true)} disabled={busy} style={actionBtn()}><Upload size={13} /> {sop.pdf_path ? 'New revision' : 'Attach PDF'}</button>
                 <button onClick={onEdit} disabled={busy} style={actionBtn()}><Pencil size={13} /> Edit details</button>
                 <button onClick={() => void patch({ pinned: !sop.pinned })} disabled={busy} style={actionBtn()}>
                   {sop.pinned ? <><PinOff size={13} /> Unpin</> : <><Pin size={13} /> Pin</>}
@@ -712,6 +887,183 @@ function SopViewer({ sop, categoryName, canEdit, canDelete, me, onBack, onEdit, 
             const { data } = await supabase.from('tsd_sop_revisions').select('*').eq('sop_id', sop.id).order('replaced_at', { ascending: false });
             setRevisions((data as SopRevision[]) ?? []);
           }} />
+      )}
+    </div>
+  );
+}
+
+// ── Videos / programme files ──────────────────────────────────────
+
+function AttachmentsPanel({ kind, sopId, items, canEdit, me, onChanged }: {
+  kind: 'file' | 'video';
+  sopId: string;
+  items: SopAttachment[];
+  canEdit: boolean;
+  me: string;
+  onChanged: () => Promise<void>;
+}) {
+  const isVideo = kind === 'video';
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [progress, setProgress] = useState<UploadState | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [descDraft, setDescDraft] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const selected = items.find((a) => a.id === selectedId) ?? items[0] ?? null;
+
+  useEffect(() => {
+    if (!isVideo || !selected) { setVideoUrl(null); return; }
+    let cancelled = false;
+    setVideoUrl(null);
+    void signedUrl(selected.path).then((u) => { if (!cancelled) setVideoUrl(u); });
+    return () => { cancelled = true; };
+  }, [isVideo, selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const addFiles = async (list: FileList | null) => {
+    if (!list || list.length === 0) return;
+    const queue = Array.from(list);
+    setErr(null);
+    try {
+      for (let i = 0; i < queue.length; i++) {
+        const f = queue[i];
+        await uploadAttachment(sopId, f, me, (fr) => setProgress({ name: f.name, index: i + 1, total: queue.length, fraction: fr }));
+      }
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+    setProgress(null);
+    await onChanged();
+  };
+
+  const download = async (a: SopAttachment) => {
+    const u = await signedUrl(a.path, a.name);
+    if (!u) { setErr('Could not create a download link.'); return; }
+    const el = document.createElement('a');
+    el.href = u;
+    el.rel = 'noreferrer';
+    document.body.appendChild(el);
+    el.click();
+    el.remove();
+  };
+
+  const remove = async (a: SopAttachment) => {
+    setErr(null);
+    const { error } = await supabase.from('tsd_sop_attachments').delete().eq('id', a.id);
+    if (error) { setErr(error.message); return; }
+    await supabase.storage.from(BUCKET).remove([a.path]);
+    setConfirmId(null);
+    if (selectedId === a.id) setSelectedId(null);
+    await onChanged();
+  };
+
+  const saveDesc = async (a: SopAttachment) => {
+    const { error } = await supabase.from('tsd_sop_attachments').update({ description: descDraft.trim() || null }).eq('id', a.id);
+    if (error) { setErr(error.message); return; }
+    setEditId(null);
+    await onChanged();
+  };
+
+  const extOf = (name: string) => (/\.([A-Za-z0-9]{1,6})$/.exec(name)?.[1] ?? '').toUpperCase();
+  const iconBtn: React.CSSProperties = { border: 'none', background: 'transparent', cursor: 'pointer', display: 'inline-flex', padding: 5, borderRadius: 8 };
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 12, color: C.slate }}>
+          {isVideo
+            ? 'How-to and reference videos for this procedure — play here or download.'
+            : 'Charger programme / firmware / config files that go with this procedure.'}
+        </div>
+        {canEdit && (
+          <>
+            <input ref={inputRef} type="file" multiple accept={isVideo ? 'video/*' : undefined} style={{ display: 'none' }}
+              onChange={(e) => { void addFiles(e.target.files); e.target.value = ''; }} />
+            <button onClick={() => inputRef.current?.click()} disabled={!!progress}
+              style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 10, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: progress ? 'default' : 'pointer', whiteSpace: 'nowrap' }}>
+              <Plus size={13} strokeWidth={2.5} /> {isVideo ? 'Add videos' : 'Add files'}
+            </button>
+          </>
+        )}
+      </div>
+
+      {progress && <UploadProgress state={progress} />}
+      {err && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{err}</div>}
+
+      {items.length === 0 ? (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: C.slate, fontSize: 13, padding: 24, textAlign: 'center',
+          border: canEdit ? '1.5px dashed #CBD5DC' : 'none', borderRadius: 14, cursor: canEdit ? 'pointer' : 'default' }}
+          onClick={() => canEdit && inputRef.current?.click()}
+          onDragOver={(e) => { if (canEdit) e.preventDefault(); }}
+          onDrop={(e) => { if (!canEdit) return; e.preventDefault(); void addFiles(e.dataTransfer.files); }}>
+          {isVideo ? <Video size={32} strokeWidth={1.5} /> : <FileCode2 size={32} strokeWidth={1.5} />}
+          {isVideo ? 'No videos yet.' : 'No programme files yet.'}
+          {canEdit && <span style={{ fontSize: 12 }}>Drop files here or click to add.</span>}
+        </div>
+      ) : (
+        <>
+          {isVideo && selected && (
+            <div style={{ background: '#000', borderRadius: 12, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 220 }}>
+              {videoUrl
+                ? <video key={videoUrl} src={videoUrl} controls preload="metadata" playsInline style={{ width: '100%', maxHeight: '48vh', display: 'block', background: '#000' }} />
+                : <span style={{ color: '#ccc', fontSize: 12 }}>Loading video…</span>}
+            </div>
+          )}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
+            onDragOver={(e) => { if (canEdit) e.preventDefault(); }}
+            onDrop={(e) => { if (!canEdit) return; e.preventDefault(); void addFiles(e.dataTransfer.files); }}>
+            {items.map((a) => {
+              const isSel = isVideo && selected?.id === a.id;
+              return (
+                <div key={a.id}
+                  onClick={() => { if (isVideo) setSelectedId(a.id); }}
+                  style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', borderRadius: 12,
+                    border: isSel ? `1.5px solid ${C.green}` : '1px solid #EBEBEB', background: isSel ? C.honeydew : C.white,
+                    cursor: isVideo ? 'pointer' : 'default' }}>
+                  <div style={{ width: 34, height: 34, borderRadius: 10, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: isVideo ? '#E3F0FF' : '#F3F3F3', color: isVideo ? '#1A62C0' : '#767B77', fontSize: 9, fontWeight: 700 }}>
+                    {isVideo ? <Video size={16} /> : (extOf(a.name) || <FileCode2 size={16} />)}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div title={a.name} style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</div>
+                    {editId === a.id ? (
+                      <div style={{ display: 'flex', gap: 6, marginTop: 6 }} onClick={(e) => e.stopPropagation()}>
+                        <input value={descDraft} onChange={(e) => setDescDraft(e.target.value)} autoFocus placeholder="e.g. Firmware v2.3 for HiCi 120kW — flash via USB"
+                          onKeyDown={(e) => { if (e.key === 'Enter') void saveDesc(a); if (e.key === 'Escape') setEditId(null); }}
+                          style={{ ...input, padding: '6px 10px', fontSize: 12 }} />
+                        <button onClick={() => void saveDesc(a)} title="Save" style={{ ...iconBtn, background: C.green, color: C.white, padding: '0 10px' }}><Check size={13} strokeWidth={2.5} /></button>
+                      </div>
+                    ) : a.description ? (
+                      <div style={{ fontSize: 12, color: '#1a1a1a', marginTop: 2, lineHeight: 1.45 }}>{a.description}</div>
+                    ) : null}
+                    <div style={{ fontSize: 11, color: C.slate, marginTop: 3 }}>
+                      {fmtSize(a.size)}{a.size ? ' · ' : ''}Added {fmtDate(a.uploaded_at)}{a.uploaded_by ? ` by ${a.uploaded_by}` : ''}
+                    </div>
+                    {confirmId === a.id && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, background: '#FDEAEA', borderRadius: 8, padding: '6px 10px', fontSize: 12, color: '#C0321A', fontWeight: 600 }}
+                        onClick={(e) => e.stopPropagation()}>
+                        <span style={{ flex: 1 }}>Delete this {isVideo ? 'video' : 'file'}?</span>
+                        <button onClick={() => setConfirmId(null)} style={{ border: '1px solid #EBEBEB', background: C.white, color: C.slate, borderRadius: 6, padding: '3px 10px', fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Cancel</button>
+                        <button onClick={() => void remove(a)} style={{ border: 'none', background: '#C0321A', color: C.white, borderRadius: 6, padding: '3px 10px', fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>Yes, delete</button>
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: 2, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+                    <button onClick={() => void download(a)} title="Download" style={{ ...iconBtn, color: C.green }}><Download size={15} /></button>
+                    {canEdit && (
+                      <>
+                        <button onClick={() => { setEditId(a.id); setDescDraft(a.description ?? ''); }} title="Edit description" style={{ ...iconBtn, color: C.slate }}><Pencil size={14} /></button>
+                        <button onClick={() => setConfirmId(a.id)} title="Delete" style={{ ...iconBtn, color: '#C0321A' }}><Trash2 size={14} /></button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );
@@ -823,6 +1175,8 @@ function SopModal({ mode, sop, categories, defaultCategory, suggestedDocNo, exis
     pinned: sop?.pinned ?? false,
   });
   const [file, setFile] = useState<File | null>(null);
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const [progress, setProgress] = useState<UploadState | null>(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -842,7 +1196,7 @@ function SopModal({ mode, sop, categories, defaultCategory, suggestedDocNo, exis
   const save = async () => {
     if (!form.doc_no.trim() || !form.title.trim()) { setErr('Document number and title are required.'); return; }
     if (docNoTaken) { setErr(`${form.doc_no.trim()} is already used by another SOP.`); return; }
-    if (isNew && !file) { setErr('Attach the SOP PDF.'); return; }
+    if (isNew && !file && attachments.length === 0) { setErr('Attach the SOP PDF and/or the programme files and videos.'); return; }
     setSaving(true);
     setErr(null);
     try {
@@ -866,9 +1220,20 @@ function SopModal({ mode, sop, categories, defaultCategory, suggestedDocNo, exis
         const { data, error } = await supabase.from('tsd_sops').insert(base).select('id').single();
         if (error || !data) throw new Error(error?.message ?? 'Could not create the SOP.');
         const id = (data as { id: string }).id;
-        const up = await uploadPdf(id, file!);
-        const { error: uErr } = await supabase.from('tsd_sops').update({ pdf_path: up.path, pdf_filename: up.name, pdf_size: up.size }).eq('id', id);
-        if (uErr) throw new Error(uErr.message);
+        const total = (file ? 1 : 0) + attachments.length;
+        let n = 0;
+        if (file) {
+          n++;
+          const up = await uploadPdf(id, file, (f) => setProgress({ name: file.name, index: n, total, fraction: f }));
+          const { error: uErr } = await supabase.from('tsd_sops').update({ pdf_path: up.path, pdf_filename: up.name, pdf_size: up.size }).eq('id', id);
+          if (uErr) throw new Error(uErr.message);
+        }
+        for (const a of attachments) {
+          n++;
+          const idx = n;
+          await uploadAttachment(id, a, me, (f) => setProgress({ name: a.name, index: idx, total, fraction: f }));
+        }
+        setProgress(null);
         onSaved(id);
       } else {
         const { error } = await supabase.from('tsd_sops').update(base).eq('id', sop!.id);
@@ -877,6 +1242,7 @@ function SopModal({ mode, sop, categories, defaultCategory, suggestedDocNo, exis
       }
     } catch (e) {
       setErr((e as Error).message);
+      setProgress(null);
       setSaving(false);
     }
   };
@@ -898,7 +1264,14 @@ function SopModal({ mode, sop, categories, defaultCategory, suggestedDocNo, exis
             <input ref={fileRef} type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} onChange={(e) => pickFile(e.target.files?.[0] ?? null)} />
             {file
               ? <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}><FileText size={14} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 6 }} />{file.name} · {fmtSize(file.size)}</div>
-              : <div style={{ fontSize: 13, color: C.slate }}><Upload size={14} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 6 }} />Drop the SOP PDF here, or click to choose</div>}
+              : <div style={{ fontSize: 13, color: C.slate }}><Upload size={14} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 6 }} />Drop the SOP procedure PDF here, or click to choose</div>}
+          </div>
+        )}
+
+        {isNew && (
+          <div>
+            <label style={label}>Programme files &amp; videos <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 500 }}>— optional</span></label>
+            <AttachmentDrop files={attachments} onChange={setAttachments} />
           </div>
         )}
 
@@ -984,6 +1357,8 @@ function SopModal({ mode, sop, categories, defaultCategory, suggestedDocNo, exis
           </label>
         </div>
         {form.status === 'draft' && <div style={{ fontSize: 11, color: C.slate, marginTop: -8 }}>Drafts are only visible to SOP editors until published.</div>}
+
+        {progress && <UploadProgress state={progress} />}
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
           <button onClick={onClose} disabled={saving}

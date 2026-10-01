@@ -54,3 +54,35 @@ export const supabase = createClient(url, anonKey, {
   // or when the token has expired.
   accessToken: async () => (tokenValid(appToken) ? (appToken as string) : anonKey),
 });
+
+// Storage upload with byte-level progress (supabase-js's upload() reports none).
+// Same auth as the client — the logged-in token, else the anon key — against
+// Storage's REST endpoint, so bucket RLS applies exactly as it does to upload().
+export function uploadWithProgress(
+  bucket: string,
+  path: string,
+  file: File,
+  onProgress?: (fraction: number) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const objectPath = path.split('/').map(encodeURIComponent).join('/');
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${url}/storage/v1/object/${bucket}/${objectPath}`);
+    xhr.setRequestHeader('Authorization', `Bearer ${tokenValid(appToken) ? appToken : anonKey}`);
+    xhr.setRequestHeader('apikey', anonKey);
+    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    xhr.setRequestHeader('x-upsert', 'false');
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total); };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) { resolve(); return; }
+      let msg = `HTTP ${xhr.status}`;
+      try { const j = JSON.parse(xhr.responseText); msg = j.message || j.error || msg; } catch { /* keep status */ }
+      if (xhr.status === 413 || /maximum allowed size|too large/i.test(msg)) {
+        msg = `${file.name} is larger than the storage upload limit (${msg}). Raise "Upload file size limit" in Supabase → Storage → Settings, or compress the file.`;
+      }
+      reject(new Error(msg));
+    };
+    xhr.onerror = () => reject(new Error(`Network error while uploading ${file.name}.`));
+    xhr.send(file);
+  });
+}
