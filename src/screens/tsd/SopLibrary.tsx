@@ -80,7 +80,8 @@ const fmtDate = (s: string | null) =>
 const fmtSize = (n: number | null) => {
   if (!n) return '';
   if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 };
 
 // Review freshness: overdue once the due date passes, "due soon" within 30 days.
@@ -132,6 +133,13 @@ async function uploadPdf(sopKey: string, file: File, onProgress?: (f: number) =>
   return { path, name: file.name, size: file.size };
 }
 
+// Matches the tsd-sops bucket's file_size_limit (enforced server-side too).
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_UPLOAD_LABEL = '2 GB';
+const tooBig = (f: File) => f.size > MAX_UPLOAD_BYTES;
+const tooBigMsg = (files: File[]) =>
+  `${files.map((f) => `${f.name} (${fmtSize(f.size)})`).join(', ')} ${files.length === 1 ? 'is' : 'are'} over the ${MAX_UPLOAD_LABEL} per-file limit — compress or trim ${files.length === 1 ? 'it' : 'them'} first.`;
+
 const VIDEO_EXT = /\.(mp4|m4v|mov|webm|ogv|avi|mkv|wmv|3gp)$/i;
 const isVideoFile = (f: File) => f.type.startsWith('video/') || VIDEO_EXT.test(f.name);
 
@@ -172,10 +180,14 @@ function UploadProgress({ state }: { state: UploadState }) {
 // Multi-file picker for programme files + videos (any type).
 function AttachmentDrop({ files, onChange }: { files: File[]; onChange: (f: File[]) => void }) {
   const ref = useRef<HTMLInputElement>(null);
+  const [rejected, setRejected] = useState<string | null>(null);
   const add = (list: FileList | null) => {
     if (!list) return;
+    const incoming = Array.from(list);
+    const big = incoming.filter(tooBig);
+    setRejected(big.length ? tooBigMsg(big) : null);
     const next = [...files];
-    for (const f of Array.from(list)) if (!next.some((x) => x.name === f.name && x.size === f.size)) next.push(f);
+    for (const f of incoming) if (!tooBig(f) && !next.some((x) => x.name === f.name && x.size === f.size)) next.push(f);
     onChange(next);
   };
   return (
@@ -185,8 +197,9 @@ function AttachmentDrop({ files, onChange }: { files: File[]; onChange: (f: File
         style={{ border: '1.5px dashed #CBD5DC', background: C.seasalt, borderRadius: 14, padding: '14px 16px', textAlign: 'center', cursor: 'pointer', fontSize: 13, color: C.slate }}>
         <input ref={ref} type="file" multiple style={{ display: 'none' }} onChange={(e) => { add(e.target.files); e.target.value = ''; }} />
         <Paperclip size={14} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 6 }} />
-        Drop programme files and videos here, or click to choose — any file type
+        Drop programme files and videos here, or click to choose — any file type, up to {MAX_UPLOAD_LABEL} each
       </div>
+      {rejected && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '8px 12px', fontSize: 12, fontWeight: 600 }}>{rejected}</div>}
       {files.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {files.map((f, i) => (
@@ -924,8 +937,11 @@ function AttachmentsPanel({ kind, sopId, items, canEdit, me, onChanged }: {
 
   const addFiles = async (list: FileList | null) => {
     if (!list || list.length === 0) return;
-    const queue = Array.from(list);
-    setErr(null);
+    const all = Array.from(list);
+    const big = all.filter(tooBig);
+    const queue = all.filter((f) => !tooBig(f));
+    setErr(big.length ? tooBigMsg(big) : null);
+    if (queue.length === 0) return;
     try {
       for (let i = 0; i < queue.length; i++) {
         const f = queue[i];
@@ -974,8 +990,8 @@ function AttachmentsPanel({ kind, sopId, items, canEdit, me, onChanged }: {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 12, color: C.slate }}>
           {isVideo
-            ? 'How-to and reference videos for this procedure — play here or download.'
-            : 'Charger programme / firmware / config files that go with this procedure.'}
+            ? `How-to and reference videos for this procedure — play here or download. Up to ${MAX_UPLOAD_LABEL} each.`
+            : `Charger programme / firmware / config files that go with this procedure. Up to ${MAX_UPLOAD_LABEL} each.`}
         </div>
         {canEdit && (
           <>
@@ -1188,6 +1204,7 @@ function SopModal({ mode, sop, categories, defaultCategory, suggestedDocNo, exis
   const pickFile = (f: File | null) => {
     if (!f) return;
     if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') { setErr('SOPs must be PDF files.'); return; }
+    if (tooBig(f)) { setErr(tooBigMsg([f])); return; }
     setErr(null);
     setFile(f);
     if (isNew && !form.title.trim()) set('title', f.name.replace(/\.pdf$/i, '').replace(/[_-]+/g, ' ').trim());
@@ -1388,6 +1405,7 @@ function ReviseModal({ sop, me, onClose, onSaved }: { sop: Sop; me: string; onCl
   const save = async () => {
     if (!file) { setErr('Attach the revised PDF.'); return; }
     if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') { setErr('SOPs must be PDF files.'); return; }
+    if (tooBig(file)) { setErr(tooBigMsg([file])); return; }
     setSaving(true);
     setErr(null);
     try {

@@ -116,3 +116,8 @@ create index tsd_sop_attachments_sop_idx on tsd_sop_attachments (sop_id, kind, u
 alter table tsd_sop_attachments enable row level security;
 create policy "authenticated full access" on tsd_sop_attachments
   for all to authenticated using (true) with check (true);
+
+-- 2026-10-01 · migration tsd_sops_bucket_2gb_limit — hard 2 GB per-file cap on
+-- the SOP bucket (matches the project's global upload limit). The app checks the
+-- same limit before uploading (MAX_UPLOAD_BYTES in SopLibrary.tsx).
+update storage.buckets set file_size_limit = 2147483648 where id = 'tsd-sops';
