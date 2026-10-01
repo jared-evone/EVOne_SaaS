@@ -30,7 +30,7 @@ const canDelete = can('customers', 'can_delete');
 {canEdit && <button>+ New Customer</button>}
 ```
 
-**Sub-screen permission keys** are real `ScreenKey`s that don't render a top-level component — they exist purely to gate tabs / nested views. Examples: `charging_cpo_carparks` and `charging_sp_price` gate the two tabs inside Charging Records; `tsd_workorders` / `tsd_forms` / `tsd_pic` show up in the TSD Admin group. They live in `ScreenKey` + `SCREEN_LABELS` (so they appear in the Settings permission matrix) but are deliberately absent from `App.tsx`'s `screens` map when they don't render directly.
+**Sub-screen permission keys** are real `ScreenKey`s that don't render a top-level component — they exist purely to gate tabs / nested views. Examples: `charging_cpo_carparks` and `charging_sp_price` gate the two tabs inside Charging Records; `tsd_workorders` / `tsd_forms` / `tsd_pic` are Technical Service sidebar leaves. They live in `ScreenKey` + `SCREEN_LABELS` (so they appear in the Settings permission matrix) but are deliberately absent from `App.tsx`'s `screens` map when they don't render directly.
 
 Adding a new top-level screen = touch four places:
 
@@ -199,7 +199,7 @@ If you need a new primitive, add it here. Don't rebuild a KPI card inline in a s
 
 ### Tech department lives in the main Dashboard
 
-There is no longer a TSDWorkspace sub-role chooser. Tech users see standard sidebar entries — `Technician` as a leaf plus a `TSD Admin` group (Work Orders / Form Templates / PIC Review). `TechApp` accepts an embedded mode (no `onBack` / `onSignOut`) so its internal Shell hides its own chrome when rendered inside the Dashboard.
+There is no longer a TSDWorkspace sub-role chooser. Tech users see flat sidebar entries under Technical Service — `Calendar` (screen key `tsd_technician`, the TechApp jobs calendar), `SOP Library`, `Work Orders`, `Form Templates`, `PIC Review`, `Technicians`; the old `TSD Admin` sub-group was removed. `TechApp` accepts an embedded mode (no `onBack` / `onSignOut`) so its internal Shell hides its own chrome when rendered inside the Dashboard.
 
 ## Repeated UI patterns (recipes)
 

@@ -5,7 +5,7 @@ import { NavItem } from './components/NavItem';
 import {
   LayoutDashboard, Home, Receipt, Wrench, Users, FolderKanban, CalendarDays,
   Handshake, ClipboardList, Boxes, Truck, Building2, Plug, Zap, FileText,
-  Hammer, Settings as SettingsIcon, ShieldCheck, Database, ChevronRight, ChevronDown,
+  Settings as SettingsIcon, ShieldCheck, Database, ChevronRight, ChevronDown,
   Power, Menu, TrendingUp, UserCog, Mail, Calculator, ClipboardCheck, GanttChartSquare, ListTodo, BookOpen,
   type LucideIcon,
 } from 'lucide-react';
@@ -103,14 +103,12 @@ const NAV_ALL: NavEntry[] = [
   { kind: 'leaf', id: 'corporateinvoicing',icon: FileText,        label: 'Corporate Invoicing' },
   { kind: 'leaf', id: 'quote_machine',     icon: Calculator,      label: 'Quote Machine' },
   { kind: 'leaf', id: 'raise_po',          icon: ClipboardCheck,  label: 'Raise PO' },
-  { kind: 'leaf', id: 'tsd_technician',    icon: Hammer,          label: 'Technician' },
+  { kind: 'leaf', id: 'tsd_technician',    icon: CalendarDays,    label: 'Calendar' },
   { kind: 'leaf', id: 'tsd_sop',           icon: BookOpen,        label: 'SOP Library' },
-  { kind: 'group', key: 'tsd_admin_group', icon: ClipboardList,   label: 'TSD Admin', children: [
-    { kind: 'leaf', id: 'tsd_workorders',  icon: ClipboardList,   label: 'Work Orders' },
-    { kind: 'leaf', id: 'tsd_forms',       icon: FileText,        label: 'Form Templates' },
-    { kind: 'leaf', id: 'tsd_pic',         icon: ShieldCheck,     label: 'PIC Review' },
-    { kind: 'leaf', id: 'tsd_technicians', icon: Users,           label: 'Technicians' },
-  ]},
+  { kind: 'leaf', id: 'tsd_workorders',    icon: ClipboardList,   label: 'Work Orders' },
+  { kind: 'leaf', id: 'tsd_forms',         icon: FileText,        label: 'Form Templates' },
+  { kind: 'leaf', id: 'tsd_pic',           icon: ShieldCheck,     label: 'PIC Review' },
+  { kind: 'leaf', id: 'tsd_technicians',   icon: Users,           label: 'Technicians' },
   { kind: 'group', key: 'settings_group', icon: SettingsIcon,     label: 'Settings', children: [
     { kind: 'leaf', id: 'settings', icon: Users,                  label: 'Users & Permissions' },
     { kind: 'leaf', id: 'dbhealth', icon: Database,               label: 'DB Health' },
@@ -140,7 +138,7 @@ const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
   charging_dashboard:  'Charging Dashboard',
   quote_machine:       'Quote Machine',
   raise_po:            'Raise PO',
-  tsd_technician:      'Technician',
+  tsd_technician:      'Calendar',
   tsd_workorders:      'Work Orders',
   tsd_forms:           'Form Templates',
   tsd_pic:             'PIC Review',

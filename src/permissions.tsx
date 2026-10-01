@@ -44,7 +44,7 @@ export const SCREEN_LABELS: Record<ScreenKey, string> = {
   charging_sp_price:     'Charging Records › SP Price tab',
   corporateinvoicing:    'Corporate Invoicing',
   charging_dashboard:    'Charging Dashboard',
-  tsd_technician:        'Technician',
+  tsd_technician:        'Calendar',
   tsd_workorders:        'Work Orders',
   tsd_forms:             'Form Templates',
   tsd_pic:               'PIC Review',
