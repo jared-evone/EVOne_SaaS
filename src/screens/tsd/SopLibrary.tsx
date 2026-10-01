@@ -5,7 +5,7 @@ import { usePermissions } from '../../permissions';
 import { useIsMobile } from '../../lib/useIsMobile';
 import {
   Search, Plus, Pin, PinOff, FileText, Download, ExternalLink, ChevronLeft, ChevronRight, Pencil,
-  Archive, ArchiveRestore, Trash2, Flag, History, BookOpen, Clock, X, FolderClosed, Upload,
+  Archive, ArchiveRestore, Trash2, History, BookOpen, Clock, X, FolderClosed, Upload,
   Video, FileCode2, Paperclip, Check,
 } from 'lucide-react';
 
@@ -69,7 +69,7 @@ interface AttachmentStub { sop_id: string; kind: 'file' | 'video'; name: string;
 
 type View =
   | { kind: 'all' } | { kind: 'pinned' } | { kind: 'recent' } | { kind: 'review' }
-  | { kind: 'flagged' } | { kind: 'drafts' } | { kind: 'archived' }
+  | { kind: 'drafts' } | { kind: 'archived' }
   | { kind: 'category'; id: string | null };
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -252,8 +252,10 @@ function StatusTag({ sop }: { sop: Sop }) {
 
 export function SopLibrary() {
   const { can, user } = usePermissions();
-  const canEdit = can('tsd_sop', 'can_edit');
-  const canDelete = can('tsd_sop', 'can_delete');
+  // SOP admin = delete permission on the SOP Library. Only admins upload, edit,
+  // revise, pin, archive, delete or manage categories; everyone else reads.
+  const canEdit = can('tsd_sop', 'can_delete');
+  const canDelete = canEdit;
   const isMobile = useIsMobile();
   const me = user.full_name || user.email;
 
@@ -304,7 +306,6 @@ export function SopLibrary() {
     all: readable.length,
     pinned: readable.filter((s) => s.pinned).length,
     review: readable.filter((s) => reviewState(s) !== null).length,
-    flagged: readable.filter((s) => !!s.flag_note).length,
     drafts: sops.filter((s) => s.status === 'draft').length,
     archived: sops.filter((s) => s.status === 'archived').length,
     uncategorised: readable.filter((s) => !s.category_id || !categories.some((c) => c.id === s.category_id)).length,
@@ -316,7 +317,6 @@ export function SopLibrary() {
       case 'all': case 'recent': return readable.includes(s);
       case 'pinned': return readable.includes(s) && s.pinned;
       case 'review': return readable.includes(s) && reviewState(s) !== null;
-      case 'flagged': return readable.includes(s) && !!s.flag_note;
       case 'drafts': return s.status === 'draft';
       case 'archived': return s.status === 'archived';
       case 'category':
@@ -347,7 +347,6 @@ export function SopLibrary() {
       case 'pinned': return 'Pinned';
       case 'recent': return 'Recently updated';
       case 'review': return 'Review due';
-      case 'flagged': return 'Flagged for attention';
       case 'drafts': return 'Drafts';
       case 'archived': return 'Archived';
       case 'category': return view.id === null ? 'Uncategorised' : catName(view.id);
@@ -400,7 +399,6 @@ export function SopLibrary() {
       {railItem(isView('pinned'), () => selectView({ kind: 'pinned' }), <Pin size={15} />, 'Pinned', counts.pinned)}
       {railItem(isView('recent'), () => selectView({ kind: 'recent' }), <Clock size={15} />, 'Recently updated')}
       {railItem(isView('review'), () => selectView({ kind: 'review' }), <History size={15} />, 'Review due', counts.review, 'warn')}
-      {railItem(isView('flagged'), () => selectView({ kind: 'flagged' }), <Flag size={15} />, 'Flagged', counts.flagged, 'danger')}
       {canEdit && railItem(isView('drafts'), () => selectView({ kind: 'drafts' }), <Pencil size={15} />, 'Drafts', counts.drafts)}
       {canEdit && railItem(isView('archived'), () => selectView({ kind: 'archived' }), <Archive size={15} />, 'Archived', counts.archived)}
 
@@ -570,11 +568,6 @@ function SopList({ sops, catName, showCategory, onOpen, attachCounts }: { sops: 
               <span style={{ fontSize: 14, fontWeight: 700, color: '#1a1a1a' }}>{s.title}</span>
               {s.pinned && <Pin size={12} color={C.green} />}
               <StatusTag sop={s} />
-              {s.flag_note && (
-                <span title={s.flag_note} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: '#FDEAEA', color: '#C0321A' }}>
-                  <Flag size={10} strokeWidth={2.5} /> Flagged
-                </span>
-              )}
               <ReviewBadge sop={s} />
             </div>
             {(s.description || s.tags.length > 0 || showCategory) && (
@@ -628,8 +621,6 @@ function SopViewer({ sop, categoryName, canEdit, canDelete, me, onBack, onEdit, 
   const [revisions, setRevisions] = useState<SopRevision[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [flagging, setFlagging] = useState(false);
-  const [flagText, setFlagText] = useState('');
   const [revising, setRevising] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [attachments, setAttachments] = useState<SopAttachment[]>([]);
@@ -681,14 +672,6 @@ function SopViewer({ sop, categoryName, canEdit, canDelete, me, onBack, onEdit, 
     a.remove();
   };
 
-  const submitFlag = async () => {
-    const note = flagText.trim();
-    if (!note) return;
-    await patch({ flag_note: note, flagged_by: me, flagged_at: new Date().toISOString() });
-    setFlagging(false);
-    setFlagText('');
-  };
-
   const handleDelete = async () => {
     setBusy(true);
     const paths = [sop.pdf_path, ...revisions.map((r) => r.pdf_path), ...attachments.map((a) => a.path)].filter((p): p is string => !!p);
@@ -734,20 +717,6 @@ function SopViewer({ sop, categoryName, canEdit, canDelete, me, onBack, onEdit, 
       </div>
 
       {err && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{err}</div>}
-
-      {sop.flag_note && (
-        <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-          <Flag size={15} color="#C0321A" style={{ flexShrink: 0, marginTop: 1 }} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 700, color: '#C0321A' }}>Flagged by {sop.flagged_by ?? 'someone'}{sop.flagged_at ? ` on ${fmtDate(sop.flagged_at)}` : ''}</div>
-            <div style={{ fontSize: 12.5, color: '#C0321A', marginTop: 2, whiteSpace: 'pre-line' }}>{sop.flag_note}</div>
-          </div>
-          {canEdit && (
-            <button onClick={() => void patch({ flag_note: null, flagged_by: null, flagged_at: null })} disabled={busy}
-              style={{ ...actionBtn(), border: '1px solid #F5C6C0', background: C.white, color: '#C0321A' }}>Resolve</button>
-          )}
-        </div>
-      )}
 
       {confirmDelete && (
         <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -818,22 +787,6 @@ function SopViewer({ sop, categoryName, canEdit, canDelete, me, onBack, onEdit, 
                 {sop.status === 'archived'
                   ? <button onClick={() => void patch({ status: 'active' })} disabled={busy} style={actionBtn()}><ArchiveRestore size={13} /> Restore</button>
                   : <button onClick={() => void patch({ status: 'archived', pinned: false })} disabled={busy} style={actionBtn()}><Archive size={13} /> Archive</button>}
-              </div>
-            )}
-            {!sop.flag_note && !flagging && (
-              <button onClick={() => setFlagging(true)} style={{ ...actionBtn(), color: '#C0321A', border: '1px solid #FDEAEA' }}>
-                <Flag size={13} /> Report an issue
-              </button>
-            )}
-            {flagging && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <textarea value={flagText} onChange={(e) => setFlagText(e.target.value)} rows={3} autoFocus
-                  placeholder="What's wrong or outdated in this SOP?"
-                  style={{ ...input, resize: 'vertical', lineHeight: 1.5, fontSize: 12.5 }} />
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <button onClick={() => { setFlagging(false); setFlagText(''); }} style={actionBtn()}>Cancel</button>
-                  <button onClick={() => void submitFlag()} disabled={busy || !flagText.trim()} style={{ ...actionBtn(), border: 'none', background: '#C0321A', color: C.white }}>Submit flag</button>
-                </div>
               </div>
             )}
             {canDelete && !confirmDelete && (
