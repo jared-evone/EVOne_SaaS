@@ -243,8 +243,11 @@ function Dashboard({ onSignOut, onSwitchDepartment }: DashboardProps) {
   const [screen, setScreen] = useState<ScreenId | null>(fallbackScreen);
   const activeScreen = screen && allVisibleLeafIds.includes(screen) ? screen : fallbackScreen;
 
-  // One department section expanded at a time; starts on the active department.
-  const [openDept, setOpenDept] = useState<Department>(user.department);
+  // Department sections toggle independently — any number open, including none.
+  // Starts with the active department open.
+  const [openDepts, setOpenDepts] = useState<Set<Department>>(() => new Set([user.department]));
+  const toggleDept = (d: Department) =>
+    setOpenDepts((prev) => { const n = new Set(prev); if (n.has(d)) n.delete(d); else n.add(d); return n; });
 
   // Settings group expands automatically when one of its children is active
   const initialOpen: Record<string, boolean> = {};
@@ -270,7 +273,6 @@ function Dashboard({ onSignOut, onSwitchDepartment }: DashboardProps) {
   // session's active department — permissions, header chip and screens follow.
   const selectScreenIn = (d: Department, id: ScreenId) => {
     if (d !== user.department) onSwitchDepartment(d);
-    setOpenDept(d);
     selectScreen(id);
   };
 
@@ -379,8 +381,8 @@ function Dashboard({ onSignOut, onSwitchDepartment }: DashboardProps) {
               );
             }
 
-            // Multi-department accordion: one section per accessible department,
-            // one expanded at a time. The active department's name shows green.
+            // One collapsible section per accessible department, each toggled
+            // independently. The active department's name shows green.
             // Global screens sit above it in a highlighted chip, listed once.
             const globalBlock = globalLeaves.length > 0 && (
               <div key="global" style={{ background: C.honeydew, borderRadius: 12, padding: 6, marginTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -403,13 +405,13 @@ function Dashboard({ onSignOut, onSwitchDepartment }: DashboardProps) {
             const deptSections = departments.map((d) => {
               const entries = navFor(d).filter((n) => !(n.kind === 'leaf' && GLOBAL_SCREEN_IDS.includes(n.id)));
               if (entries.length === 0) return null;
-              const open = openDept === d;
+              const open = openDepts.has(d);
               const isActiveDept = user.department === d;
               const DeptIcon = DEPARTMENT_ICONS[d];
               return (
                 <div key={d} style={{ display: 'flex', flexDirection: 'column', marginTop: 6 }}>
                   <button
-                    onClick={() => setOpenDept(d)}
+                    onClick={() => toggleDept(d)}
                     style={{
                       display: 'flex', alignItems: 'center', gap: 8,
                       padding: '9px 12px', borderRadius: 10,
