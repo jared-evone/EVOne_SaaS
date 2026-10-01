@@ -332,6 +332,15 @@ src/
                             in-app admin (Users & Permissions matrix + DB health)
     charging/               sub-tabs for ChargingRecords (CarparksTab, …)
     portal/                 customer-facing invoice / statement portal
+    inventory/              Inventory department (STANDALONE — no other
+                            department reads or changes stock). invShared.tsx
+                            (types, useInvCore, UI bits) + StockLevels,
+                            Requests (fulfil → delivery order), Shipments
+                            (receive → GRN + stock), GoodsReceived,
+                            Cannibalisation, StockLedger. Stock = sum of
+                            inv_movements; every stock change goes through the
+                            inv_* plpgsql functions or a single movement insert
+                            — never edit balances. See db/inventory_schema.sql.
     projmgmt/               ChargerProjects.tsx — the Charger Registry "Projects"
                             module (pm department only): per-project lifecycle
                             with stage-tagged documents, sectioned build

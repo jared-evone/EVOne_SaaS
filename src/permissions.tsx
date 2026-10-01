@@ -1,13 +1,14 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { supabase } from './lib/supabase';
 
-export type Department = 'cpo' | 'sales' | 'tech' | 'pm';
+export type Department = 'cpo' | 'sales' | 'tech' | 'pm' | 'inv';
 
 export const DEPARTMENT_LABELS: Record<Department, string> = {
   cpo:   'CPO',
   sales: 'Sales',
   tech:  'Technical Service',
   pm:    'Charger Registry',
+  inv:   'Inventory',
 };
 
 export type ScreenKey =
@@ -20,6 +21,7 @@ export type ScreenKey =
   | 'tsd_technician' | 'tsd_workorders' | 'tsd_forms' | 'tsd_pic' | 'tsd_technicians' | 'tsd_sop'
   | 'email_designer' | 'quote_machine' | 'raise_po'
   | 'charger_projects' | 'registry_todo'
+  | 'inv_stock' | 'inv_requests' | 'inv_shipments' | 'inv_grn' | 'inv_cannibal' | 'inv_ledger'
   | 'settings' | 'dbhealth';
 
 export const SCREEN_LABELS: Record<ScreenKey, string> = {
@@ -55,6 +57,12 @@ export const SCREEN_LABELS: Record<ScreenKey, string> = {
   raise_po:              'Raise PO',
   charger_projects:      'Projects',
   registry_todo:         'To Do',
+  inv_stock:             'Stock Levels',
+  inv_requests:          'Requests & Delivery',
+  inv_shipments:         'Incoming Shipments',
+  inv_grn:               'Goods Received',
+  inv_cannibal:          'Cannibalisation',
+  inv_ledger:            'Stock Ledger',
   settings:              'Users & Permissions',
   dbhealth:              'DB Health',
 };
@@ -70,6 +78,8 @@ export const DEPARTMENT_SCREENS: Record<Department, ScreenKey[]> = {
   sales: ['customers', 'sales', 'sales_manager', 'sales_team', 'quote_machine', 'raise_po'],
   tech:  ['tsd_technician', 'tsd_sop', 'tsd_workorders', 'tsd_forms', 'tsd_pic', 'tsd_technicians', 'customers', 'projects'],
   pm:    ['dashboard', 'registry_todo', 'charger_projects', 'customers', 'projects', 'email_designer'],
+  // Standalone — no shared screens; stock is only changed from these screens.
+  inv:   ['inv_stock', 'inv_requests', 'inv_shipments', 'inv_grn', 'inv_cannibal', 'inv_ledger'],
 };
 
 export interface ScreenCap {
@@ -98,7 +108,7 @@ export interface SignedInUser {
 }
 
 /** All departments, in nav/matrix order. */
-export const DEPARTMENTS: Department[] = ['cpo', 'sales', 'tech', 'pm'];
+export const DEPARTMENTS: Department[] = ['cpo', 'sales', 'tech', 'pm', 'inv'];
 
 /** Screens grouped by their OWNING department — the grouping used by the
  *  per-user permission matrix, the Access chips and the login department gate.
@@ -151,7 +161,7 @@ const DENY: ScreenCap = { can_view: false, can_edit: false, can_delete: false };
 
 export type PermsByDepartment = Record<Department, PermissionMap>;
 
-const emptyByDepartment = (): PermsByDepartment => ({ cpo: {}, sales: {}, tech: {}, pm: {} });
+const emptyByDepartment = (): PermsByDepartment => ({ cpo: {}, sales: {}, tech: {}, pm: {}, inv: {} });
 
 // Grants are per-department: a screen shared by several departments (customers,
 // projects) can be granted in one and denied in another. All of the account's

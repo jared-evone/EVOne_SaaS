@@ -1,0 +1,375 @@
+import { useEffect, useState } from 'react';
+import { C } from '../../theme';
+import { KPICard } from '../../components/KPICard';
+import { supabase } from '../../lib/supabase';
+import { usePermissions } from '../../permissions';
+import { Plus, Truck, Download } from 'lucide-react';
+import {
+  useInvCore, qtyAt, usableTotal, itemLabel, fmtD, todayISO,
+  Pill, Field, ErrorBanner, Modal, ItemSelect, LocationSelect, SearchBox, downloadCsv,
+  inputStyle, primaryBtn, ghostBtn, pillBtn, thStyle, tdStyle,
+  type InvItem, type InvRequest, type InvLocation, type OnHand,
+} from './invShared';
+
+type ReqStatus = InvRequest['status'];
+
+const REQ_META: Record<ReqStatus, { label: string; bg: string; color: string }> = {
+  legacy:    { label: 'Migrated — status not tracked', bg: '#F3F3F3', color: '#767B77' },
+  pending:   { label: 'Pending',   bg: '#FFF8E1', color: '#B07D00' },
+  approved:  { label: 'Approved',  bg: '#E3F0FF', color: '#1A62C0' },
+  fulfilled: { label: 'Fulfilled', bg: '#E4F3E3', color: '#1B512D' },
+  cancelled: { label: 'Cancelled', bg: '#FDEAEA', color: '#C0321A' },
+};
+
+type Filter = 'open' | ReqStatus | 'all';
+const FILTERS: { id: Filter; label: string }[] = [
+  { id: 'open', label: 'Open' }, { id: 'pending', label: 'Pending' }, { id: 'approved', label: 'Approved' },
+  { id: 'fulfilled', label: 'Fulfilled' }, { id: 'cancelled', label: 'Cancelled' }, { id: 'legacy', label: 'Migrated' }, { id: 'all', label: 'All' },
+];
+
+export function ScreenInvRequests() {
+  const { can, user } = usePermissions();
+  const canEdit = can('inv_requests', 'can_edit');
+  const canDelete = can('inv_requests', 'can_delete');
+  const me = user.full_name || user.email;
+  const { items, locations, onHand, error: coreErr, reload: reloadCore } = useInvCore();
+
+  const [rows, setRows] = useState<InvRequest[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const load = async () => {
+    const { data, error: e } = await supabase.from('inv_requests').select('*').order('submitted_on', { ascending: false }).order('pr_no', { ascending: false });
+    if (e) setError(e.message);
+    setRows((data as InvRequest[]) ?? []);
+    setLoading(false);
+  };
+  useEffect(() => { void load(); }, []);
+  const refresh = async () => { await Promise.all([load(), reloadCore()]); };
+
+  const [filter, setFilter] = useState<Filter>('open');
+  const [search, setSearch] = useState('');
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+
+  const today = todayISO();
+  const month = today.slice(0, 7);
+  const isOpen = (r: InvRequest) => r.status === 'pending' || r.status === 'approved';
+  const visible = rows.filter((r) => {
+    if (filter === 'open' && !isOpen(r)) return false;
+    if (filter !== 'open' && filter !== 'all' && r.status !== filter) return false;
+    const q = search.trim().toLowerCase();
+    return !q || [r.pr_no, r.do_no, r.employee, r.department, r.company_project, r.delivery_address, r.item_name, r.remarks].join(' ').toLowerCase().includes(q);
+  });
+
+  const exportCsv = () => {
+    downloadCsv(`requests_${today}.csv`, [
+      ['PR Number', 'Submission Date', 'Employee', 'Department', 'Company / Project', 'Delivery Address', 'Item', 'Qty', 'Required By', 'Remarks', 'Status', 'DO Number', 'Fulfilled On', 'Delivered By'],
+      ...visible.map((r) => [r.pr_no, r.submitted_on, r.employee, r.department, r.company_project, r.delivery_address, r.item_name, r.qty, r.required_by, r.remarks, REQ_META[r.status].label, r.do_no, r.fulfilled_on, r.delivered_by]),
+    ]);
+  };
+
+  const open = openId ? rows.find((r) => r.id === openId) ?? null : null;
+  if (loading) return <div style={{ padding: 40, textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading requests…</div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <ErrorBanner text={error ?? coreErr} />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
+        <KPICard accent label="Open requests" value={rows.filter(isOpen).length} sub={`${rows.filter((r) => isOpen(r) && r.required_by && r.required_by < today).length} past their required date`} />
+        <KPICard label="Fulfilled this month" value={rows.filter((r) => r.status === 'fulfilled' && (r.fulfilled_on ?? '').startsWith(month)).length} sub="Delivery orders issued" />
+        <KPICard label="Migrated from Excel" value={rows.filter((r) => r.status === 'legacy').length} sub="No status was tracked — review & close" />
+        <KPICard label="Item not in list" value={rows.filter((r) => !r.item_id && r.status !== 'cancelled').length} sub="Link to an item to fulfil from stock" />
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <SearchBox value={search} onChange={setSearch} placeholder="Search PR, DO, company, item…" />
+        {FILTERS.map((f) => <button key={f.id} onClick={() => setFilter(f.id)} style={pillBtn(filter === f.id)}>{f.label}</button>)}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          <button onClick={exportCsv} style={{ ...ghostBtn, display: 'inline-flex', alignItems: 'center', gap: 6 }}><Download size={13} /> Export</button>
+          {canEdit && <button onClick={() => setCreating(true)} style={{ ...primaryBtn(), display: 'inline-flex', alignItems: 'center', gap: 6 }}><Plus size={14} /> New request</button>}
+        </div>
+      </div>
+
+      <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1000 }}>
+            <thead>
+              <tr>{['PR', 'Submitted', 'Requested by', 'Company / Project', 'Item', 'Qty', 'Required by', 'Status'].map((h) => <th key={h} style={{ ...thStyle, textAlign: h === 'Qty' ? 'right' : 'left' }}>{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {visible.map((r) => {
+                const meta = REQ_META[r.status];
+                const late = isOpen(r) && r.required_by && r.required_by < today;
+                return (
+                  <tr key={r.id} onClick={() => setOpenId(r.id)} style={{ borderBottom: '1px solid #F3F3F3', cursor: 'pointer' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = '#FAFAFA'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
+                    <td style={{ ...tdStyle, fontWeight: 700, color: C.green, whiteSpace: 'nowrap' }}>
+                      {r.pr_no}
+                      {r.do_no && <div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>{r.do_no}</div>}
+                    </td>
+                    <td style={{ ...tdStyle, color: C.slate, whiteSpace: 'nowrap' }}>{fmtD(r.submitted_on)}</td>
+                    <td style={tdStyle}>{r.employee || '—'}<div style={{ fontSize: 11, color: C.slate }}>{r.department}</div></td>
+                    <td style={tdStyle}>{r.company_project || '—'}<div style={{ fontSize: 11, color: C.slate, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.delivery_address}</div></td>
+                    <td style={tdStyle}>
+                      {r.item_name}
+                      {!r.item_id && <div style={{ fontSize: 10, fontWeight: 700, color: '#B07D00', marginTop: 2 }}>NOT IN ITEM LIST</div>}
+                    </td>
+                    <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 700 }}>{r.qty}</td>
+                    <td style={{ ...tdStyle, whiteSpace: 'nowrap', color: late ? '#C0321A' : C.slate, fontWeight: late ? 700 : 400 }}>{fmtD(r.required_by)}</td>
+                    <td style={tdStyle}><Pill bg={meta.bg} color={meta.color}>{meta.label}</Pill></td>
+                  </tr>
+                );
+              })}
+              {visible.length === 0 && <tr><td colSpan={8} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No requests here.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {open && (
+        <RequestModal key={open.id} req={open} items={items} locations={locations} onHand={onHand} me={me}
+          canEdit={canEdit} canDelete={canDelete} onClose={() => setOpenId(null)} onChanged={refresh} />
+      )}
+      {creating && (
+        <RequestModal req={null} items={items} locations={locations} onHand={onHand} me={me}
+          canEdit={canEdit} canDelete={false} onClose={() => setCreating(false)}
+          onChanged={async () => { setCreating(false); await refresh(); }} />
+      )}
+    </div>
+  );
+}
+
+function RequestModal({ req, items, locations, onHand, me, canEdit, canDelete, onClose, onChanged }: {
+  req: InvRequest | null; items: InvItem[]; locations: InvLocation[]; onHand: OnHand; me: string;
+  canEdit: boolean; canDelete: boolean; onClose: () => void; onChanged: () => Promise<void>;
+}) {
+  const isNew = !req;
+  const editable = canEdit && (isNew || req!.status === 'pending' || req!.status === 'approved' || req!.status === 'legacy');
+  const [f, setF] = useState({
+    submitted_on: req?.submitted_on ?? todayISO(),
+    employee: req?.employee ?? me,
+    department: req?.department ?? '',
+    company_project: req?.company_project ?? '',
+    delivery_address: req?.delivery_address ?? '',
+    item_id: req?.item_id ?? '',
+    item_name: req?.item_name ?? '',
+    qty: String(req?.qty ?? 1),
+    required_by: req?.required_by ?? '',
+    remarks: req?.remarks ?? '',
+  });
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<null | 'fulfil' | 'close' | 'delete'>(null);
+
+  const item = items.find((i) => i.id === f.item_id) ?? null;
+
+  const save = async (extra?: Partial<InvRequest>) => {
+    const qty = Number(f.qty);
+    if (!f.item_id && !f.item_name.trim()) { setErr('Pick an item, or type what is needed.'); return false; }
+    if (!Number.isInteger(qty) || qty <= 0) { setErr('Quantity must be a whole number above zero.'); return false; }
+    setBusy(true);
+    setErr(null);
+    const payload = {
+      submitted_on: f.submitted_on || todayISO(),
+      employee: f.employee.trim() || null, department: f.department.trim() || null,
+      company_project: f.company_project.trim() || null, delivery_address: f.delivery_address.trim() || null,
+      item_id: f.item_id || null,
+      item_name: (item ? item.name : f.item_name).trim(),
+      qty, required_by: f.required_by || null, remarks: f.remarks.trim() || null,
+      updated_at: new Date().toISOString(),
+      ...extra,
+    };
+    let error;
+    if (isNew) {
+      const { data: last } = await supabase.from('inv_requests').select('pr_no').like('pr_no', `PR-${todayISO().slice(0, 4)}-%`).order('pr_no', { ascending: false }).limit(1);
+      const n = Number(((last ?? [])[0] as { pr_no: string } | undefined)?.pr_no.split('-')[2] ?? 0) + 1;
+      ({ error } = await supabase.from('inv_requests').insert({
+        ...payload, pr_no: `PR-${todayISO().slice(0, 4)}-${String(n).padStart(4, '0')}`, status: 'pending', created_by: me,
+      }));
+    } else {
+      ({ error } = await supabase.from('inv_requests').update(payload).eq('id', req!.id));
+    }
+    setBusy(false);
+    if (error) { setErr(error.message); return false; }
+    return true;
+  };
+
+  const setStatus = async (status: ReqStatus, extra?: Partial<InvRequest>) => {
+    setBusy(true);
+    const { error } = await supabase.from('inv_requests').update({ status, updated_at: new Date().toISOString(), ...extra }).eq('id', req!.id);
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    await onChanged();
+    onClose();
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    const { error } = await supabase.from('inv_requests').delete().eq('id', req!.id);
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    await onChanged();
+    onClose();
+  };
+
+  const meta = req ? REQ_META[req.status] : null;
+  const ro = !editable;
+
+  return (
+    <Modal title={isNew ? 'New stock request' : req!.pr_no} subtitle={isNew ? 'Replaces the Microsoft Forms purchase request' : `Submitted ${fmtD(req!.submitted_on)}${req!.created_by ? ` · logged by ${req!.created_by}` : ''}`}
+      width={640} onClose={onClose}
+      footer={editable ? (
+        <>
+          <button onClick={onClose} style={ghostBtn}>Close</button>
+          <button onClick={async () => { if (await save()) { await onChanged(); if (!isNew) onClose(); } }} disabled={busy} style={primaryBtn(busy)}>{busy ? 'Saving…' : isNew ? 'Submit request' : 'Save changes'}</button>
+        </>
+      ) : undefined}>
+      <ErrorBanner text={err} />
+      {meta && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <Pill bg={meta.bg} color={meta.color}>{meta.label}</Pill>
+          {req!.do_no && <span style={{ fontSize: 12, color: C.slate }}>Delivery order <b style={{ color: '#1a1a1a' }}>{req!.do_no}</b> · {fmtD(req!.fulfilled_on)}{req!.delivered_by ? ` · by ${req!.delivered_by}` : ''}{req!.fulfilled_location_id ? ` · from ${locations.find((l) => l.id === req!.fulfilled_location_id)?.name ?? ''}` : ''}</span>}
+        </div>
+      )}
+      {req?.delivery_note && <div style={{ fontSize: 12, color: C.slate }}>Delivery note: {req.delivery_note}</div>}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
+        <Field label="Requested by"><input value={f.employee} disabled={ro} onChange={(e) => setF({ ...f, employee: e.target.value })} style={inputStyle} /></Field>
+        <Field label="Department">
+          <select value={f.department} disabled={ro} onChange={(e) => setF({ ...f, department: e.target.value })} style={{ ...inputStyle, cursor: 'pointer' }}>
+            <option value="">—</option>
+            {['Sales', 'Technical', 'CPO', 'Project', 'Admin'].concat(f.department && !['Sales', 'Technical', 'CPO', 'Project', 'Admin'].includes(f.department) ? [f.department] : []).map((d) => <option key={d} value={d}>{d}</option>)}
+          </select>
+        </Field>
+        <Field label="Submitted"><input type="date" value={f.submitted_on} disabled={ro} onChange={(e) => setF({ ...f, submitted_on: e.target.value })} style={inputStyle} /></Field>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <Field label="Company / Project"><input value={f.company_project} disabled={ro} onChange={(e) => setF({ ...f, company_project: e.target.value })} style={inputStyle} /></Field>
+        <Field label="Deliver to"><input value={f.delivery_address} disabled={ro} onChange={(e) => setF({ ...f, delivery_address: e.target.value })} placeholder="Address, or Self collect" style={inputStyle} /></Field>
+      </div>
+      <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px 160px', gap: 12 }}>
+          <Field label="Item" hint={!f.item_id && f.item_name ? `Requested as "${f.item_name}" — not in the item list yet` : item ? `${usableTotal(onHand, item.id, locations)} usable on hand` : undefined}>
+            <ItemSelect items={items} value={f.item_id} onChange={(v) => setF({ ...f, item_id: v })} allowNone noneLabel={f.item_name && !f.item_id ? `— ${f.item_name} (not in list) —` : '— Not in the item list —'} disabled={ro} />
+          </Field>
+          <Field label="Qty"><input type="number" min="1" step="1" value={f.qty} disabled={ro} onChange={(e) => setF({ ...f, qty: e.target.value })} style={inputStyle} /></Field>
+          <Field label="Required by"><input type="date" value={f.required_by} disabled={ro} onChange={(e) => setF({ ...f, required_by: e.target.value })} style={inputStyle} /></Field>
+        </div>
+        {!f.item_id && (
+          <Field label="Describe the item"><input value={f.item_name} disabled={ro} onChange={(e) => setF({ ...f, item_name: e.target.value })} placeholder="e.g. Hici - Control Module - ZM029" style={inputStyle} /></Field>
+        )}
+      </div>
+      <Field label="Remarks"><input value={f.remarks} disabled={ro} onChange={(e) => setF({ ...f, remarks: e.target.value })} style={inputStyle} /></Field>
+
+      {/* Workflow actions */}
+      {!isNew && canEdit && (
+        <div style={{ borderTop: '1px solid #F3F3F3', paddingTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {mode === null && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {req!.status === 'pending' && <button onClick={() => void setStatus('approved')} disabled={busy} style={ghostBtn}>Approve</button>}
+              {(req!.status === 'pending' || req!.status === 'approved') && (
+                <button onClick={() => setMode('fulfil')} disabled={busy} style={{ ...primaryBtn(busy), display: 'inline-flex', alignItems: 'center', gap: 6 }}><Truck size={14} /> Fulfil &amp; deliver</button>
+              )}
+              {req!.status === 'legacy' && (
+                <>
+                  <button onClick={() => setMode('close')} disabled={busy} style={ghostBtn}>Mark delivered (already issued)</button>
+                  <button onClick={() => void setStatus('pending')} disabled={busy} style={ghostBtn}>Still needed — move to Pending</button>
+                </>
+              )}
+              {req!.status !== 'fulfilled' && req!.status !== 'cancelled' && (
+                <button onClick={() => void setStatus('cancelled')} disabled={busy} style={{ ...ghostBtn, color: '#C0321A' }}>Cancel request</button>
+              )}
+              {req!.status === 'cancelled' && <button onClick={() => void setStatus('pending')} disabled={busy} style={ghostBtn}>Reopen</button>}
+              {canDelete && req!.status !== 'fulfilled' && <button onClick={() => setMode('delete')} style={{ ...ghostBtn, marginLeft: 'auto', color: '#C0321A' }}>Delete</button>}
+            </div>
+          )}
+          {mode === 'fulfil' && (
+            <FulfilForm req={req!} item={item} items={items} locations={locations} onHand={onHand} me={me}
+              onCancel={() => setMode(null)} beforeFulfil={save}
+              onDone={async () => { await onChanged(); onClose(); }} />
+          )}
+          {mode === 'close' && (
+            <CloseLegacyForm onCancel={() => setMode(null)} busy={busy}
+              onConfirm={(on, note) => void setStatus('fulfilled', { fulfilled_on: on, delivery_note: note || 'Closed during migration review — stock already issued before the move from Excel' })} />
+          )}
+          {mode === 'delete' && (
+            <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: '#C0321A' }}>Delete {req!.pr_no}? This can't be undone.</span>
+              <button onClick={() => setMode(null)} style={ghostBtn}>Cancel</button>
+              <button onClick={() => void remove()} disabled={busy} style={{ ...primaryBtn(busy), background: '#C0321A' }}>Yes, delete</button>
+            </div>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function FulfilForm({ req, item, items, locations, onHand, me, onCancel, beforeFulfil, onDone }: {
+  req: InvRequest; item: InvItem | null; items: InvItem[]; locations: InvLocation[]; onHand: OnHand; me: string;
+  onCancel: () => void; beforeFulfil: () => Promise<boolean>; onDone: () => Promise<void>;
+}) {
+  const best = item ? [...locations.filter((l) => l.usable)].sort((a, b) => qtyAt(onHand, item.id, b.id) - qtyAt(onHand, item.id, a.id))[0] : undefined;
+  const [loc, setLoc] = useState(best?.id ?? '');
+  const [date, setDate] = useState(todayISO());
+  const [by, setBy] = useState('');
+  const [note, setNote] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const avail = item && loc ? qtyAt(onHand, item.id, loc) : 0;
+
+  const go = async () => {
+    if (!item) { setErr('Link this request to an item in the list first (Item field above), then save.'); return; }
+    if (!loc) { setErr('Pick the location the stock leaves from.'); return; }
+    setBusy(true);
+    setErr(null);
+    if (!(await beforeFulfil())) { setBusy(false); return; }
+    const { error } = await supabase.rpc('inv_fulfil_request', {
+      p_request: req.id, p_location: loc, p_date: date, p_delivered_by: by.trim() || null, p_note: note.trim() || null, p_by: me,
+    });
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    await onDone();
+  };
+
+  return (
+    <div style={{ background: C.honeydew, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>Fulfil {req.qty} × {item ? itemLabel(item, items) : req.item_name}</div>
+      <ErrorBanner text={err} />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+        <Field label="Issue from" hint={item && loc && avail < req.qty ? `Only ${avail} here — this will take the location negative` : undefined}>
+          <LocationSelect locations={locations} value={loc} onChange={setLoc} itemId={item?.id} onHand={onHand} />
+        </Field>
+        <Field label="Delivery / collection date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} /></Field>
+        <Field label="Delivered by"><input value={by} onChange={(e) => setBy(e.target.value)} placeholder="Driver / technician / self collect" style={inputStyle} /></Field>
+      </div>
+      <Field label="Delivery note"><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Optional — received by, remarks" style={inputStyle} /></Field>
+      <div style={{ fontSize: 11, color: C.slate }}>Issues the stock from the chosen location and assigns a delivery-order number.</div>
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button onClick={onCancel} style={ghostBtn}>Back</button>
+        <button onClick={() => void go()} disabled={busy} style={primaryBtn(busy)}>{busy ? 'Issuing…' : 'Confirm fulfilment'}</button>
+      </div>
+    </div>
+  );
+}
+
+function CloseLegacyForm({ onCancel, onConfirm, busy }: { onCancel: () => void; onConfirm: (on: string, note: string) => void; busy: boolean }) {
+  const [on, setOn] = useState(todayISO());
+  const [note, setNote] = useState('');
+  return (
+    <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ fontSize: 12.5, color: '#1a1a1a' }}>
+        Closes this migrated request as delivered <b>without touching stock</b> — the Excel stock figures already reflect it.
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '170px 1fr', gap: 12 }}>
+        <Field label="Delivered on"><input type="date" value={on} onChange={(e) => setOn(e.target.value)} style={inputStyle} /></Field>
+        <Field label="Note"><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Optional" style={inputStyle} /></Field>
+      </div>
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button onClick={onCancel} style={ghostBtn}>Back</button>
+        <button onClick={() => onConfirm(on, note.trim())} disabled={busy} style={primaryBtn(busy)}>Mark delivered</button>
+      </div>
+    </div>
+  );
+}

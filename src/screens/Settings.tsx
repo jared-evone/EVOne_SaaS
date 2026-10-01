@@ -20,7 +20,7 @@ interface AppUser {
 
 type PermissionRow = ScreenCap & { department: Department; screen_key: ScreenKey };
 
-const SHORT_DEPT: Record<Department, string> = { cpo: 'CPO', sales: 'Sales', tech: 'Tech', pm: 'Registry' };
+const SHORT_DEPT: Record<Department, string> = { cpo: 'CPO', sales: 'Sales', tech: 'Tech', pm: 'Registry', inv: 'Inventory' };
 
 // Grants are per (department, screen). Matrix cells are keyed by this pair so the
 // same shared screen can differ between departments for one user.
