@@ -313,3 +313,53 @@ grant execute on function inv_replenish_cannibalisation(uuid, text, uuid, date, 
 -- Access (data, via execute_sql): full rights on all six inv_* screens for
 -- jaredlau@evone.com.sg, admin@evone.com.sg, admin@evone.com.my. Others are
 -- granted from Users & Permissions.
+
+-- 2026-10-01 · migration inventory_brand_category_lists — admin-maintained
+-- pick-lists for item Brand / Category (seeded from the values in use). Items
+-- keep the text; inv_rename_lookup renames a list entry on every item at once.
+-- In the app only Stock Levels admins (can_delete) can add / rename / remove.
+create table inv_brands (
+  id         uuid primary key default gen_random_uuid(),
+  name       text not null,
+  sort_order int  not null default 0
+);
+create unique index inv_brands_name_uq on inv_brands (lower(name));
+
+create table inv_categories (
+  id         uuid primary key default gen_random_uuid(),
+  name       text not null,
+  sort_order int  not null default 0
+);
+create unique index inv_categories_name_uq on inv_categories (lower(name));
+
+alter table inv_brands enable row level security;
+alter table inv_categories enable row level security;
+create policy "authenticated full access" on inv_brands for all to authenticated using (true) with check (true);
+create policy "authenticated full access" on inv_categories for all to authenticated using (true) with check (true);
+
+insert into inv_brands (name, sort_order)
+select brand, row_number() over (order by min(sort_order)) from inv_items where brand is not null group by brand;
+insert into inv_categories (name, sort_order)
+select category, row_number() over (order by min(sort_order)) from inv_items where category is not null group by category;
+
+create or replace function inv_rename_lookup(p_kind text, p_id uuid, p_new text)
+returns void language plpgsql as $$
+declare v_old text; v_new text := nullif(trim(p_new), '');
+begin
+  if v_new is null then raise exception 'Name cannot be empty'; end if;
+  if p_kind = 'brand' then
+    select name into v_old from inv_brands where id = p_id for update;
+    if not found then raise exception 'Brand not found'; end if;
+    update inv_brands set name = v_new where id = p_id;
+    update inv_items set brand = v_new, updated_at = now() where brand = v_old;
+  elsif p_kind = 'category' then
+    select name into v_old from inv_categories where id = p_id for update;
+    if not found then raise exception 'Category not found'; end if;
+    update inv_categories set name = v_new where id = p_id;
+    update inv_items set category = v_new, updated_at = now() where category = v_old;
+  else
+    raise exception 'Unknown list';
+  end if;
+end $$;
+revoke execute on function inv_rename_lookup(text, uuid, text) from public, anon;
+grant execute on function inv_rename_lookup(text, uuid, text) to authenticated;

@@ -3,7 +3,7 @@ import { C } from '../../theme';
 import { KPICard } from '../../components/KPICard';
 import { supabase } from '../../lib/supabase';
 import { usePermissions } from '../../permissions';
-import { Download, Plus, ArrowLeftRight, ClipboardCheck, Trash2, Archive, ArchiveRestore } from 'lucide-react';
+import { Download, Plus, ArrowLeftRight, ClipboardCheck, Trash2, Archive, ArchiveRestore, Tags, Pencil, Check, X } from 'lucide-react';
 import {
   useInvCore, qtyAt, usableTotal, itemLabel, fmtD, todayISO, MOVEMENT_LABELS, MOVEMENT_COLORS,
   Pill, Field, ErrorBanner, Modal, LocationSelect, SearchBox, downloadCsv,
@@ -29,12 +29,32 @@ function statusOf(item: InvItem, onHand: OnHand, locations: InvLocation[]): Stoc
   return 'ok';
 }
 
+// Admin-maintained pick-lists for Brand and Category. Items store the text.
+interface LookupRow { id: string; name: string; sort_order: number; }
+interface Lookups { brands: LookupRow[]; categories: LookupRow[]; }
+type LookupKind = 'brand' | 'category';
+const LOOKUP_TABLE: Record<LookupKind, string> = { brand: 'inv_brands', category: 'inv_categories' };
+
+function useLookups() {
+  const [lookups, setLookups] = useState<Lookups>({ brands: [], categories: [] });
+  const reload = async () => {
+    const [b, c] = await Promise.all([
+      supabase.from('inv_brands').select('*').order('sort_order').order('name'),
+      supabase.from('inv_categories').select('*').order('sort_order').order('name'),
+    ]);
+    setLookups({ brands: (b.data as LookupRow[]) ?? [], categories: (c.data as LookupRow[]) ?? [] });
+  };
+  useEffect(() => { void reload(); }, []);
+  return { lookups, reloadLookups: reload };
+}
+
 export function ScreenInvStock() {
   const { can, user } = usePermissions();
   const canEdit = can('inv_stock', 'can_edit');
   const canDelete = can('inv_stock', 'can_delete');
   const me = user.full_name || user.email;
   const { items, locations, onHand, loading, error, reload } = useInvCore();
+  const { lookups, reloadLookups } = useLookups();
 
   // Open shipments → units still incoming per item; open cannibalisations from
   // chargers in stock → units that are currently incomplete.
@@ -61,7 +81,7 @@ export function ScreenInvStock() {
     setIncomplete(icm);
   };
   useEffect(() => { void loadSide(); }, []);
-  const refresh = async () => { await Promise.all([reload(), loadSide()]); };
+  const refresh = async () => { await Promise.all([reload(), loadSide(), reloadLookups()]); };
 
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('All');
@@ -69,10 +89,11 @@ export function ScreenInvStock() {
   const [showArchived, setShowArchived] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [managingLists, setManagingLists] = useState(false);
 
   const usable = locations.filter((l) => l.usable);
   const spoiltLoc = locations.find((l) => !l.usable) ?? null;
-  const categories = useMemo(() => ['All', ...new Set(items.map((i) => i.category || 'Uncategorised'))], [items]);
+  const categories = useMemo(() => ['All', ...new Set([...lookups.categories.map((c) => c.name), ...items.map((i) => i.category || 'Uncategorised')])], [items, lookups]);
 
   const visible = items.filter((i) => {
     if (!showArchived && !i.active) return false;
@@ -130,6 +151,7 @@ export function ScreenInvStock() {
         <button onClick={() => setShowArchived((v) => !v)} style={pillBtn(showArchived)}>{showArchived ? '✓ ' : ''}Archived</button>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           <button onClick={exportCsv} style={{ ...ghostBtn, display: 'inline-flex', alignItems: 'center', gap: 6 }}><Download size={13} /> Export</button>
+          {canDelete && <button onClick={() => setManagingLists(true)} style={{ ...ghostBtn, display: 'inline-flex', alignItems: 'center', gap: 6 }}><Tags size={13} /> Brands &amp; categories</button>}
           {canEdit && <button onClick={() => setAdding(true)} style={{ ...primaryBtn(), display: 'inline-flex', alignItems: 'center', gap: 6 }}><Plus size={14} /> New item</button>}
         </div>
       </div>
@@ -193,21 +215,23 @@ export function ScreenInvStock() {
       </div>
 
       {open && (
-        <ItemDrawer key={open.id} item={open} items={items} locations={locations} onHand={onHand} me={me}
+        <ItemDrawer key={open.id} item={open} items={items} locations={locations} onHand={onHand} me={me} lookups={lookups} onLookupsChanged={reloadLookups}
           canEdit={canEdit} canDelete={canDelete} onClose={() => setOpenId(null)} onChanged={refresh} />
       )}
       {adding && (
-        <ItemFormModal items={items} onClose={() => setAdding(false)}
+        <ItemFormModal items={items} lookups={lookups} isAdmin={canDelete} onLookupsChanged={reloadLookups} onClose={() => setAdding(false)}
           onSaved={async (id) => { setAdding(false); await refresh(); setOpenId(id); }} />
       )}
+      {managingLists && <ListsModal lookups={lookups} items={items} onClose={() => setManagingLists(false)} onChanged={refresh} />}
     </div>
   );
 }
 
 // ── Item detail: balances, actions, history ──────────────────────
 
-function ItemDrawer({ item, items, locations, onHand, me, canEdit, canDelete, onClose, onChanged }: {
+function ItemDrawer({ item, items, locations, onHand, me, lookups, onLookupsChanged, canEdit, canDelete, onClose, onChanged }: {
   item: InvItem; items: InvItem[]; locations: InvLocation[]; onHand: OnHand; me: string;
+  lookups: Lookups; onLookupsChanged: () => Promise<void>;
   canEdit: boolean; canDelete: boolean; onClose: () => void; onChanged: () => Promise<void>;
 }) {
   const [history, setHistory] = useState<InvMovement[]>([]);
@@ -275,7 +299,7 @@ function ItemDrawer({ item, items, locations, onHand, me, canEdit, canDelete, on
       {action === 'spoil' && <TransferForm item={item} locations={locations} onHand={onHand} me={me} spoil onCancel={() => setAction(null)} onDone={after} />}
       {action === 'edit' && (
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16 }}>
-          <ItemFields item={item} items={items} onCancel={() => setAction(null)} onSaved={async () => { await after(); }} />
+          <ItemFields item={item} items={items} lookups={lookups} isAdmin={canDelete} onLookupsChanged={onLookupsChanged} onCancel={() => setAction(null)} onSaved={async () => { await after(); }} />
         </div>
       )}
 
@@ -387,12 +411,12 @@ function TransferForm({ item, locations, onHand, me, spoil, onCancel, onDone }: 
   );
 }
 
-function ItemFields({ item, items, onCancel, onSaved }: {
-  item: InvItem | null; items: InvItem[]; onCancel: () => void; onSaved: (id: string) => Promise<void>;
+function ItemFields({ item, items, lookups, isAdmin, onLookupsChanged, onCancel, onSaved }: {
+  item: InvItem | null; items: InvItem[]; lookups: Lookups; isAdmin: boolean; onLookupsChanged: () => Promise<void>;
+  onCancel: () => void; onSaved: (id: string) => Promise<void>;
 }) {
-  const cats = [...new Set(items.map((i) => i.category).filter((c): c is string => !!c))];
   const [f, setF] = useState({
-    name: item?.name ?? '', brand: item?.brand ?? '', category: item?.category ?? cats[0] ?? '',
+    name: item?.name ?? '', brand: item?.brand ?? '', category: item?.category ?? '',
     reorder_point: item?.reorder_point != null ? String(item.reorder_point) : '',
     reorder_qty: item?.reorder_qty != null ? String(item.reorder_qty) : '',
     unit_price: item?.unit_price != null ? String(item.unit_price) : '',
@@ -404,6 +428,8 @@ function ItemFields({ item, items, onCancel, onSaved }: {
 
   const save = async () => {
     if (!f.name.trim()) { setErr('Item name is required.'); return; }
+    if (!f.brand) { setErr('Pick a brand.'); return; }
+    if (!f.category) { setErr('Pick a category.'); return; }
     setBusy(true);
     const payload = {
       name: f.name.trim(), brand: f.brand.trim() || null, category: f.category.trim() || null,
@@ -423,10 +449,13 @@ function ItemFields({ item, items, onCancel, onSaved }: {
       <ErrorBanner text={err} />
       <Field label="Item name"><input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="e.g. Hici AC - 7kW - Standard (5m)" style={inputStyle} /></Field>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <Field label="Brand"><input value={f.brand} onChange={(e) => setF({ ...f, brand: e.target.value })} style={inputStyle} /></Field>
+        <Field label="Brand">
+          <LookupSelect kind="brand" value={f.brand} options={lookups.brands} isAdmin={isAdmin}
+            onChange={(v) => setF((x) => ({ ...x, brand: v }))} onAdded={onLookupsChanged} />
+        </Field>
         <Field label="Category">
-          <input value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })} list="inv-categories" style={inputStyle} />
-          <datalist id="inv-categories">{cats.map((c) => <option key={c} value={c} />)}</datalist>
+          <LookupSelect kind="category" value={f.category} options={lookups.categories} isAdmin={isAdmin}
+            onChange={(v) => setF((x) => ({ ...x, category: v }))} onAdded={onLookupsChanged} />
         </Field>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
@@ -443,11 +472,143 @@ function ItemFields({ item, items, onCancel, onSaved }: {
   );
 }
 
-function ItemFormModal({ items, onClose, onSaved }: { items: InvItem[]; onClose: () => void; onSaved: (id: string) => Promise<void> }) {
+function ItemFormModal({ items, lookups, isAdmin, onLookupsChanged, onClose, onSaved }: {
+  items: InvItem[]; lookups: Lookups; isAdmin: boolean; onLookupsChanged: () => Promise<void>;
+  onClose: () => void; onSaved: (id: string) => Promise<void>;
+}) {
   return (
     <Modal title="New item" subtitle="Starts at zero — receive stock against it, or post a stock count." onClose={onClose}>
-      <ItemFields item={null} items={items} onCancel={onClose} onSaved={onSaved} />
+      <ItemFields item={null} items={items} lookups={lookups} isAdmin={isAdmin} onLookupsChanged={onLookupsChanged} onCancel={onClose} onSaved={onSaved} />
     </Modal>
+  );
+}
+
+// Dropdown over a managed list. Admins get "+ Add new…" inline; everyone else
+// can only pick existing entries.
+const ADD_NEW = '__add_new__';
+function LookupSelect({ kind, value, options, isAdmin, onChange, onAdded }: {
+  kind: LookupKind; value: string; options: LookupRow[]; isAdmin: boolean;
+  onChange: (v: string) => void; onAdded: () => Promise<void>;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const noun = kind === 'brand' ? 'brand' : 'category';
+  const inList = options.some((o) => o.name === value);
+
+  const add = async () => {
+    const name = draft.trim();
+    if (!name) return;
+    const existing = options.find((o) => o.name.toLowerCase() === name.toLowerCase());
+    if (existing) { onChange(existing.name); setAdding(false); setDraft(''); return; }
+    const { error } = await supabase.from(LOOKUP_TABLE[kind]).insert({ name, sort_order: Math.max(0, ...options.map((o) => o.sort_order)) + 1 });
+    if (error) { setErr(error.message); return; }
+    await onAdded();
+    onChange(name);
+    setAdding(false);
+    setDraft('');
+    setErr(null);
+  };
+
+  if (adding) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input value={draft} onChange={(e) => setDraft(e.target.value)} autoFocus placeholder={`New ${noun}`}
+            onKeyDown={(e) => { if (e.key === 'Enter') void add(); if (e.key === 'Escape') setAdding(false); }}
+            style={inputStyle} />
+          <button type="button" onClick={() => void add()} title="Add" style={{ ...primaryBtn(!draft.trim()), padding: '0 12px' }}><Check size={14} /></button>
+          <button type="button" onClick={() => { setAdding(false); setDraft(''); }} title="Cancel" style={{ ...ghostBtn, padding: '0 10px' }}><X size={14} /></button>
+        </div>
+        {err && <div style={{ fontSize: 11, color: '#C0321A' }}>{err}</div>}
+      </div>
+    );
+  }
+  return (
+    <select value={value} onChange={(e) => { if (e.target.value === ADD_NEW) setAdding(true); else onChange(e.target.value); }}
+      style={{ ...inputStyle, cursor: 'pointer' }}>
+      <option value="" disabled>— Select {noun} —</option>
+      {options.map((o) => <option key={o.id} value={o.name}>{o.name}</option>)}
+      {value && !inList && <option value={value}>{value} (not in list)</option>}
+      {isAdmin && <option value={ADD_NEW}>+ Add new {noun}…</option>}
+    </select>
+  );
+}
+
+// Admin manager for the Brand and Category lists.
+function ListsModal({ lookups, items, onClose, onChanged }: {
+  lookups: Lookups; items: InvItem[]; onClose: () => void; onChanged: () => Promise<void>;
+}) {
+  return (
+    <Modal title="Brands & categories" subtitle="The options in the item Brand and Category dropdowns. Renaming updates every item that uses it." width={680} onClose={onClose}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 }}>
+        <LookupList kind="brand" rows={lookups.brands} usage={(n) => items.filter((i) => i.brand === n).length} onChanged={onChanged} />
+        <LookupList kind="category" rows={lookups.categories} usage={(n) => items.filter((i) => i.category === n).length} onChanged={onChanged} />
+      </div>
+    </Modal>
+  );
+}
+
+function LookupList({ kind, rows, usage, onChanged }: {
+  kind: LookupKind; rows: LookupRow[]; usage: (name: string) => number; onChanged: () => Promise<void>;
+}) {
+  const [editId, setEditId] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const [newName, setNewName] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const noun = kind === 'brand' ? 'brand' : 'category';
+
+  const run = async (fn: () => PromiseLike<{ error: { message: string } | null }>) => {
+    setBusy(true);
+    setErr(null);
+    const { error } = await fn();
+    setBusy(false);
+    if (error) { setErr(error.message.includes('duplicate') ? `That ${noun} already exists.` : error.message); return false; }
+    await onChanged();
+    return true;
+  };
+
+  return (
+    <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 2 }}>{kind === 'brand' ? 'Brands' : 'Categories'}</div>
+      {rows.map((r) => {
+        const n = usage(r.name);
+        return (
+          <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 6, background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '6px 8px' }}>
+            {editId === r.id ? (
+              <>
+                <input value={draft} onChange={(e) => setDraft(e.target.value)} autoFocus
+                  onKeyDown={(e) => { if (e.key === 'Escape') setEditId(null); }}
+                  style={{ ...inputStyle, padding: '5px 8px', fontSize: 12.5 }} />
+                <button disabled={busy} title="Save"
+                  onClick={async () => { if (await run(() => supabase.rpc('inv_rename_lookup', { p_kind: kind, p_id: r.id, p_new: draft }))) setEditId(null); }}
+                  style={{ border: 'none', background: C.green, color: C.white, borderRadius: 8, padding: '5px 8px', cursor: 'pointer', display: 'inline-flex' }}><Check size={13} /></button>
+                <button onClick={() => setEditId(null)} title="Cancel" style={{ border: 'none', background: 'transparent', color: C.slate, cursor: 'pointer', display: 'inline-flex', padding: 4 }}><X size={13} /></button>
+              </>
+            ) : (
+              <>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</span>
+                <span style={{ fontSize: 11, color: C.slate, whiteSpace: 'nowrap' }}>{n} item{n === 1 ? '' : 's'}</span>
+                <button onClick={() => { setEditId(r.id); setDraft(r.name); }} title="Rename" style={{ border: 'none', background: 'transparent', color: C.slate, cursor: 'pointer', display: 'inline-flex', padding: 4 }}><Pencil size={13} /></button>
+                <button disabled={busy || n > 0} title={n > 0 ? `In use by ${n} item${n === 1 ? '' : 's'} — reassign them first` : `Remove ${noun}`}
+                  onClick={() => void run(() => supabase.from(LOOKUP_TABLE[kind]).delete().eq('id', r.id))}
+                  style={{ border: 'none', background: 'transparent', color: n > 0 ? '#D5DDE3' : '#C0321A', cursor: n > 0 ? 'not-allowed' : 'pointer', display: 'inline-flex', padding: 4 }}><Trash2 size={13} /></button>
+              </>
+            )}
+          </div>
+        );
+      })}
+      <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+        <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder={`New ${noun}`}
+          onKeyDown={async (e) => { if (e.key === 'Enter' && newName.trim() && await run(() => supabase.from(LOOKUP_TABLE[kind]).insert({ name: newName.trim(), sort_order: Math.max(0, ...rows.map((x) => x.sort_order)) + 1 }))) setNewName(''); }}
+          style={{ ...inputStyle, padding: '6px 10px', fontSize: 12.5 }} />
+        <button disabled={busy || !newName.trim()}
+          onClick={async () => { if (await run(() => supabase.from(LOOKUP_TABLE[kind]).insert({ name: newName.trim(), sort_order: Math.max(0, ...rows.map((x) => x.sort_order)) + 1 }))) setNewName(''); }}
+          style={{ ...primaryBtn(busy || !newName.trim()), padding: '0 12px', display: 'inline-flex', alignItems: 'center' }}><Plus size={14} /></button>
+      </div>
+      {err && <div style={{ fontSize: 11, color: '#C0321A' }}>{err}</div>}
+    </div>
   );
 }
 
