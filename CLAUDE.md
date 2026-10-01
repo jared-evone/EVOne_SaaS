@@ -39,7 +39,7 @@ Adding a new top-level screen = touch four places:
 3. `NAV_ALL` + `SCREEN_TITLES` + `screens` map in [src/App.tsx](src/App.tsx).
 4. An `app_role_permissions` row for any role that should access it (the Settings UI does this for you per-role).
 
-**Storage buckets** for binary files: `cpo-maintenance-pdfs` (charger meter / maintenance reports), `crm-contracts` (corporate company contracts), `crm-instructions` (account-opening instruction PDFs + master service agreement), `sales-quotations` (quote PDFs, private), `sales-photos` / `technician-photos` (avatars, public). Read/insert/delete policies must list **both** `anon` AND `authenticated` roles; `usePermissions()` still gates *which UI* can upload. **Same gotcha as tables, on `storage.objects`:** an upload policy scoped to `anon` only blocks now-logged-in (authenticated) staff with a "violates row-level security policy" error on upload — this bit us on `cpo-maintenance-pdfs`. When you add a bucket or write a storage policy, scope it `TO anon, authenticated` (or `public`), never `anon` alone.
+**Storage buckets** for binary files: `cpo-maintenance-pdfs` (charger meter / maintenance reports), `crm-contracts` (corporate company contracts), `crm-instructions` (account-opening instruction PDFs + master service agreement), `sales-quotations` (quote PDFs, private), `sales-photos` / `technician-photos` (avatars, public), `tsd-sops` (SOP Library PDFs, private — the one bucket that is deliberately `authenticated`-only, since it has no anonymous flow). Read/insert/delete policies must list **both** `anon` AND `authenticated` roles; `usePermissions()` still gates *which UI* can upload. **Same gotcha as tables, on `storage.objects`:** an upload policy scoped to `anon` only blocks now-logged-in (authenticated) staff with a "violates row-level security policy" error on upload — this bit us on `cpo-maintenance-pdfs`. When you add a bucket or write a storage policy, scope it `TO anon, authenticated` (or `public`), never `anon` alone.
 
 `usePermissions().can()` gates the UI. It is **not** the only line of defence anymore — the database enforces a login too (see next section). Always keep gating the UI with `can()`, but never assume it's the security boundary.
 
@@ -345,6 +345,9 @@ src/
                                               exports PICReviewBoard)
                             TSDAdminApp.tsx  (Work Orders + FormBuilder)
                             TechniciansAdmin.tsx
+                            SopLibrary.tsx   (SOP Library — controlled PDF
+                                              SOPs: categories, tags, revisions,
+                                              review dates, flags)
                             OverlayForm.tsx, PDFExport.tsx
 ```
 

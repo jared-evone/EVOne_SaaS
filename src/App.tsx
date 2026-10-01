@@ -6,7 +6,7 @@ import {
   LayoutDashboard, Home, Receipt, Wrench, Users, FolderKanban, CalendarDays,
   Handshake, ClipboardList, Boxes, Truck, Building2, Plug, Zap, FileText,
   Hammer, Settings as SettingsIcon, ShieldCheck, Database, ChevronRight, ChevronDown,
-  Power, Menu, TrendingUp, UserCog, Mail, Calculator, ClipboardCheck, GanttChartSquare, ListTodo,
+  Power, Menu, TrendingUp, UserCog, Mail, Calculator, ClipboardCheck, GanttChartSquare, ListTodo, BookOpen,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -52,6 +52,7 @@ import { Login } from './screens/Login';
 import { TechApp } from './screens/tsd/TechApp';
 import { WorkOrdersAdmin, FormBuilder } from './screens/tsd/TSDAdminApp';
 import { TechniciansAdmin } from './screens/tsd/TechniciansAdmin';
+import { SopLibrary } from './screens/tsd/SopLibrary';
 import { PICReviewBoard } from './screens/tsd/PICApp';
 import { FormTestPage } from './screens/tsd/FormTestPage';
 import {
@@ -103,6 +104,7 @@ const NAV_ALL: NavEntry[] = [
   { kind: 'leaf', id: 'quote_machine',     icon: Calculator,      label: 'Quote Machine' },
   { kind: 'leaf', id: 'raise_po',          icon: ClipboardCheck,  label: 'Raise PO' },
   { kind: 'leaf', id: 'tsd_technician',    icon: Hammer,          label: 'Technician' },
+  { kind: 'leaf', id: 'tsd_sop',           icon: BookOpen,        label: 'SOP Library' },
   { kind: 'group', key: 'tsd_admin_group', icon: ClipboardList,   label: 'TSD Admin', children: [
     { kind: 'leaf', id: 'tsd_workorders',  icon: ClipboardList,   label: 'Work Orders' },
     { kind: 'leaf', id: 'tsd_forms',       icon: FileText,        label: 'Form Templates' },
@@ -143,6 +145,7 @@ const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
   tsd_forms:           'Form Templates',
   tsd_pic:             'PIC Review',
   tsd_technicians:     'Technicians',
+  tsd_sop:             'SOP Library',
   email_designer:      'Email',
   charger_projects:    'Projects',
   registry_todo:       'To Do',
@@ -176,6 +179,7 @@ const screens: Partial<Record<ScreenId, JSX.Element>> = {
   tsd_forms:           <FormBuilder />,
   tsd_pic:             <PICReviewBoard />,
   tsd_technicians:     <TechniciansAdmin />,
+  tsd_sop:             <SopLibrary />,
   email_designer:      <ScreenEmailDesigner />,
   charger_projects:    <ScreenChargerProjects />,
   registry_todo:       <ScreenRegistryTodo />,

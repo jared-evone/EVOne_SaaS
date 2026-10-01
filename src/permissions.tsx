@@ -17,7 +17,7 @@ export type ScreenKey =
   | 'corporatecrm' | 'corporatecrm_invoicing'
   | 'cpochargers' | 'charging' | 'corporateinvoicing' | 'charging_dashboard'
   | 'charging_cpo_carparks' | 'charging_sp_price'
-  | 'tsd_technician' | 'tsd_workorders' | 'tsd_forms' | 'tsd_pic' | 'tsd_technicians'
+  | 'tsd_technician' | 'tsd_workorders' | 'tsd_forms' | 'tsd_pic' | 'tsd_technicians' | 'tsd_sop'
   | 'email_designer' | 'quote_machine' | 'raise_po'
   | 'charger_projects' | 'registry_todo'
   | 'settings' | 'dbhealth';
@@ -49,6 +49,7 @@ export const SCREEN_LABELS: Record<ScreenKey, string> = {
   tsd_forms:             'Form Templates',
   tsd_pic:               'PIC Review',
   tsd_technicians:       'Technicians',
+  tsd_sop:               'SOP Library',
   email_designer:        'Email',
   quote_machine:         'Quote Machine',
   raise_po:              'Raise PO',
@@ -67,7 +68,7 @@ export const DEPARTMENT_SCREENS: Record<Department, ScreenKey[]> = {
           'charging_cpo_carparks', 'charging_sp_price',
           'corporateinvoicing'],
   sales: ['customers', 'sales', 'sales_manager', 'sales_team', 'quote_machine', 'raise_po'],
-  tech:  ['tsd_technician', 'tsd_workorders', 'tsd_forms', 'tsd_pic', 'tsd_technicians', 'customers', 'projects'],
+  tech:  ['tsd_technician', 'tsd_sop', 'tsd_workorders', 'tsd_forms', 'tsd_pic', 'tsd_technicians', 'customers', 'projects'],
   pm:    ['dashboard', 'registry_todo', 'charger_projects', 'customers', 'projects', 'email_designer'],
 };
 
