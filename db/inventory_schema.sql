@@ -363,3 +363,9 @@ begin
 end $$;
 revoke execute on function inv_rename_lookup(text, uuid, text) from public, anon;
 grant execute on function inv_rename_lookup(text, uuid, text) to authenticated;
+
+-- 2026-10-01 · migration inv_requests_customer_link — requests pick the company
+-- from the customer database (company_project keeps the name as a snapshot, and
+-- the original Excel text for migrated rows). Only PR-2026-0030 ("Completion
+-- Products") matched a customer exactly and was linked; the rest link in-app.
+alter table inv_requests add column customer_id uuid references customers(id) on delete set null;

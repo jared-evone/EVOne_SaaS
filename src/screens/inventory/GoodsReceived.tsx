@@ -3,10 +3,10 @@ import { C } from '../../theme';
 import { KPICard } from '../../components/KPICard';
 import { supabase } from '../../lib/supabase';
 import { usePermissions } from '../../permissions';
-import { Plus, Download, PackageCheck } from 'lucide-react';
+import { Download, PackageCheck } from 'lucide-react';
 import {
   useInvCore, itemLabel, fmtD, todayISO,
-  Pill, Field, ErrorBanner, Modal, ItemSelect, LocationSelect, SearchBox, downloadCsv,
+  Pill, Field, ErrorBanner, Modal, LocationSelect, SearchBox, downloadCsv,
   inputStyle, primaryBtn, ghostBtn, pillBtn, thStyle, tdStyle,
   type InvItem, type InvGrn, type InvLocation, type OnHand,
 } from './invShared';
@@ -35,7 +35,6 @@ export function ScreenInvGrn() {
   const [filter, setFilter] = useState<Filter>('all');
   const [search, setSearch] = useState('');
   const [completing, setCompleting] = useState<InvGrn | null>(null);
-  const [recording, setRecording] = useState(false);
   const [viewing, setViewing] = useState<InvGrn | null>(null);
 
   const variance = (g: InvGrn) => (g.status === 'received' && g.qty_ordered != null && g.qty_received != null ? g.qty_received - g.qty_ordered : 0);
@@ -79,11 +78,10 @@ export function ScreenInvGrn() {
         ))}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           <button onClick={exportCsv} style={{ ...ghostBtn, display: 'inline-flex', alignItems: 'center', gap: 6 }}><Download size={13} /> Export</button>
-          {canEdit && <button onClick={() => setRecording(true)} style={{ ...primaryBtn(), display: 'inline-flex', alignItems: 'center', gap: 6 }}><Plus size={14} /> Record receipt</button>}
         </div>
       </div>
       <div style={{ fontSize: 12, color: C.slate, marginTop: -8 }}>
-        Receipts against a tracked shipment are recorded from <b>Incoming Shipments → Receive into stock</b>; use <b>Record receipt</b> for goods that arrive without one.
+        The log of everything received. New stock comes in from <b>Incoming Shipments → Receive into stock</b>, which adds a line here automatically.
       </div>
 
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
@@ -154,10 +152,6 @@ export function ScreenInvGrn() {
         <CompleteModal grn={completing} items={items} locations={locations} onHand={onHand} me={me}
           onClose={() => setCompleting(null)} onDone={async () => { setCompleting(null); await refresh(); }} />
       )}
-      {recording && (
-        <RecordModal items={items} locations={locations} onHand={onHand} me={me}
-          onClose={() => setRecording(false)} onDone={async () => { setRecording(false); await refresh(); }} />
-      )}
     </div>
   );
 }
@@ -196,50 +190,6 @@ function CompleteModal({ grn, items, locations, onHand, me, onClose, onDone }: {
         <Field label="Condition"><input value={condition} onChange={(e) => setCondition(e.target.value)} style={inputStyle} /></Field>
       </div>
       <div style={{ fontSize: 11, color: C.slate }}>Adds the received quantity to stock at the chosen location.</div>
-    </Modal>
-  );
-}
-
-function RecordModal({ items, locations, onHand, me, onClose, onDone }: {
-  items: InvItem[]; locations: InvLocation[]; onHand: OnHand; me: string; onClose: () => void; onDone: () => Promise<void>;
-}) {
-  const [f, setF] = useState({ item_id: '', supplier: '', po_no: '', qty_ordered: '', qty_received: '', location: locations.find((l) => l.usable)?.id ?? '', date: todayISO(), condition: 'Good', note: '' });
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const go = async () => {
-    const rec = Number(f.qty_received);
-    const ord = f.qty_ordered.trim() === '' ? null : Number(f.qty_ordered);
-    if (!f.item_id) { setErr('Pick the item received.'); return; }
-    if (!Number.isInteger(rec) || rec <= 0) { setErr('Enter the quantity received.'); return; }
-    if (!f.location) { setErr('Pick the location.'); return; }
-    setBusy(true);
-    const { error } = await supabase.rpc('inv_record_grn', {
-      p_item: f.item_id, p_supplier: f.supplier.trim() || null, p_po: f.po_no.trim() || null, p_qty_ordered: ord ?? rec, p_qty_received: rec,
-      p_location: f.location, p_date: f.date, p_condition: f.condition.trim() || null, p_note: f.note.trim() || null, p_by: me,
-    });
-    setBusy(false);
-    if (error) { setErr(error.message); return; }
-    await onDone();
-  };
-
-  return (
-    <Modal title="Record goods received" subtitle="For goods that arrive without a tracked shipment" width={600} onClose={onClose}
-      footer={<><button onClick={onClose} style={ghostBtn}>Cancel</button><button onClick={() => void go()} disabled={busy} style={primaryBtn(busy)}>{busy ? 'Saving…' : 'Record & add to stock'}</button></>}>
-      <ErrorBanner text={err} />
-      <Field label="Item"><ItemSelect items={items} value={f.item_id} onChange={(v) => setF({ ...f, item_id: v })} /></Field>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
-        <Field label="Supplier"><input value={f.supplier} onChange={(e) => setF({ ...f, supplier: e.target.value })} style={inputStyle} /></Field>
-        <Field label="PO number"><input value={f.po_no} onChange={(e) => setF({ ...f, po_no: e.target.value })} style={inputStyle} /></Field>
-        <Field label="Qty ordered"><input type="number" min="0" step="1" value={f.qty_ordered} onChange={(e) => setF({ ...f, qty_ordered: e.target.value })} placeholder="Same as received" style={inputStyle} /></Field>
-        <Field label="Qty received"><input type="number" min="1" step="1" value={f.qty_received} onChange={(e) => setF({ ...f, qty_received: e.target.value })} style={inputStyle} /></Field>
-        <Field label="Into location"><LocationSelect locations={locations} value={f.location} onChange={(v) => setF({ ...f, location: v })} itemId={f.item_id || null} onHand={onHand} /></Field>
-        <Field label="Date received"><input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} style={inputStyle} /></Field>
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 12 }}>
-        <Field label="Condition"><input value={f.condition} onChange={(e) => setF({ ...f, condition: e.target.value })} style={inputStyle} /></Field>
-        <Field label="Note"><input value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} style={inputStyle} /></Field>
-      </div>
     </Modal>
   );
 }

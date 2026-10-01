@@ -43,6 +43,7 @@ export interface InvRequest {
   submitted_on: string;
   employee: string | null;
   department: string | null;
+  customer_id: string | null;
   company_project: string | null;
   delivery_address: string | null;
   item_id: string | null;

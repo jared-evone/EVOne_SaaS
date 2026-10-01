@@ -3,7 +3,8 @@ import { C } from '../../theme';
 import { KPICard } from '../../components/KPICard';
 import { supabase } from '../../lib/supabase';
 import { usePermissions } from '../../permissions';
-import { Plus, Truck, Download } from 'lucide-react';
+import { Plus, Truck, Download, Lock } from 'lucide-react';
+import { SearchSelect } from '../../components/SearchSelect';
 import {
   useInvCore, qtyAt, usableTotal, itemLabel, fmtD, todayISO,
   Pill, Field, ErrorBanner, Modal, ItemSelect, LocationSelect, SearchBox, downloadCsv,
@@ -12,6 +13,11 @@ import {
 } from './invShared';
 
 type ReqStatus = InvRequest['status'];
+
+// Departments that raise stock requests.
+const REQ_DEPARTMENTS = ['Sales', 'Technical', 'CPO'];
+
+interface CustomerOpt { id: string; name: string; address: string | null; }
 
 const REQ_META: Record<ReqStatus, { label: string; bg: string; color: string }> = {
   legacy:    { label: 'Migrated — status not tracked', bg: '#F3F3F3', color: '#767B77' },
@@ -35,6 +41,11 @@ export function ScreenInvRequests() {
   const { items, locations, onHand, error: coreErr, reload: reloadCore } = useInvCore();
 
   const [rows, setRows] = useState<InvRequest[]>([]);
+  const [customers, setCustomers] = useState<CustomerOpt[]>([]);
+  useEffect(() => {
+    void supabase.from('customers').select('id, name, address').order('name')
+      .then(({ data }) => setCustomers((data as CustomerOpt[]) ?? []));
+  }, []);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const load = async () => {
@@ -128,11 +139,11 @@ export function ScreenInvRequests() {
       </div>
 
       {open && (
-        <RequestModal key={open.id} req={open} items={items} locations={locations} onHand={onHand} me={me}
+        <RequestModal key={open.id} req={open} items={items} customers={customers} locations={locations} onHand={onHand} me={me}
           canEdit={canEdit} canDelete={canDelete} onClose={() => setOpenId(null)} onChanged={refresh} />
       )}
       {creating && (
-        <RequestModal req={null} items={items} locations={locations} onHand={onHand} me={me}
+        <RequestModal req={null} items={items} customers={customers} locations={locations} onHand={onHand} me={me}
           canEdit={canEdit} canDelete={false} onClose={() => setCreating(false)}
           onChanged={async () => { setCreating(false); await refresh(); }} />
       )}
@@ -140,16 +151,16 @@ export function ScreenInvRequests() {
   );
 }
 
-function RequestModal({ req, items, locations, onHand, me, canEdit, canDelete, onClose, onChanged }: {
-  req: InvRequest | null; items: InvItem[]; locations: InvLocation[]; onHand: OnHand; me: string;
+function RequestModal({ req, items, customers, locations, onHand, me, canEdit, canDelete, onClose, onChanged }: {
+  req: InvRequest | null; items: InvItem[]; customers: CustomerOpt[]; locations: InvLocation[]; onHand: OnHand; me: string;
   canEdit: boolean; canDelete: boolean; onClose: () => void; onChanged: () => Promise<void>;
 }) {
   const isNew = !req;
   const editable = canEdit && (isNew || req!.status === 'pending' || req!.status === 'approved' || req!.status === 'legacy');
   const [f, setF] = useState({
     submitted_on: req?.submitted_on ?? todayISO(),
-    employee: req?.employee ?? me,
     department: req?.department ?? '',
+    customer_id: req?.customer_id ?? '',
     company_project: req?.company_project ?? '',
     delivery_address: req?.delivery_address ?? '',
     item_id: req?.item_id ?? '',
@@ -163,17 +174,29 @@ function RequestModal({ req, items, locations, onHand, me, canEdit, canDelete, o
   const [mode, setMode] = useState<null | 'fulfil' | 'close' | 'delete'>(null);
 
   const item = items.find((i) => i.id === f.item_id) ?? null;
+  const requester = req ? (req.employee ?? '—') : me;
+  const customer = customers.find((c) => c.id === f.customer_id) ?? null;
+
+  const pickCustomer = (id: string) => {
+    const c = customers.find((x) => x.id === id);
+    if (!c) return;
+    setF((x) => ({ ...x, customer_id: c.id, company_project: c.name, delivery_address: c.address ?? '' }));
+  };
 
   const save = async (extra?: Partial<InvRequest>) => {
     const qty = Number(f.qty);
+    if (!f.department) { setErr('Pick the department.'); return false; }
+    if (!f.customer_id && (isNew || !f.company_project.trim())) { setErr('Pick the company from the customer list.'); return false; }
     if (!f.item_id && !f.item_name.trim()) { setErr('Pick an item, or type what is needed.'); return false; }
     if (!Number.isInteger(qty) || qty <= 0) { setErr('Quantity must be a whole number above zero.'); return false; }
     setBusy(true);
     setErr(null);
     const payload = {
       submitted_on: f.submitted_on || todayISO(),
-      employee: f.employee.trim() || null, department: f.department.trim() || null,
-      company_project: f.company_project.trim() || null, delivery_address: f.delivery_address.trim() || null,
+      employee: requester === '—' ? null : requester, department: f.department || null,
+      customer_id: f.customer_id || null,
+      company_project: (customer ? customer.name : f.company_project).trim() || null,
+      delivery_address: f.delivery_address.trim() || null,
       item_id: f.item_id || null,
       item_name: (item ? item.name : f.item_name).trim(),
       qty, required_by: f.required_by || null, remarks: f.remarks.trim() || null,
@@ -235,18 +258,30 @@ function RequestModal({ req, items, locations, onHand, me, canEdit, canDelete, o
       {req?.delivery_note && <div style={{ fontSize: 12, color: C.slate }}>Delivery note: {req.delivery_note}</div>}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
-        <Field label="Requested by"><input value={f.employee} disabled={ro} onChange={(e) => setF({ ...f, employee: e.target.value })} style={inputStyle} /></Field>
+        <Field label="Requested by">
+          <div title="Set from the signed-in account — cannot be changed"
+            style={{ ...inputStyle, background: C.seasalt, color: '#1a1a1a', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Lock size={12} color={C.slate} style={{ flexShrink: 0 }} />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{requester}</span>
+          </div>
+        </Field>
         <Field label="Department">
           <select value={f.department} disabled={ro} onChange={(e) => setF({ ...f, department: e.target.value })} style={{ ...inputStyle, cursor: 'pointer' }}>
-            <option value="">—</option>
-            {['Sales', 'Technical', 'CPO', 'Project', 'Admin'].concat(f.department && !['Sales', 'Technical', 'CPO', 'Project', 'Admin'].includes(f.department) ? [f.department] : []).map((d) => <option key={d} value={d}>{d}</option>)}
+            <option value="" disabled>— Select —</option>
+            {REQ_DEPARTMENTS.concat(f.department && !REQ_DEPARTMENTS.includes(f.department) ? [f.department] : []).map((d) => <option key={d} value={d}>{d}</option>)}
           </select>
         </Field>
         <Field label="Submitted"><input type="date" value={f.submitted_on} disabled={ro} onChange={(e) => setF({ ...f, submitted_on: e.target.value })} style={inputStyle} /></Field>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <Field label="Company / Project"><input value={f.company_project} disabled={ro} onChange={(e) => setF({ ...f, company_project: e.target.value })} style={inputStyle} /></Field>
-        <Field label="Deliver to"><input value={f.delivery_address} disabled={ro} onChange={(e) => setF({ ...f, delivery_address: e.target.value })} placeholder="Address, or Self collect" style={inputStyle} /></Field>
+        <Field label="Company" hint={!f.customer_id && f.company_project ? `From Excel: "${f.company_project}" — pick the matching customer to link it` : undefined}>
+          <SearchSelect value={f.customer_id} disabled={ro}
+            options={customers.map((c) => ({ value: c.id, label: c.name, sub: c.address ?? undefined }))}
+            onChange={pickCustomer} placeholder="Select customer…" emptyText="No customers match" />
+        </Field>
+        <Field label="Deliver to" hint={customer ? (f.delivery_address === (customer.address ?? '') ? "Customer's address — edit for a site or Self collect" : 'Changed from the customer address') : undefined}>
+          <input value={f.delivery_address} disabled={ro} onChange={(e) => setF({ ...f, delivery_address: e.target.value })} placeholder="Filled from the customer's address" style={inputStyle} />
+        </Field>
       </div>
       <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px 160px', gap: 12 }}>

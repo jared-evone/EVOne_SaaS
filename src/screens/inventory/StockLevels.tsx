@@ -3,10 +3,10 @@ import { C } from '../../theme';
 import { KPICard } from '../../components/KPICard';
 import { supabase } from '../../lib/supabase';
 import { usePermissions } from '../../permissions';
-import { Download, Plus, ArrowLeftRight, ClipboardCheck, Trash2, Archive, ArchiveRestore, Tags, Pencil, Check, X } from 'lucide-react';
+import { Download, Plus, Trash2, Archive, ArchiveRestore, Tags, Pencil, Check, X } from 'lucide-react';
 import {
   useInvCore, qtyAt, usableTotal, itemLabel, fmtD, todayISO, MOVEMENT_LABELS, MOVEMENT_COLORS,
-  Pill, Field, ErrorBanner, Modal, LocationSelect, SearchBox, downloadCsv,
+  Pill, Field, ErrorBanner, Modal, SearchBox, downloadCsv,
   inputStyle, primaryBtn, ghostBtn, pillBtn, thStyle, tdStyle,
   type InvItem, type InvLocation, type InvMovement, type OnHand,
 } from './invShared';
@@ -49,10 +49,9 @@ function useLookups() {
 }
 
 export function ScreenInvStock() {
-  const { can, user } = usePermissions();
+  const { can } = usePermissions();
   const canEdit = can('inv_stock', 'can_edit');
   const canDelete = can('inv_stock', 'can_delete');
-  const me = user.full_name || user.email;
   const { items, locations, onHand, loading, error, reload } = useInvCore();
   const { lookups, reloadLookups } = useLookups();
 
@@ -215,7 +214,7 @@ export function ScreenInvStock() {
       </div>
 
       {open && (
-        <ItemDrawer key={open.id} item={open} items={items} locations={locations} onHand={onHand} me={me} lookups={lookups} onLookupsChanged={reloadLookups}
+        <ItemDrawer key={open.id} item={open} items={items} locations={locations} onHand={onHand} lookups={lookups} onLookupsChanged={reloadLookups}
           canEdit={canEdit} canDelete={canDelete} onClose={() => setOpenId(null)} onChanged={refresh} />
       )}
       {adding && (
@@ -229,13 +228,13 @@ export function ScreenInvStock() {
 
 // ── Item detail: balances, actions, history ──────────────────────
 
-function ItemDrawer({ item, items, locations, onHand, me, lookups, onLookupsChanged, canEdit, canDelete, onClose, onChanged }: {
-  item: InvItem; items: InvItem[]; locations: InvLocation[]; onHand: OnHand; me: string;
+function ItemDrawer({ item, items, locations, onHand, lookups, onLookupsChanged, canEdit, canDelete, onClose, onChanged }: {
+  item: InvItem; items: InvItem[]; locations: InvLocation[]; onHand: OnHand;
   lookups: Lookups; onLookupsChanged: () => Promise<void>;
   canEdit: boolean; canDelete: boolean; onClose: () => void; onChanged: () => Promise<void>;
 }) {
   const [history, setHistory] = useState<InvMovement[]>([]);
-  const [action, setAction] = useState<null | 'count' | 'transfer' | 'spoil' | 'edit'>(null);
+  const [action, setAction] = useState<null | 'edit'>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -281,11 +280,12 @@ function ItemDrawer({ item, items, locations, onHand, me, lookups, onLookupsChan
         {item.notes && <div style={{ marginTop: 4 }}>{item.notes}</div>}
       </div>
 
+      <div style={{ fontSize: 11.5, color: C.slate, background: C.seasalt, borderRadius: 10, padding: '8px 12px' }}>
+        Stock only changes through <b>Incoming Shipments</b> (in) and <b>Requests &amp; Delivery</b> (out) — this view is for monitoring.
+      </div>
+
       {canEdit && item.active && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button onClick={() => setAction('count')} style={{ ...ghostBtn, display: 'inline-flex', alignItems: 'center', gap: 6 }}><ClipboardCheck size={13} /> Stock count</button>
-          <button onClick={() => setAction('transfer')} style={{ ...ghostBtn, display: 'inline-flex', alignItems: 'center', gap: 6 }}><ArrowLeftRight size={13} /> Transfer</button>
-          <button onClick={() => setAction('spoil')} style={{ ...ghostBtn, display: 'inline-flex', alignItems: 'center', gap: 6, color: '#C0321A' }}><Trash2 size={13} /> Mark spoilt</button>
           <button onClick={() => setAction('edit')} style={ghostBtn}>Edit item</button>
           {canDelete && <button onClick={() => void setActive(false)} disabled={busy} style={{ ...ghostBtn, marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}><Archive size={13} /> Archive</button>}
         </div>
@@ -294,9 +294,6 @@ function ItemDrawer({ item, items, locations, onHand, me, lookups, onLookupsChan
         <button onClick={() => void setActive(true)} disabled={busy} style={{ ...ghostBtn, alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 6 }}><ArchiveRestore size={13} /> Restore item</button>
       )}
 
-      {action === 'count' && <CountForm item={item} locations={locations} onHand={onHand} me={me} onCancel={() => setAction(null)} onDone={after} />}
-      {action === 'transfer' && <TransferForm item={item} locations={locations} onHand={onHand} me={me} spoil={false} onCancel={() => setAction(null)} onDone={after} />}
-      {action === 'spoil' && <TransferForm item={item} locations={locations} onHand={onHand} me={me} spoil onCancel={() => setAction(null)} onDone={after} />}
       {action === 'edit' && (
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16 }}>
           <ItemFields item={item} items={items} lookups={lookups} isAdmin={canDelete} onLookupsChanged={onLookupsChanged} onCancel={() => setAction(null)} onSaved={async () => { await after(); }} />
@@ -319,95 +316,6 @@ function ItemDrawer({ item, items, locations, onHand, me, lookups, onLookupsChan
         </div>
       </div>
     </Modal>
-  );
-}
-
-// Stock count: enter what's physically there; the difference posts as an adjustment.
-function CountForm({ item, locations, onHand, me, onCancel, onDone }: {
-  item: InvItem; locations: InvLocation[]; onHand: OnHand; me: string; onCancel: () => void; onDone: () => Promise<void>;
-}) {
-  const [loc, setLoc] = useState(locations.find((l) => l.usable)?.id ?? '');
-  const [counted, setCounted] = useState('');
-  const [reason, setReason] = useState('');
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const current = loc ? qtyAt(onHand, item.id, loc) : 0;
-  const delta = counted.trim() === '' ? 0 : Number(counted) - current;
-
-  const save = async () => {
-    if (!loc || counted.trim() === '' || !Number.isInteger(Number(counted))) { setErr('Enter the counted quantity (whole number).'); return; }
-    if (delta === 0) { setErr('The count matches the system — nothing to adjust.'); return; }
-    if (!reason.trim()) { setErr('Give a reason for the adjustment.'); return; }
-    setBusy(true);
-    const { error } = await supabase.from('inv_movements').insert({
-      item_id: item.id, location_id: loc, qty: delta, kind: 'adjustment', moved_on: todayISO(),
-      note: `Count ${counted} (was ${current}) — ${reason.trim()}`, created_by: me,
-    });
-    setBusy(false);
-    if (error) { setErr(error.message); return; }
-    await onDone();
-  };
-
-  return (
-    <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>Stock count</div>
-      <ErrorBanner text={err} />
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
-        <Field label="Location"><LocationSelect locations={locations} value={loc} onChange={setLoc} itemId={item.id} onHand={onHand} includeUnusable /></Field>
-        <Field label="Counted quantity" hint={counted.trim() !== '' ? `Adjustment ${delta > 0 ? '+' : ''}${delta}` : `System shows ${current}`}>
-          <input type="number" step="1" value={counted} onChange={(e) => setCounted(e.target.value)} style={inputStyle} />
-        </Field>
-      </div>
-      <Field label="Reason"><input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Monthly cycle count, unrecorded issue" style={inputStyle} /></Field>
-      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-        <button onClick={onCancel} style={ghostBtn}>Cancel</button>
-        <button onClick={() => void save()} disabled={busy} style={primaryBtn(busy)}>{busy ? 'Saving…' : 'Post adjustment'}</button>
-      </div>
-    </div>
-  );
-}
-
-// Transfer between locations, or move units into the Spoilt location.
-function TransferForm({ item, locations, onHand, me, spoil, onCancel, onDone }: {
-  item: InvItem; locations: InvLocation[]; onHand: OnHand; me: string; spoil: boolean; onCancel: () => void; onDone: () => Promise<void>;
-}) {
-  const spoiltLoc = locations.find((l) => !l.usable);
-  const [from, setFrom] = useState(locations.find((l) => l.usable)?.id ?? '');
-  const [to, setTo] = useState(spoil ? spoiltLoc?.id ?? '' : locations.filter((l) => l.usable)[1]?.id ?? '');
-  const [qty, setQty] = useState('1');
-  const [note, setNote] = useState('');
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const save = async () => {
-    const n = Number(qty);
-    if (!from || !to) { setErr('Pick both locations.'); return; }
-    if (!Number.isInteger(n) || n <= 0) { setErr('Quantity must be a whole number above zero.'); return; }
-    if (spoil && !note.trim()) { setErr('Describe what is wrong with the unit(s).'); return; }
-    setBusy(true);
-    const { error } = await supabase.rpc('inv_transfer', {
-      p_item: item.id, p_from: from, p_to: to, p_qty: n, p_spoilt: spoil, p_date: todayISO(), p_note: note.trim() || null, p_by: me,
-    });
-    setBusy(false);
-    if (error) { setErr(error.message); return; }
-    await onDone();
-  };
-
-  return (
-    <div style={{ background: spoil ? '#FDF6F5' : C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div style={{ fontSize: 13, fontWeight: 700, color: spoil ? '#C0321A' : '#1a1a1a' }}>{spoil ? 'Mark spoilt' : 'Transfer between locations'}</div>
-      <ErrorBanner text={err} />
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
-        <Field label="From"><LocationSelect locations={locations} value={from} onChange={setFrom} itemId={item.id} onHand={onHand} includeUnusable={!spoil} /></Field>
-        {!spoil && <Field label="To"><LocationSelect locations={locations} value={to} onChange={setTo} itemId={item.id} onHand={onHand} includeUnusable /></Field>}
-        <Field label="Quantity"><input type="number" min="1" step="1" value={qty} onChange={(e) => setQty(e.target.value)} style={inputStyle} /></Field>
-      </div>
-      <Field label={spoil ? 'What is wrong' : 'Note'}><input value={note} onChange={(e) => setNote(e.target.value)} placeholder={spoil ? 'e.g. Water damage, cracked casing' : 'Optional'} style={inputStyle} /></Field>
-      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-        <button onClick={onCancel} style={ghostBtn}>Cancel</button>
-        <button onClick={() => void save()} disabled={busy} style={{ ...primaryBtn(busy), background: busy ? '#ccc' : spoil ? '#C0321A' : C.green }}>{busy ? 'Saving…' : spoil ? 'Move to Spoilt' : 'Transfer'}</button>
-      </div>
-    </div>
   );
 }
 
@@ -477,7 +385,7 @@ function ItemFormModal({ items, lookups, isAdmin, onLookupsChanged, onClose, onS
   onClose: () => void; onSaved: (id: string) => Promise<void>;
 }) {
   return (
-    <Modal title="New item" subtitle="Starts at zero — receive stock against it, or post a stock count." onClose={onClose}>
+    <Modal title="New item" subtitle="Starts at zero — stock arrives through Incoming Shipments." onClose={onClose}>
       <ItemFields item={null} items={items} lookups={lookups} isAdmin={isAdmin} onLookupsChanged={onLookupsChanged} onCancel={onClose} onSaved={onSaved} />
     </Modal>
   );
