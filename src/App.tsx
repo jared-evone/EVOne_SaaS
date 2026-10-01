@@ -541,7 +541,7 @@ function Dashboard({ onSignOut, onSwitchDepartment }: DashboardProps) {
             <div style={{ fontSize: isMobile ? 16 : 18, fontWeight: 700, color: C.green, letterSpacing: '-0.02em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {activeScreen ? SCREEN_TITLES[activeScreen] : 'EVOne'}
             </div>
-            {!isMobile && <div style={{ fontSize: 11, color: C.slate }}>May 4, 2026 · Kuala Lumpur</div>}
+            {!isMobile && <div style={{ fontSize: 11, color: C.slate }}>{new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</div>}
           </div>
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
             <span

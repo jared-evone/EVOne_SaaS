@@ -188,7 +188,7 @@ export const MOVEMENT_LABELS: Record<MovementKind, string> = {
   issue: 'Issued',
   transfer_in: 'Transfer in',
   transfer_out: 'Transfer out',
-  adjustment: 'Stock count adjustment',
+  adjustment: 'Admin correction',
   spoilt: 'Spoilt',
   cannibalised: 'Cannibalised',
   return: 'Returned',

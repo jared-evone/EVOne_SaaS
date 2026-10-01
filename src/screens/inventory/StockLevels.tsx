@@ -49,9 +49,10 @@ function useLookups() {
 }
 
 export function ScreenInvStock() {
-  const { can } = usePermissions();
+  const { can, user } = usePermissions();
   const canEdit = can('inv_stock', 'can_edit');
   const canDelete = can('inv_stock', 'can_delete');
+  const me = user.full_name || user.email;
   const { items, locations, onHand, loading, error, reload } = useInvCore();
   const { lookups, reloadLookups } = useLookups();
 
@@ -214,7 +215,7 @@ export function ScreenInvStock() {
       </div>
 
       {open && (
-        <ItemDrawer key={open.id} item={open} items={items} locations={locations} onHand={onHand} lookups={lookups} onLookupsChanged={reloadLookups}
+        <ItemDrawer key={open.id} item={open} items={items} locations={locations} onHand={onHand} me={me} lookups={lookups} onLookupsChanged={reloadLookups}
           canEdit={canEdit} canDelete={canDelete} onClose={() => setOpenId(null)} onChanged={refresh} />
       )}
       {adding && (
@@ -228,13 +229,14 @@ export function ScreenInvStock() {
 
 // ── Item detail: balances, actions, history ──────────────────────
 
-function ItemDrawer({ item, items, locations, onHand, lookups, onLookupsChanged, canEdit, canDelete, onClose, onChanged }: {
-  item: InvItem; items: InvItem[]; locations: InvLocation[]; onHand: OnHand;
+function ItemDrawer({ item, items, locations, onHand, me, lookups, onLookupsChanged, canEdit, canDelete, onClose, onChanged }: {
+  item: InvItem; items: InvItem[]; locations: InvLocation[]; onHand: OnHand; me: string;
   lookups: Lookups; onLookupsChanged: () => Promise<void>;
   canEdit: boolean; canDelete: boolean; onClose: () => void; onChanged: () => Promise<void>;
 }) {
   const [history, setHistory] = useState<InvMovement[]>([]);
   const [action, setAction] = useState<null | 'edit'>(null);
+  const [adjustLoc, setAdjustLoc] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -264,8 +266,16 @@ function ItemDrawer({ item, items, locations, onHand, lookups, onLookupsChanged,
         {locations.map((l) => {
           const q = qtyAt(onHand, item.id, l.id);
           return (
-            <div key={l.id} style={{ background: C.seasalt, borderRadius: 12, padding: '12px 14px' }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{l.name}</div>
+            <div key={l.id} style={{ background: C.seasalt, borderRadius: 12, padding: '12px 14px', border: adjustLoc === l.id ? `1.5px solid ${C.green}` : '1.5px solid transparent' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{l.name}</span>
+                {canDelete && item.active && (
+                  <button onClick={() => setAdjustLoc(adjustLoc === l.id ? null : l.id)} title={`Correct the ${l.name} quantity`}
+                    style={{ marginLeft: 'auto', border: 'none', background: 'transparent', color: C.slate, cursor: 'pointer', display: 'inline-flex', padding: 2 }}>
+                    <Pencil size={12} />
+                  </button>
+                )}
+              </div>
               <div style={{ fontSize: 24, fontWeight: 700, color: q < 0 ? '#C0321A' : l.usable ? '#1a1a1a' : '#C0321A', marginTop: 4 }}>{q}</div>
             </div>
           );
@@ -280,8 +290,14 @@ function ItemDrawer({ item, items, locations, onHand, lookups, onLookupsChanged,
         {item.notes && <div style={{ marginTop: 4 }}>{item.notes}</div>}
       </div>
 
+      {adjustLoc && (
+        <AdjustForm key={adjustLoc} item={item} location={locations.find((l) => l.id === adjustLoc)!} current={qtyAt(onHand, item.id, adjustLoc)} me={me}
+          onCancel={() => setAdjustLoc(null)} onDone={async () => { setAdjustLoc(null); await onChanged(); await loadHistory(); }} />
+      )}
+
       <div style={{ fontSize: 11.5, color: C.slate, background: C.seasalt, borderRadius: 10, padding: '8px 12px' }}>
-        Stock only changes through <b>Incoming Shipments</b> (in) and <b>Requests &amp; Delivery</b> (out) — this view is for monitoring.
+        Stock changes through <b>Incoming Shipments</b> (in) and <b>Requests &amp; Delivery</b> (out).
+        {canDelete ? <> As an admin you can correct a balance with the pencil on a location — a note is required and saved to the ledger.</> : <> This view is for monitoring.</>}
       </div>
 
       {canEdit && item.active && (
@@ -316,6 +332,55 @@ function ItemDrawer({ item, items, locations, onHand, lookups, onLookupsChanged,
         </div>
       </div>
     </Modal>
+  );
+}
+
+// Admin correction: set a location's quantity; the difference posts as an
+// adjustment movement carrying the (required) note into the ledger.
+function AdjustForm({ item, location, current, me, onCancel, onDone }: {
+  item: InvItem; location: InvLocation; current: number; me: string; onCancel: () => void; onDone: () => Promise<void>;
+}) {
+  const [qty, setQty] = useState(String(current));
+  const [note, setNote] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const n = Number(qty);
+  const valid = qty.trim() !== '' && Number.isInteger(n);
+  const delta = valid ? n - current : 0;
+
+  const save = async () => {
+    if (!valid) { setErr('Enter a whole number.'); return; }
+    if (delta === 0) { setErr('That is already the current quantity.'); return; }
+    if (!note.trim()) { setErr('A note is required — say why the number is being changed.'); return; }
+    setBusy(true);
+    const { error } = await supabase.from('inv_movements').insert({
+      item_id: item.id, location_id: location.id, qty: delta, kind: 'adjustment', moved_on: todayISO(),
+      note: `Set to ${n} (was ${current}) — ${note.trim()}`, created_by: me,
+    });
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    await onDone();
+  };
+
+  return (
+    <div style={{ background: '#FFFCF2', border: '1px solid #F3E3B0', borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>Correct {location.name} quantity</div>
+      <ErrorBanner text={err} />
+      <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 12, alignItems: 'start' }}>
+        <Field label="New quantity" hint={valid && delta !== 0 ? `${delta > 0 ? '+' : ''}${delta} vs ${current} now` : `Currently ${current}`}>
+          <input type="number" step="1" value={qty} onChange={(e) => setQty(e.target.value)} autoFocus style={inputStyle} />
+        </Field>
+        <Field label="Note (required)">
+          <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2}
+            placeholder="e.g. Physical count 3 Oct; 2 units found damaged; unrecorded issue to Gammon"
+            style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.5 }} />
+        </Field>
+      </div>
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button onClick={onCancel} style={ghostBtn}>Cancel</button>
+        <button onClick={() => void save()} disabled={busy || !note.trim()} style={primaryBtn(busy || !note.trim())}>{busy ? 'Saving…' : 'Save correction'}</button>
+      </div>
+    </div>
   );
 }
 
