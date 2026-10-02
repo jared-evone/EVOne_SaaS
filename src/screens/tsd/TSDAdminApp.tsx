@@ -26,6 +26,7 @@ import { splitUnit } from '../Projects';
 import { OverlayEditor, OverlayFormRenderer, isOverlay, pagesOf } from './OverlayForm';
 import { PICReviewBoard } from './PICApp';
 import { TechAvatar } from '../../components/TechAvatar';
+import { loadQrLib } from '../../lib/qr';
 
 interface TSDAdminAppProps {
   onBack: () => void;
@@ -2171,26 +2172,6 @@ function TemplateEditor({
       <TemplatePreview template={draft} dirty={dirty} />
     </div>
   );
-}
-
-// Lazy-load the QR generator from a CDN (no npm dep, same pattern as pdf.js / Leaflet).
-interface QRCodeCtor {
-  new (el: HTMLElement, opts: { text: string; width: number; height: number; colorDark: string; colorLight: string }): unknown;
-}
-let qrLoader: Promise<QRCodeCtor> | null = null;
-function loadQrLib(): Promise<QRCodeCtor> {
-  const w = window as unknown as { QRCode?: QRCodeCtor };
-  if (w.QRCode) return Promise.resolve(w.QRCode);
-  if (!qrLoader) {
-    qrLoader = new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
-      s.onload = () => (w.QRCode ? resolve(w.QRCode) : reject(new Error('QR library did not attach to window')));
-      s.onerror = () => reject(new Error('Failed to load QR library from CDN'));
-      document.head.appendChild(s);
-    });
-  }
-  return qrLoader;
 }
 
 function QRTestModal({ templateId, templateName, dirty, onClose }: {

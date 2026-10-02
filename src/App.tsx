@@ -60,6 +60,7 @@ import { ScreenInvShipments } from './screens/inventory/Shipments';
 import { ScreenInvGrn } from './screens/inventory/GoodsReceived';
 import { ScreenInvCannibal } from './screens/inventory/Cannibalisation';
 import { ScreenInvLedger } from './screens/inventory/StockLedger';
+import { StockRequestPage } from './screens/inventory/StockRequestPage';
 import { PICReviewBoard } from './screens/tsd/PICApp';
 import { FormTestPage } from './screens/tsd/FormTestPage';
 import {
@@ -659,6 +660,14 @@ export default function App() {
   const poToken = new URLSearchParams(window.location.search).get('po');
   if (poToken) {
     return <PODecisionPage token={poToken} decision={new URLSearchParams(window.location.search).get('decision')} />;
+  }
+
+  // Stock request link / QR from Inventory: sign in with your own account, then
+  // a phone-friendly request form.
+  const stockRequest = new URLSearchParams(window.location.search).get('stockRequest');
+  if (stockRequest !== null) {
+    if (!user) return <Login onLogin={handleLogin} title="Sign in to request stock" subtitle="Use your own EVOne account — the request is logged under your name" />;
+    return <StockRequestPage user={user} preset={stockRequest} onSignOut={handleSignOut} />;
   }
 
   if (!user) {

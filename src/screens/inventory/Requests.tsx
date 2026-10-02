@@ -3,10 +3,11 @@ import { C } from '../../theme';
 import { KPICard } from '../../components/KPICard';
 import { supabase } from '../../lib/supabase';
 import { usePermissions } from '../../permissions';
-import { Plus, Truck, Download, Lock } from 'lucide-react';
+import { Plus, Truck, Download, Lock, QrCode } from 'lucide-react';
+import { RequestLinksView } from './RequestLinks';
 import { SearchSelect } from '../../components/SearchSelect';
 import {
-  useInvCore, qtyAt, usableTotal, itemLabel, fmtD, todayISO,
+  useInvCore, insertRequest, REQ_DEPARTMENTS, REQ_META, qtyAt, usableTotal, itemLabel, fmtD, todayISO,
   Pill, Field, ErrorBanner, Modal, ItemSelect, LocationSelect, SearchBox, downloadCsv,
   inputStyle, primaryBtn, ghostBtn, pillBtn, thStyle, tdStyle,
   type InvItem, type InvRequest, type InvLocation, type OnHand,
@@ -14,18 +15,7 @@ import {
 
 type ReqStatus = InvRequest['status'];
 
-// Departments that raise stock requests.
-const REQ_DEPARTMENTS = ['Sales', 'Technical', 'CPO'];
-
 interface CustomerOpt { id: string; name: string; address: string | null; }
-
-const REQ_META: Record<ReqStatus, { label: string; bg: string; color: string }> = {
-  legacy:    { label: 'Migrated — status not tracked', bg: '#F3F3F3', color: '#767B77' },
-  pending:   { label: 'Pending',   bg: '#FFF8E1', color: '#B07D00' },
-  approved:  { label: 'Approved',  bg: '#E3F0FF', color: '#1A62C0' },
-  fulfilled: { label: 'Fulfilled', bg: '#E4F3E3', color: '#1B512D' },
-  cancelled: { label: 'Cancelled', bg: '#FDEAEA', color: '#C0321A' },
-};
 
 type Filter = 'open' | ReqStatus | 'all';
 const FILTERS: { id: Filter; label: string }[] = [
@@ -61,6 +51,7 @@ export function ScreenInvRequests() {
   const [search, setSearch] = useState('');
   const [openId, setOpenId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [view, setView] = useState<'list' | 'links'>('list');
 
   const today = todayISO();
   const month = today.slice(0, 7);
@@ -81,6 +72,7 @@ export function ScreenInvRequests() {
 
   const open = openId ? rows.find((r) => r.id === openId) ?? null : null;
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading requests…</div>;
+  if (view === 'links') return <RequestLinksView onBack={() => setView('list')} />;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -96,6 +88,7 @@ export function ScreenInvRequests() {
         <SearchBox value={search} onChange={setSearch} placeholder="Search PR, DO, company, item…" />
         {FILTERS.map((f) => <button key={f.id} onClick={() => setFilter(f.id)} style={pillBtn(filter === f.id)}>{f.label}</button>)}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          {canDelete && <button onClick={() => setView('links')} style={{ ...ghostBtn, display: 'inline-flex', alignItems: 'center', gap: 6 }}><QrCode size={13} /> Request link</button>}
           <button onClick={exportCsv} style={{ ...ghostBtn, display: 'inline-flex', alignItems: 'center', gap: 6 }}><Download size={13} /> Export</button>
           {canEdit && <button onClick={() => setCreating(true)} style={{ ...primaryBtn(), display: 'inline-flex', alignItems: 'center', gap: 6 }}><Plus size={14} /> New request</button>}
         </div>
@@ -203,18 +196,11 @@ function RequestModal({ req, items, customers, locations, onHand, me, canEdit, c
       updated_at: new Date().toISOString(),
       ...extra,
     };
-    let error;
-    if (isNew) {
-      const { data: last } = await supabase.from('inv_requests').select('pr_no').like('pr_no', `PR-${todayISO().slice(0, 4)}-%`).order('pr_no', { ascending: false }).limit(1);
-      const n = Number(((last ?? [])[0] as { pr_no: string } | undefined)?.pr_no.split('-')[2] ?? 0) + 1;
-      ({ error } = await supabase.from('inv_requests').insert({
-        ...payload, pr_no: `PR-${todayISO().slice(0, 4)}-${String(n).padStart(4, '0')}`, status: 'pending', created_by: me,
-      }));
-    } else {
-      ({ error } = await supabase.from('inv_requests').update(payload).eq('id', req!.id));
-    }
+    const error = isNew
+      ? (await insertRequest({ ...payload, created_by: me })).error
+      : (await supabase.from('inv_requests').update(payload).eq('id', req!.id)).error?.message;
     setBusy(false);
-    if (error) { setErr(error.message); return false; }
+    if (error) { setErr(error); return false; }
     return true;
   };
 

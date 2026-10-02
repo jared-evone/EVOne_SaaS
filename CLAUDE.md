@@ -317,7 +317,8 @@ src/
   lib/                      supabase.ts (client), onemap.ts (SG geocoder),
                             formMedia.ts (TSD photo/PDF → Storage),
                             compressImage.ts, navLinks.ts (Google Maps directions),
-                            ltaEmail.ts, useIsMobile.ts, zip.ts, version.ts
+                            ltaEmail.ts, useIsMobile.ts, zip.ts, version.ts,
+                            qr.ts (CDN-loaded QR generator → PNG data URL)
   components/               KPICard, Badge, NavItem, Logo, BrandLogo,
                             charts, ChargerLocationMap, OneMapAutocomplete,
                             SearchSelect (brand searchable dropdown),
@@ -341,6 +342,11 @@ src/
                             inv_movements; every stock change goes through the
                             inv_* plpgsql functions or a single movement insert
                             — never edit balances. See db/inventory_schema.sql.
+                            RequestLinks (admin QR / link + A4 poster) points at
+                            StockRequestPage — `?stockRequest=<any|sales|…>`,
+                            routed in App.tsx: sign in with your own account,
+                            then a phone form inserting into inv_requests.
+                            Login-gated, so no anon policy is needed.
     projmgmt/               ChargerProjects.tsx — the Charger Registry "Projects"
                             module (pm department only): per-project lifecycle
                             with stage-tagged documents, sectioned build

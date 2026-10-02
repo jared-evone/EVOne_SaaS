@@ -178,6 +178,43 @@ export function itemLabel(item: InvItem | undefined | null, all: InvItem[]): str
   return dup && item.brand ? `${item.name} (${item.brand})` : item.name;
 }
 
+// ── Requests ─────────────────────────────────────────────────────
+
+// Departments that raise stock requests.
+export const REQ_DEPARTMENTS = ['Sales', 'Technical', 'CPO'];
+
+export const REQ_META: Record<InvRequest['status'], { label: string; bg: string; color: string }> = {
+  legacy:    { label: 'Migrated — status not tracked', bg: '#F3F3F3', color: '#767B77' },
+  pending:   { label: 'Pending',   bg: '#FFF8E1', color: '#B07D00' },
+  approved:  { label: 'Approved',  bg: '#E3F0FF', color: '#1A62C0' },
+  fulfilled: { label: 'Fulfilled', bg: '#E4F3E3', color: '#1B512D' },
+  cancelled: { label: 'Cancelled', bg: '#FDEAEA', color: '#C0321A' },
+};
+
+// Shareable request links (?stockRequest=<slug>). The link grants nothing on
+// its own — the visitor signs in with their own account before the form shows.
+export const REQUEST_LINKS: { slug: string; label: string; department: string }[] = [
+  { slug: 'any', label: 'Any department', department: '' },
+  ...REQ_DEPARTMENTS.map((d) => ({ slug: d.toLowerCase(), label: d, department: d })),
+];
+export const requestLinkUrl = (slug: string) => `${window.location.origin}${window.location.pathname}?stockRequest=${slug}`;
+
+// New requests get the next PR-YYYY-NNNN. Two people submitting at the same
+// moment can race for one number, so a unique-key clash re-reads and retries.
+export async function insertRequest(row: Record<string, unknown>): Promise<{ pr_no?: string; error?: string }> {
+  const year = todayISO().slice(0, 4);
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const { data: last, error: readErr } = await supabase.from('inv_requests').select('pr_no').like('pr_no', `PR-${year}-%`).order('pr_no', { ascending: false }).limit(1);
+    if (readErr) return { error: readErr.message };
+    const n = Number(((last ?? [])[0] as { pr_no: string } | undefined)?.pr_no.split('-')[2] ?? 0) + 1;
+    const pr_no = `PR-${year}-${String(n).padStart(4, '0')}`;
+    const { error } = await supabase.from('inv_requests').insert({ ...row, pr_no, status: 'pending' });
+    if (!error) return { pr_no };
+    if (error.code !== '23505') return { error: error.message };
+  }
+  return { error: 'Could not assign a PR number — please submit again.' };
+}
+
 // ── Formatting ───────────────────────────────────────────────────
 
 export const todayISO = () => {

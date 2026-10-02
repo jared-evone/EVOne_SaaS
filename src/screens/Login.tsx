@@ -6,9 +6,11 @@ import { DEPARTMENTS, DEPARTMENT_SCREENS, type Department, type ScreenKey, type 
 
 interface LoginProps {
   onLogin: (user: SignedInUser) => void;
+  title?: string;
+  subtitle?: string;
 }
 
-export function Login({ onLogin }: LoginProps) {
+export function Login({ onLogin, title = 'Sign in to EVOne', subtitle = 'Your departments appear after you sign in' }: LoginProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -97,8 +99,8 @@ export function Login({ onLogin }: LoginProps) {
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
           <Logo height={44} />
           <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 22, fontWeight: 700, color: C.green, letterSpacing: '-0.02em' }}>Sign in to EVOne</div>
-            <div style={{ fontSize: 13, color: C.slate, marginTop: 4 }}>Your departments appear after you sign in</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: C.green, letterSpacing: '-0.02em' }}>{title}</div>
+            <div style={{ fontSize: 13, color: C.slate, marginTop: 4 }}>{subtitle}</div>
           </div>
         </div>
 
