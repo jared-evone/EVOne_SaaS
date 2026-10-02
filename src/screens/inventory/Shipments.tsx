@@ -3,10 +3,11 @@ import { C } from '../../theme';
 import { KPICard } from '../../components/KPICard';
 import { supabase } from '../../lib/supabase';
 import { usePermissions } from '../../permissions';
-import { Plus, PackageCheck, Download } from 'lucide-react';
+import { Plus, PackageCheck, Download, Lock, Building2 } from 'lucide-react';
+import { SearchSelect } from '../../components/SearchSelect';
 import {
   useInvCore, itemLabel, fmtD, todayISO,
-  Pill, Field, ErrorBanner, Modal, ItemSelect, LocationSelect, SearchBox, downloadCsv,
+  Pill, Field, ErrorBanner, Modal, ItemSelect, LocationSelect, SearchBox, downloadCsv, LookupSelect, LookupList, useLookupRows, type LookupRow,
   inputStyle, primaryBtn, ghostBtn, pillBtn, thStyle, tdStyle,
   type InvItem, type InvShipment, type InvLocation, type OnHand,
 } from './invShared';
@@ -27,6 +28,10 @@ const FILTERS: { id: Filter; label: string }[] = [
   { id: 'partial', label: 'Partly received' }, { id: 'received', label: 'Received' }, { id: 'cancelled', label: 'Cancelled' }, { id: 'all', label: 'All' },
 ];
 
+interface CustomerOpt { id: string; name: string; }
+
+const MODES = ['Air', 'Sea', 'Local'];
+
 const isOpen = (s: InvShipment) => s.status === 'ordered' || s.status === 'in_transit' || s.status === 'partial';
 
 export function ScreenInvShipments() {
@@ -35,6 +40,13 @@ export function ScreenInvShipments() {
   const canDelete = can('inv_shipments', 'can_delete');
   const me = user.full_name || user.email;
   const { items, locations, onHand, error: coreErr, reload: reloadCore } = useInvCore();
+  const { rows: suppliers, reload: reloadSuppliers } = useLookupRows('supplier');
+  const [customers, setCustomers] = useState<CustomerOpt[]>([]);
+  useEffect(() => {
+    void supabase.from('customers').select('id, name').order('name')
+      .then(({ data }) => setCustomers((data as CustomerOpt[]) ?? []));
+  }, []);
+  const [managingSuppliers, setManagingSuppliers] = useState(false);
 
   const [rows, setRows] = useState<InvShipment[]>([]);
   const [received, setReceived] = useState<Map<string, number>>(new Map());
@@ -73,8 +85,8 @@ export function ScreenInvShipments() {
 
   const exportCsv = () => {
     downloadCsv(`incoming_shipments_${today}.csv`, [
-      ['No', 'Supplier', 'PO', 'Employee', 'Customer', 'Warranty', 'Description', 'Item', 'Qty', 'Mode', 'Order Date', 'In Transit Date', 'Est. Arrival', 'Status'],
-      ...visible.map((s) => [s.legacy_no, s.supplier, s.po_no, s.employee, s.customer, s.warranty, s.description, itemLabel(items.find((i) => i.id === s.item_id), items), s.qty, s.mode, s.order_date, s.in_transit_date, s.eta ?? s.eta_note, SHIP_META[s.status].label]),
+      ['No', 'Supplier', 'PO', 'Employee', 'Customer', 'Description', 'Item', 'Qty', 'Mode', 'Order Date', 'In Transit Date', 'Est. Arrival', 'Status'],
+      ...visible.map((s) => [s.legacy_no, s.supplier, s.po_no, s.employee, s.customer, s.description, itemLabel(items.find((i) => i.id === s.item_id), items), s.qty, s.mode, s.order_date, s.in_transit_date, s.eta ?? s.eta_note, SHIP_META[s.status].label]),
     ]);
   };
 
@@ -98,6 +110,7 @@ export function ScreenInvShipments() {
         <SearchBox value={search} onChange={setSearch} placeholder="Search PO, supplier, item…" />
         {FILTERS.map((f) => <button key={f.id} onClick={() => setFilter(f.id)} style={pillBtn(filter === f.id)}>{f.label}</button>)}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          {canDelete && <button onClick={() => setManagingSuppliers(true)} style={{ ...ghostBtn, display: 'inline-flex', alignItems: 'center', gap: 6 }}><Building2 size={13} /> Suppliers</button>}
           <button onClick={exportCsv} style={{ ...ghostBtn, display: 'inline-flex', alignItems: 'center', gap: 6 }}><Download size={13} /> Export</button>
           {canEdit && <button onClick={() => setCreating(true)} style={{ ...primaryBtn(), display: 'inline-flex', alignItems: 'center', gap: 6 }}><Plus size={14} /> New shipment</button>}
         </div>
@@ -151,32 +164,43 @@ export function ScreenInvShipments() {
 
       {open && (
         <ShipmentModal key={open.id} ship={open} receivedQty={received.get(open.id) ?? 0} items={items} locations={locations} onHand={onHand} me={me}
+          suppliers={suppliers} reloadSuppliers={reloadSuppliers} customers={customers} isAdmin={canDelete}
           canEdit={canEdit} canDelete={canDelete} onClose={() => setOpenId(null)} onChanged={refresh} />
       )}
       {creating && (
         <ShipmentModal ship={null} receivedQty={0} items={items} locations={locations} onHand={onHand} me={me}
+          suppliers={suppliers} reloadSuppliers={reloadSuppliers} customers={customers} isAdmin={canDelete}
           canEdit={canEdit} canDelete={false} onClose={() => setCreating(false)} onChanged={async () => { setCreating(false); await refresh(); }} />
+      )}
+      {managingSuppliers && (
+        <Modal title="Suppliers" subtitle="The options in the shipment Supplier dropdown. Renaming updates every shipment and goods-received record that uses it." width={440} onClose={() => setManagingSuppliers(false)}>
+          <LookupList kind="supplier" rows={suppliers} unit="shipment"
+            usage={(n) => rows.filter((s) => (s.supplier ?? '').toLowerCase() === n.toLowerCase()).length}
+            onChanged={async () => { await Promise.all([reloadSuppliers(), load()]); }} />
+        </Modal>
       )}
     </div>
   );
 }
 
-function ShipmentModal({ ship, receivedQty, items, locations, onHand, me, canEdit, canDelete, onClose, onChanged }: {
+function ShipmentModal({ ship, receivedQty, items, locations, onHand, me, suppliers, reloadSuppliers, customers, isAdmin, canEdit, canDelete, onClose, onChanged }: {
   ship: InvShipment | null; receivedQty: number; items: InvItem[]; locations: InvLocation[]; onHand: OnHand; me: string;
+  suppliers: LookupRow[]; reloadSuppliers: () => Promise<void>; customers: CustomerOpt[]; isAdmin: boolean;
   canEdit: boolean; canDelete: boolean; onClose: () => void; onChanged: () => Promise<void>;
 }) {
   const isNew = !ship;
   const editable = canEdit && (isNew || ship!.status !== 'cancelled');
   const [f, setF] = useState({
-    supplier: ship?.supplier ?? '', po_no: ship?.po_no ?? '', employee: ship?.employee ?? '', customer: ship?.customer ?? '',
-    warranty: ship?.warranty ?? '', description: ship?.description ?? '', item_id: ship?.item_id ?? '',
+    supplier: ship?.supplier ?? '', po_no: ship?.po_no ?? '', customer: ship?.customer ?? '', customer_id: ship?.customer_id ?? '',
+    description: ship?.description ?? '', item_id: ship?.item_id ?? '',
     qty: String(ship?.qty ?? 1), mode: ship?.mode ?? '', order_date: ship?.order_date ?? todayISO(),
     in_transit_date: ship?.in_transit_date ?? '', eta: ship?.eta ?? '', eta_note: ship?.eta_note ?? '', notes: ship?.notes ?? '',
   });
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<null | 'receive' | 'delete'>(null);
-  const suppliers = ['HICI', 'Hiconics'];
+  // Set from the signed-in account when the shipment is created; never typed.
+  const employee = ship ? ship.employee : me;
 
   const save = async (extra?: Record<string, unknown>) => {
     const qty = Number(f.qty);
@@ -186,15 +210,15 @@ function ShipmentModal({ ship, receivedQty, items, locations, onHand, me, canEdi
     setErr(null);
     const item = items.find((i) => i.id === f.item_id);
     const payload = {
-      supplier: f.supplier.trim() || null, po_no: f.po_no.trim() || null, employee: f.employee.trim() || null,
-      customer: f.customer.trim() || null, warranty: f.warranty.trim() || null,
+      supplier: f.supplier.trim() || null, po_no: f.po_no.trim() || null,
+      customer_id: f.customer_id || null, customer: f.customer.trim() || null,
       description: f.description.trim() || (item ? `${qty} × ${item.name}` : ''), item_id: f.item_id || null, qty,
       mode: f.mode || null, order_date: f.order_date || null, in_transit_date: f.in_transit_date || null,
       eta: f.eta || null, eta_note: f.eta_note.trim() || null, notes: f.notes.trim() || null, updated_at: new Date().toISOString(),
       ...extra,
     };
     const { error } = isNew
-      ? await supabase.from('inv_shipments').insert({ ...payload, status: 'ordered', created_by: me })
+      ? await supabase.from('inv_shipments').insert({ ...payload, status: 'ordered', employee: me, created_by: me })
       : await supabase.from('inv_shipments').update(payload).eq('id', ship!.id);
     setBusy(false);
     if (error) { setErr(error.message); return false; }
@@ -244,14 +268,14 @@ function ShipmentModal({ ship, receivedQty, items, locations, onHand, me, canEdi
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
         <Field label="Supplier">
-          <input value={f.supplier} disabled={ro} onChange={(e) => setF({ ...f, supplier: e.target.value })} list="inv-suppliers" style={inputStyle} />
-          <datalist id="inv-suppliers">{suppliers.map((s) => <option key={s} value={s} />)}</datalist>
+          <LookupSelect kind="supplier" value={f.supplier} options={suppliers} isAdmin={isAdmin} disabled={ro}
+            onChange={(v) => setF({ ...f, supplier: v })} onAdded={reloadSuppliers} />
         </Field>
         <Field label="PO number"><input value={f.po_no} disabled={ro} onChange={(e) => setF({ ...f, po_no: e.target.value })} placeholder="EV1PO-000000" style={inputStyle} /></Field>
         <Field label="Mode">
-          <select value={f.mode} disabled={ro} onChange={(e) => setF({ ...f, mode: e.target.value })} style={{ ...inputStyle, cursor: 'pointer' }}>
-            <option value="">—</option><option value="Air">Air</option><option value="Sea">Sea</option><option value="Local">Local</option>
-          </select>
+          <SearchSelect value={f.mode} disabled={ro} placeholder="Select mode"
+            options={[{ value: '', label: 'Not set' }, ...MODES.concat(f.mode && !MODES.includes(f.mode) ? [f.mode] : []).map((m) => ({ value: m, label: m }))]}
+            onChange={(v) => setF({ ...f, mode: v })} />
         </Field>
       </div>
       <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -269,10 +293,22 @@ function ShipmentModal({ ship, receivedQty, items, locations, onHand, me, canEdi
         <Field label="Est. arrival"><input type="date" value={f.eta} disabled={ro} onChange={(e) => setF({ ...f, eta: e.target.value })} style={inputStyle} /></Field>
         <Field label="Arrival note"><input value={f.eta_note} disabled={ro} onChange={(e) => setF({ ...f, eta_note: e.target.value })} placeholder="e.g. TBC, 16/06 - 17/06" style={inputStyle} /></Field>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
-        <Field label="EV1 employee"><input value={f.employee} disabled={ro} onChange={(e) => setF({ ...f, employee: e.target.value })} style={inputStyle} /></Field>
-        <Field label="For customer"><input value={f.customer} disabled={ro} onChange={(e) => setF({ ...f, customer: e.target.value })} style={inputStyle} /></Field>
-        <Field label="Warranty"><input value={f.warranty} disabled={ro} onChange={(e) => setF({ ...f, warranty: e.target.value })} placeholder="e.g. Warranty replacement" style={inputStyle} /></Field>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+        <Field label="EV1 employee" hint={ship && !ship.employee ? 'Not recorded in Excel' : undefined}>
+          <div title="Set from the signed-in account — cannot be changed"
+            style={{ ...inputStyle, background: C.seasalt, color: '#1a1a1a', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Lock size={12} color={C.slate} style={{ flexShrink: 0 }} />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{employee || '—'}</span>
+          </div>
+        </Field>
+        <Field label="For customer" hint={!f.customer_id && f.customer ? `From Excel: "${f.customer}" — pick the matching customer to link it` : undefined}>
+          <SearchSelect value={f.customer_id} disabled={ro} placeholder="Select customer…" emptyText="No customers match"
+            options={[
+              { value: '', label: !f.customer_id && f.customer ? `${f.customer} (not linked)` : 'None — stock order' },
+              ...customers.map((c) => ({ value: c.id, label: c.name })),
+            ]}
+            onChange={(v) => setF({ ...f, customer_id: v, customer: v ? customers.find((c) => c.id === v)?.name ?? '' : (f.customer_id ? '' : f.customer) })} />
+        </Field>
       </div>
       <Field label="Notes"><input value={f.notes} disabled={ro} onChange={(e) => setF({ ...f, notes: e.target.value })} style={inputStyle} /></Field>
 

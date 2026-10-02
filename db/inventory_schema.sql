@@ -456,3 +456,54 @@ end $$;
 
 revoke execute on function inv_revert_fulfilment(uuid, text, text) from public, anon;
 grant execute on function inv_revert_fulfilment(uuid, text, text) to authenticated;
+
+-- 2026-10-02 · migration inv_suppliers_list_and_shipment_customer — Supplier on
+-- shipments becomes an admin-managed list (like Brand / Category; Shipments
+-- admins = can_delete add / rename / remove). Shipments link the customer they
+-- are for (text kept for history); Warranty is no longer on the form but the
+-- column stays (it was empty for every row).
+create table inv_suppliers (
+  id         uuid primary key default gen_random_uuid(),
+  name       text not null,
+  sort_order int  not null default 0
+);
+create unique index inv_suppliers_name_uq on inv_suppliers (lower(name));
+alter table inv_suppliers enable row level security;
+create policy "authenticated full access" on inv_suppliers for all to authenticated using (true) with check (true);
+
+insert into inv_suppliers (name, sort_order)
+select supplier, row_number() over (order by count(*) desc, supplier)
+  from inv_shipments where supplier is not null and btrim(supplier) <> '' group by supplier;
+
+create or replace function inv_rename_lookup(p_kind text, p_id uuid, p_new text)
+returns void language plpgsql as $$
+declare v_old text; v_new text := nullif(trim(p_new), '');
+begin
+  if v_new is null then raise exception 'Name cannot be empty'; end if;
+  if p_kind = 'brand' then
+    select name into v_old from inv_brands where id = p_id for update;
+    if not found then raise exception 'Brand not found'; end if;
+    update inv_brands set name = v_new where id = p_id;
+    update inv_items set brand = v_new, updated_at = now() where brand = v_old;
+  elsif p_kind = 'category' then
+    select name into v_old from inv_categories where id = p_id for update;
+    if not found then raise exception 'Category not found'; end if;
+    update inv_categories set name = v_new where id = p_id;
+    update inv_items set category = v_new, updated_at = now() where category = v_old;
+  elsif p_kind = 'supplier' then
+    -- Excel wrote the same supplier in different cases (HICI / Hici), so match
+    -- case-insensitively on shipments and the GRN log.
+    select name into v_old from inv_suppliers where id = p_id for update;
+    if not found then raise exception 'Supplier not found'; end if;
+    update inv_suppliers set name = v_new where id = p_id;
+    update inv_shipments set supplier = v_new, updated_at = now() where lower(supplier) = lower(v_old);
+    update inv_grn set supplier = v_new where lower(supplier) = lower(v_old);
+  else
+    raise exception 'Unknown list';
+  end if;
+end $$;
+
+alter table inv_shipments add column customer_id uuid references customers(id) on delete set null;
+
+-- Data (execute_sql): the one Excel shipment "for Chuan Lim" (EV1PO-000244)
+-- linked to customer "Chuan Lim Construction Pte Ltd"; its text is unchanged.

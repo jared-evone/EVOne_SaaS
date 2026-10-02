@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { C } from '../../theme';
 import { supabase } from '../../lib/supabase';
-import { Search } from 'lucide-react';
+import { Search, Check, X, Pencil, Trash2, Plus } from 'lucide-react';
 import { SearchSelect, type SelectOption } from '../../components/SearchSelect';
 
 // Standalone inventory: stock is only ever changed by inventory actions here.
@@ -75,6 +75,7 @@ export interface InvShipment {
   po_no: string | null;
   employee: string | null;
   customer: string | null;
+  customer_id?: string | null;
   warranty: string | null;
   description: string;
   item_id: string | null;
@@ -323,6 +324,146 @@ export function LocationSelect({ locations, value, onChange, itemId, onHand, inc
     value: l.id, label: l.name, sub: itemId && onHand ? `${qtyAt(onHand, itemId, l.id)} on hand` : undefined,
   }));
   return <SearchSelect value={value} options={options} onChange={onChange} up={up} placeholder={placeholder} emptyText="No locations match" />;
+}
+
+// ── Admin-managed pick-lists (Brand, Category, Supplier) ─────────
+// Records store the text; the list only drives the dropdown. Renaming goes
+// through inv_rename_lookup so every record using the old name follows.
+
+export interface LookupRow { id: string; name: string; sort_order: number; }
+export type LookupKind = 'brand' | 'category' | 'supplier';
+const LOOKUP_META: Record<LookupKind, { table: string; noun: string; plural: string }> = {
+  brand:    { table: 'inv_brands',     noun: 'brand',    plural: 'Brands' },
+  category: { table: 'inv_categories', noun: 'category', plural: 'Categories' },
+  supplier: { table: 'inv_suppliers',  noun: 'supplier', plural: 'Suppliers' },
+};
+
+export function useLookupRows(kind: LookupKind) {
+  const [rows, setRows] = useState<LookupRow[]>([]);
+  const reload = useCallback(async () => {
+    const { data } = await supabase.from(LOOKUP_META[kind].table).select('*').order('sort_order').order('name');
+    setRows((data as LookupRow[]) ?? []);
+  }, [kind]);
+  useEffect(() => { void reload(); }, [reload]);
+  return { rows, reload };
+}
+
+// Searchable dropdown over a managed list. Admins get "+ Add new …" inline;
+// everyone else can only pick existing entries.
+export function LookupSelect({ kind, value, options, isAdmin, onChange, onAdded, disabled }: {
+  kind: LookupKind; value: string; options: LookupRow[]; isAdmin: boolean;
+  onChange: (v: string) => void; onAdded: () => Promise<void>; disabled?: boolean;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const { table, noun, plural } = LOOKUP_META[kind];
+  const inList = options.some((o) => o.name === value);
+
+  const add = async () => {
+    const name = draft.trim();
+    if (!name) return;
+    const existing = options.find((o) => o.name.toLowerCase() === name.toLowerCase());
+    if (existing) { onChange(existing.name); setAdding(false); setDraft(''); return; }
+    const { error } = await supabase.from(table).insert({ name, sort_order: Math.max(0, ...options.map((o) => o.sort_order)) + 1 });
+    if (error) { setErr(error.message); return; }
+    await onAdded();
+    onChange(name);
+    setAdding(false);
+    setDraft('');
+    setErr(null);
+  };
+
+  if (adding) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input value={draft} onChange={(e) => setDraft(e.target.value)} autoFocus placeholder={`New ${noun}`}
+            onKeyDown={(e) => { if (e.key === 'Enter') void add(); if (e.key === 'Escape') setAdding(false); }}
+            style={inputStyle} />
+          <button type="button" onClick={() => void add()} title="Add" style={{ ...primaryBtn(!draft.trim()), padding: '0 12px' }}><Check size={14} /></button>
+          <button type="button" onClick={() => { setAdding(false); setDraft(''); }} title="Cancel" style={{ ...ghostBtn, padding: '0 10px' }}><X size={14} /></button>
+        </div>
+        {err && <div style={{ fontSize: 11, color: '#C0321A' }}>{err}</div>}
+      </div>
+    );
+  }
+  const opts: SelectOption[] = [
+    ...options.map((o) => ({ value: o.name, label: o.name })),
+    ...(value && !inList ? [{ value, label: `${value} (not in list)` }] : []),
+  ];
+  return (
+    <SearchSelect value={value} options={opts} onChange={onChange} disabled={disabled}
+      placeholder={`Select ${noun}`} emptyText={`No ${plural.toLowerCase()} match`}
+      addNewLabel={isAdmin ? `Add new ${noun}` : undefined}
+      onAddNew={isAdmin ? (q) => { setDraft(q); setAdding(true); } : undefined} />
+  );
+}
+
+// Admin editor for one list: rename (follows through to every record), add,
+// and remove entries nothing uses.
+export function LookupList({ kind, rows, unit, usage, onChanged }: {
+  kind: LookupKind; rows: LookupRow[]; unit: string; usage: (name: string) => number; onChanged: () => Promise<void>;
+}) {
+  const [editId, setEditId] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const [newName, setNewName] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { table, noun, plural } = LOOKUP_META[kind];
+
+  const run = async (fn: () => PromiseLike<{ error: { message: string } | null }>) => {
+    setBusy(true);
+    setErr(null);
+    const { error } = await fn();
+    setBusy(false);
+    if (error) { setErr(error.message.includes('duplicate') ? `That ${noun} already exists.` : error.message); return false; }
+    await onChanged();
+    return true;
+  };
+  const insertNew = () => run(() => supabase.from(table).insert({ name: newName.trim(), sort_order: Math.max(0, ...rows.map((x) => x.sort_order)) + 1 }));
+
+  return (
+    <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ ...labelStyle, marginBottom: 2 }}>{plural}</div>
+      {rows.map((r) => {
+        const n = usage(r.name);
+        return (
+          <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 6, background: C.white, border: '1px solid #EBEBEB', borderRadius: 10, padding: '6px 8px' }}>
+            {editId === r.id ? (
+              <>
+                <input value={draft} onChange={(e) => setDraft(e.target.value)} autoFocus
+                  onKeyDown={(e) => { if (e.key === 'Escape') setEditId(null); }}
+                  style={{ ...inputStyle, padding: '5px 8px', fontSize: 12.5 }} />
+                <button disabled={busy} title="Save"
+                  onClick={async () => { if (await run(() => supabase.rpc('inv_rename_lookup', { p_kind: kind, p_id: r.id, p_new: draft }))) setEditId(null); }}
+                  style={{ border: 'none', background: C.green, color: C.white, borderRadius: 8, padding: '5px 8px', cursor: 'pointer', display: 'inline-flex' }}><Check size={13} /></button>
+                <button onClick={() => setEditId(null)} title="Cancel" style={{ border: 'none', background: 'transparent', color: C.slate, cursor: 'pointer', display: 'inline-flex', padding: 4 }}><X size={13} /></button>
+              </>
+            ) : (
+              <>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</span>
+                <span style={{ fontSize: 11, color: C.slate, whiteSpace: 'nowrap' }}>{n} {unit}{n === 1 ? '' : 's'}</span>
+                <button onClick={() => { setEditId(r.id); setDraft(r.name); }} title="Rename" style={{ border: 'none', background: 'transparent', color: C.slate, cursor: 'pointer', display: 'inline-flex', padding: 4 }}><Pencil size={13} /></button>
+                <button disabled={busy || n > 0} title={n > 0 ? `In use by ${n} ${unit}${n === 1 ? '' : 's'} — reassign them first` : `Remove ${noun}`}
+                  onClick={() => void run(() => supabase.from(table).delete().eq('id', r.id))}
+                  style={{ border: 'none', background: 'transparent', color: n > 0 ? '#D5DDE3' : '#C0321A', cursor: n > 0 ? 'not-allowed' : 'pointer', display: 'inline-flex', padding: 4 }}><Trash2 size={13} /></button>
+              </>
+            )}
+          </div>
+        );
+      })}
+      <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+        <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder={`New ${noun}`}
+          onKeyDown={async (e) => { if (e.key === 'Enter' && newName.trim() && await insertNew()) setNewName(''); }}
+          style={{ ...inputStyle, padding: '6px 10px', fontSize: 12.5 }} />
+        <button disabled={busy || !newName.trim()}
+          onClick={async () => { if (await insertNew()) setNewName(''); }}
+          style={{ ...primaryBtn(busy || !newName.trim()), padding: '0 12px', display: 'inline-flex', alignItems: 'center' }}><Plus size={14} /></button>
+      </div>
+      {err && <div style={{ fontSize: 11, color: '#C0321A' }}>{err}</div>}
+    </div>
+  );
 }
 
 export function SearchBox({ value, onChange, placeholder, width = 260 }: { value: string; onChange: (v: string) => void; placeholder: string; width?: number }) {
