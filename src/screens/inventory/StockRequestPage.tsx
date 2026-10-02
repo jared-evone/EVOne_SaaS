@@ -7,7 +7,7 @@ import type { SignedInUser } from '../../permissions';
 import { Lock, Power, CheckCircle2, FolderClosed } from 'lucide-react';
 import {
   useInvCore, insertRequest, usableTotal, fmtD, todayISO, REQ_DEPARTMENTS, REQ_META, REQUEST_LINKS,
-  Pill, Field, ErrorBanner, ItemSelect, inputStyle, primaryBtn, ghostBtn,
+  Pill, Field, DeliverToField, ErrorBanner, ItemSelect, inputStyle, primaryBtn, ghostBtn,
   type InvRequest,
 } from './invShared';
 
@@ -134,9 +134,8 @@ export function StockRequestPage({ user, preset, onSignOut }: StockRequestPagePr
                     options={customers.map((c) => ({ value: c.id, label: c.name, sub: c.address ?? undefined }))}
                     onChange={pickCustomer} placeholder="Select customer…" emptyText="No customers match" />
                 </Field>
-                <Field label="Deliver to" hint={customer ? (f.delivery_address === (customer.address ?? '') ? "Customer's address — change it for a site or self collect" : 'Changed from the customer address') : undefined}>
-                  <input value={f.delivery_address} onChange={(e) => setF({ ...f, delivery_address: e.target.value })} placeholder="Filled from the customer's address" style={inputStyle} />
-                </Field>
+                <DeliverToField value={f.delivery_address} hasCustomer={!!customer} addressOnFile={customer?.address}
+                  onChange={(v) => setF({ ...f, delivery_address: v })} />
                 <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
                   <Field label="Item" hint={item ? `${usableTotal(onHand, item.id, locations)} in stock` : 'Not listed? Choose "Not in the item list" and describe it'}>
                     <ItemSelect items={items} value={f.item_id} onChange={(v) => setF({ ...f, item_id: v })} allowNone noneLabel="Not in the item list" />

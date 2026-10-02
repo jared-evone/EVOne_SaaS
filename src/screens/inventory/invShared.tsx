@@ -275,6 +275,40 @@ export function Field({ label, children, hint }: { label: string; children: Reac
   );
 }
 
+// Delivery address defaults to the customer's address on file (Customers).
+// It can be changed for one request (a site, self collect) and put back in
+// one click; the customer record itself is never edited from here.
+export function DeliverToField({ value, onChange, addressOnFile, hasCustomer, disabled }: {
+  value: string; onChange: (v: string) => void; addressOnFile: string | null | undefined; hasCustomer: boolean; disabled?: boolean;
+}) {
+  const onFile = (addressOnFile ?? '').trim();
+  const changed = hasCustomer && value.trim() !== onFile;
+  return (
+    <div style={{ minWidth: 0 }}>
+      <label style={labelStyle}>Deliver to</label>
+      <input value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}
+        placeholder={hasCustomer && !onFile ? 'No address on file — type one' : "Filled from the customer's address"} style={inputStyle} />
+      {hasCustomer && (
+        <div style={{ fontSize: 11, color: C.slate, marginTop: 4, lineHeight: 1.5 }}>
+          {!onFile ? 'This customer has no address on file.'
+            : !changed ? 'Address on file for this customer — change it for a site or self collect'
+            : (
+              <>
+                Changed for this request. On file: {onFile}
+                {!disabled && (
+                  <button type="button" onClick={() => onChange(onFile)}
+                    style={{ marginLeft: 8, border: 'none', background: 'none', padding: 0, color: C.green, fontWeight: 700, fontSize: 11, fontFamily: 'Figtree', cursor: 'pointer' }}>
+                    Use address on file
+                  </button>
+                )}
+              </>
+            )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ErrorBanner({ text }: { text: string | null }) {
   if (!text) return null;
   return <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{text}</div>;

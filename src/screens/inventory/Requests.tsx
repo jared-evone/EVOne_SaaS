@@ -8,7 +8,7 @@ import { RequestLinksView } from './RequestLinks';
 import { SearchSelect } from '../../components/SearchSelect';
 import {
   useInvCore, insertRequest, REQ_DEPARTMENTS, REQ_META, qtyAt, usableTotal, itemLabel, fmtD, todayISO,
-  Pill, Field, ErrorBanner, Modal, ItemSelect, LocationSelect, SearchBox, downloadCsv,
+  Pill, Field, DeliverToField, ErrorBanner, Modal, ItemSelect, LocationSelect, SearchBox, downloadCsv,
   inputStyle, primaryBtn, ghostBtn, pillBtn, thStyle, tdStyle,
   type InvItem, type InvRequest, type InvLocation, type OnHand,
 } from './invShared';
@@ -265,9 +265,8 @@ function RequestModal({ req, items, customers, locations, onHand, me, canEdit, c
             options={customers.map((c) => ({ value: c.id, label: c.name, sub: c.address ?? undefined }))}
             onChange={pickCustomer} placeholder="Select customer…" emptyText="No customers match" />
         </Field>
-        <Field label="Deliver to" hint={customer ? (f.delivery_address === (customer.address ?? '') ? "Customer's address — edit for a site or Self collect" : 'Changed from the customer address') : undefined}>
-          <input value={f.delivery_address} disabled={ro} onChange={(e) => setF({ ...f, delivery_address: e.target.value })} placeholder="Filled from the customer's address" style={inputStyle} />
-        </Field>
+        <DeliverToField value={f.delivery_address} disabled={ro} hasCustomer={!!customer} addressOnFile={customer?.address}
+          onChange={(v) => setF({ ...f, delivery_address: v })} />
       </div>
       <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px 160px', gap: 12 }}>
