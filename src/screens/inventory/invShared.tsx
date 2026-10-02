@@ -63,6 +63,7 @@ export interface InvRequest {
   fulfilled_on: string | null;
   delivered_by: string | null;
   delivery_note: string | null;
+  void_do_nos?: string[] | null;
   created_by: string | null;
   created_at: string;
 }

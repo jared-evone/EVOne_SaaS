@@ -3,7 +3,7 @@ import { C } from '../../theme';
 import { KPICard } from '../../components/KPICard';
 import { supabase } from '../../lib/supabase';
 import { usePermissions } from '../../permissions';
-import { Plus, Truck, Download, Lock, QrCode } from 'lucide-react';
+import { Plus, Truck, Download, Lock, QrCode, RotateCcw } from 'lucide-react';
 import { RequestLinksView } from './RequestLinks';
 import { SearchSelect } from '../../components/SearchSelect';
 import {
@@ -164,7 +164,7 @@ function RequestModal({ req, items, customers, locations, onHand, me, canEdit, c
   });
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [mode, setMode] = useState<null | 'fulfil' | 'close' | 'delete'>(null);
+  const [mode, setMode] = useState<null | 'fulfil' | 'close' | 'delete' | 'revert'>(null);
 
   const item = items.find((i) => i.id === f.item_id) ?? null;
   const requester = req ? (req.employee ?? '—') : me;
@@ -239,6 +239,7 @@ function RequestModal({ req, items, customers, locations, onHand, me, canEdit, c
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <Pill bg={meta.bg} color={meta.color}>{meta.label}</Pill>
           {req!.do_no && <span style={{ fontSize: 12, color: C.slate }}>Delivery order <b style={{ color: '#1a1a1a' }}>{req!.do_no}</b> · {fmtD(req!.fulfilled_on)}{req!.delivered_by ? ` · by ${req!.delivered_by}` : ''}{req!.fulfilled_location_id ? ` · from ${locations.find((l) => l.id === req!.fulfilled_location_id)?.name ?? ''}` : ''}</span>}
+          {req!.void_do_nos && req!.void_do_nos.length > 0 && <span style={{ fontSize: 12, color: C.slate }}>Reverted: <s>{req!.void_do_nos.join(', ')}</s></span>}
         </div>
       )}
       {req?.delivery_note && <div style={{ fontSize: 12, color: C.slate }}>Delivery note: {req.delivery_note}</div>}
@@ -301,6 +302,9 @@ function RequestModal({ req, items, customers, locations, onHand, me, canEdit, c
                 <button onClick={() => void setStatus('cancelled')} disabled={busy} style={{ ...ghostBtn, color: '#C0321A' }}>Cancel request</button>
               )}
               {req!.status === 'cancelled' && <button onClick={() => void setStatus('pending')} disabled={busy} style={ghostBtn}>Reopen</button>}
+              {canDelete && req!.status === 'fulfilled' && (
+                <button onClick={() => setMode('revert')} disabled={busy} style={{ ...ghostBtn, display: 'inline-flex', alignItems: 'center', gap: 6 }}><RotateCcw size={13} /> Revert to Pending</button>
+              )}
               {canDelete && req!.status !== 'fulfilled' && <button onClick={() => setMode('delete')} style={{ ...ghostBtn, marginLeft: 'auto', color: '#C0321A' }}>Delete</button>}
             </div>
           )}
@@ -312,6 +316,10 @@ function RequestModal({ req, items, customers, locations, onHand, me, canEdit, c
           {mode === 'close' && (
             <CloseLegacyForm onCancel={() => setMode(null)} busy={busy}
               onConfirm={(on, note) => void setStatus('fulfilled', { fulfilled_on: on, delivery_note: note || 'Closed during migration review — stock already issued before the move from Excel' })} />
+          )}
+          {mode === 'revert' && (
+            <RevertForm req={req!} item={item} items={items} locations={locations} me={me}
+              onCancel={() => setMode(null)} onDone={async () => { await onChanged(); onClose(); }} />
           )}
           {mode === 'delete' && (
             <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -369,6 +377,51 @@ function FulfilForm({ req, item, items, locations, onHand, me, onCancel, beforeF
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
         <button onClick={onCancel} style={ghostBtn}>Back</button>
         <button onClick={() => void go()} disabled={busy} style={primaryBtn(busy)}>{busy ? 'Issuing…' : 'Confirm fulfilment'}</button>
+      </div>
+    </div>
+  );
+}
+
+// Admin undo of a fulfilment: the stock goes back where it was issued from and
+// the DO number is voided (never re-issued). Done in one RPC so it can't half-apply.
+function RevertForm({ req, item, items, locations, me, onCancel, onDone }: {
+  req: InvRequest; item: InvItem | null; items: InvItem[]; locations: InvLocation[]; me: string;
+  onCancel: () => void; onDone: () => Promise<void>;
+}) {
+  const [reason, setReason] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const from = locations.find((l) => l.id === req.fulfilled_location_id);
+
+  const go = async () => {
+    if (!reason.trim()) { setErr('Give a reason — it is saved to the stock ledger.'); return; }
+    setBusy(true);
+    setErr(null);
+    const { error } = await supabase.rpc('inv_revert_fulfilment', { p_request: req.id, p_reason: reason.trim(), p_by: me });
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    await onDone();
+  };
+
+  return (
+    <div style={{ background: '#FFF8E1', borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: '#B07D00' }}>Revert {req.do_no ?? req.pr_no} to Pending?</div>
+      <div style={{ fontSize: 12, color: '#1a1a1a', lineHeight: 1.5 }}>
+        {req.do_no && from
+          ? <>{req.qty} × {item ? itemLabel(item, items) : req.item_name} goes back into <b>{from.name}</b> stock. </>
+          : <>No stock was issued through the app for this request, so stock levels don't change. </>}
+        {req.do_no && <>Delivery order {req.do_no} is voided and won't be reused. </>}
+        The request returns to Pending and can be fulfilled again.
+      </div>
+      <ErrorBanner text={err} />
+      <Field label="Reason (saved to the ledger)">
+        <input autoFocus value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Wrong item delivered, customer postponed" style={inputStyle} />
+      </Field>
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button onClick={onCancel} style={ghostBtn}>Cancel</button>
+        <button onClick={() => void go()} disabled={busy} style={{ ...primaryBtn(busy), background: busy ? '#ccc' : '#B07D00', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <RotateCcw size={13} /> {busy ? 'Reverting…' : 'Yes, revert'}
+        </button>
       </div>
     </div>
   );

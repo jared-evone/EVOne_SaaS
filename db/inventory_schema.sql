@@ -384,3 +384,65 @@ insert into inv_locations (name, code, usable, sort_order, spoilt_for)
 select 'Paya Ubi — Spoilt', 'PU-SP', false, 4, id from inv_locations where code = 'PU';
 
 update inv_locations set name = 'Spoilt — location not recorded', sort_order = 5 where code = 'SP';
+
+-- 2026-10-02 · migration inv_revert_fulfilment — an admin can send a fulfilled
+-- request back to Pending. The stock goes back where it was issued from as a
+-- 'return' movement (the original issue stays in the ledger). The DO number is
+-- kept in void_do_nos and never handed out again, which is why DO numbering
+-- moves from count(*)+1 (would re-issue a freed number) to "after the highest
+-- ever used". With no reverts the two give the same number.
+alter table inv_requests add column void_do_nos text[] not null default '{}';
+
+create or replace function inv_fulfil_request(p_request uuid, p_location uuid, p_date date, p_delivered_by text, p_note text, p_by text)
+returns text language plpgsql as $$
+declare r inv_requests; v_do text; n int;
+begin
+  select * into r from inv_requests where id = p_request for update;
+  if not found then raise exception 'Request not found'; end if;
+  if r.status not in ('pending', 'approved') then raise exception 'Only pending or approved requests can be fulfilled'; end if;
+  if r.item_id is null then raise exception 'Link this request to an inventory item first'; end if;
+  perform pg_advisory_xact_lock(hashtext('inv_do_no'));
+  select greatest(
+           (select count(*) from inv_requests where do_no is not null),
+           coalesce((select max(substring(x from '(\d+)$')::int)
+                       from (select do_no as x from inv_requests where do_no is not null
+                             union all
+                             select unnest(void_do_nos) from inv_requests) s), 0)
+         ) + 1 into n;
+  v_do := 'DO-' || to_char(coalesce(p_date, current_date), 'YYYY') || '-' || lpad(n::text, 4, '0');
+  insert into inv_movements (item_id, location_id, qty, kind, moved_on, ref_type, ref_id, note, created_by)
+  values (r.item_id, p_location, -r.qty, 'issue', coalesce(p_date, current_date), 'request', r.id,
+          r.pr_no || coalesce(' · ' || r.company_project, ''), p_by);
+  update inv_requests set status = 'fulfilled', do_no = v_do, fulfilled_location_id = p_location,
+         fulfilled_on = coalesce(p_date, current_date), delivered_by = p_delivered_by, delivery_note = p_note, updated_at = now()
+   where id = r.id;
+  return v_do;
+end $$;
+
+create or replace function inv_revert_fulfilment(p_request uuid, p_reason text, p_by text)
+returns void language plpgsql as $$
+declare r inv_requests; m record;
+begin
+  select * into r from inv_requests where id = p_request for update;
+  if not found then raise exception 'Request not found'; end if;
+  if r.status <> 'fulfilled' then raise exception 'Only fulfilled requests can be reverted'; end if;
+  if coalesce(btrim(p_reason), '') = '' then raise exception 'Give a reason for the revert'; end if;
+  -- Net out whatever this request still has issued, per item × location. A
+  -- legacy "closed during migration" request issued nothing, so returns nothing.
+  for m in
+    select item_id, location_id, sum(qty)::int as q from inv_movements
+     where ref_type = 'request' and ref_id = r.id and kind in ('issue', 'return')
+     group by item_id, location_id having sum(qty) <> 0
+  loop
+    insert into inv_movements (item_id, location_id, qty, kind, moved_on, ref_type, ref_id, note, created_by)
+    values (m.item_id, m.location_id, -m.q, 'return', current_date, 'request', r.id,
+            'Reverted ' || coalesce(r.do_no || ' · ', '') || r.pr_no || ' — ' || btrim(p_reason), p_by);
+  end loop;
+  update inv_requests set status = 'pending', do_no = null,
+         void_do_nos = case when r.do_no is null then void_do_nos else void_do_nos || r.do_no end,
+         fulfilled_location_id = null, fulfilled_on = null, delivered_by = null, delivery_note = null, updated_at = now()
+   where id = r.id;
+end $$;
+
+revoke execute on function inv_revert_fulfilment(uuid, text, text) from public, anon;
+grant execute on function inv_revert_fulfilment(uuid, text, text) to authenticated;
