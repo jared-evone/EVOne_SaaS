@@ -257,7 +257,7 @@ function ShipmentModal({ ship, receivedQty, items, locations, onHand, me, canEdi
       <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: 12 }}>
           <Field label="Item it becomes in stock" hint={!f.item_id ? 'Link an item so receiving can add it to stock' : undefined}>
-            <ItemSelect items={items} value={f.item_id} onChange={(v) => setF({ ...f, item_id: v })} allowNone noneLabel="— Not linked —" disabled={ro} />
+            <ItemSelect items={items} value={f.item_id} onChange={(v) => setF({ ...f, item_id: v })} allowNone noneLabel="Not linked" disabled={ro} />
           </Field>
           <Field label="Qty"><input type="number" min="1" step="1" value={f.qty} disabled={ro} onChange={(e) => setF({ ...f, qty: e.target.value })} style={inputStyle} /></Field>
         </div>

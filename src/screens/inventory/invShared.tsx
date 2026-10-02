@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { C } from '../../theme';
 import { supabase } from '../../lib/supabase';
 import { Search } from 'lucide-react';
+import { SearchSelect, type SelectOption } from '../../components/SearchSelect';
 
 // Standalone inventory: stock is only ever changed by inventory actions here.
 // On-hand = sum of inv_movements per item × location (the inv_on_hand view).
@@ -261,40 +262,29 @@ export function Modal({ title, subtitle, width = 560, onClose, children, footer 
 }
 
 // Native select grouped by category; same-named items carry their brand.
-export function ItemSelect({ items, value, onChange, allowNone, noneLabel = '— Select item —', disabled }: {
-  items: InvItem[]; value: string; onChange: (id: string) => void; allowNone?: boolean; noneLabel?: string; disabled?: boolean;
+export function ItemSelect({ items, value, onChange, allowNone, noneLabel = 'Select item', disabled, up }: {
+  items: InvItem[]; value: string; onChange: (id: string) => void; allowNone?: boolean; noneLabel?: string; disabled?: boolean; up?: boolean;
 }) {
   const active = items.filter((i) => i.active || i.id === value);
   const cats = [...new Set(active.map((i) => i.category || 'Uncategorised'))];
-  return (
-    <select value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled} style={{ ...inputStyle, cursor: disabled ? 'default' : 'pointer' }}>
-      <option value="" disabled={!allowNone}>{noneLabel}</option>
-      {cats.map((c) => (
-        <optgroup key={c} label={c}>
-          {active.filter((i) => (i.category || 'Uncategorised') === c).map((i) => (
-            <option key={i.id} value={i.id}>{itemLabel(i, items)}</option>
-          ))}
-        </optgroup>
-      ))}
-    </select>
-  );
+  const options: SelectOption[] = [
+    ...(allowNone ? [{ value: '', label: noneLabel }] : []),
+    ...cats.flatMap((c) => active.filter((i) => (i.category || 'Uncategorised') === c).map((i) => ({
+      value: i.id, label: itemLabel(i, items), sub: [c, i.brand].filter(Boolean).join(' · '),
+    }))),
+  ];
+  return <SearchSelect value={value} options={options} onChange={onChange} disabled={disabled} up={up} placeholder={noneLabel} emptyText="No items match" />;
 }
 
 // Usable locations, each showing what that item has there.
-export function LocationSelect({ locations, value, onChange, itemId, onHand, includeUnusable, placeholder = '— Select location —' }: {
+export function LocationSelect({ locations, value, onChange, itemId, onHand, includeUnusable, placeholder = 'Select location', up }: {
   locations: InvLocation[]; value: string; onChange: (id: string) => void;
-  itemId?: string | null; onHand?: OnHand; includeUnusable?: boolean; placeholder?: string;
+  itemId?: string | null; onHand?: OnHand; includeUnusable?: boolean; placeholder?: string; up?: boolean;
 }) {
-  return (
-    <select value={value} onChange={(e) => onChange(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
-      <option value="" disabled>{placeholder}</option>
-      {locations.filter((l) => includeUnusable || l.usable).map((l) => (
-        <option key={l.id} value={l.id}>
-          {l.name}{itemId && onHand ? ` — ${qtyAt(onHand, itemId, l.id)} on hand` : ''}
-        </option>
-      ))}
-    </select>
-  );
+  const options: SelectOption[] = locations.filter((l) => includeUnusable || l.usable).map((l) => ({
+    value: l.id, label: l.name, sub: itemId && onHand ? `${qtyAt(onHand, itemId, l.id)} on hand` : undefined,
+  }));
+  return <SearchSelect value={value} options={options} onChange={onChange} up={up} placeholder={placeholder} emptyText="No locations match" />;
 }
 
 export function SearchBox({ value, onChange, placeholder, width = 260 }: { value: string; onChange: (v: string) => void; placeholder: string; width?: number }) {

@@ -200,7 +200,7 @@ function LogModal({ items, locations, onHand, me, onClose, onDone }: {
       </div>
       <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 100px', gap: 12 }}>
-          <Field label="Part taken"><ItemSelect items={items} value={f.part} onChange={(v) => setF({ ...f, part: v })} allowNone noneLabel={source === 'stock' ? '— Select item —' : '— Not in item list —'} /></Field>
+          <Field label="Part taken"><ItemSelect items={items} value={f.part} onChange={(v) => setF({ ...f, part: v })} allowNone={source !== 'stock'} noneLabel={source === 'stock' ? 'Select item' : 'Not in item list'} /></Field>
           <Field label="Qty"><input type="number" min="1" step="1" value={f.qty} onChange={(e) => setF({ ...f, qty: e.target.value })} style={inputStyle} /></Field>
         </div>
         {!f.part && source === 'charger' && (

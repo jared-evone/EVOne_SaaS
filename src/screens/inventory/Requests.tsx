@@ -266,10 +266,9 @@ function RequestModal({ req, items, customers, locations, onHand, me, canEdit, c
           </div>
         </Field>
         <Field label="Department">
-          <select value={f.department} disabled={ro} onChange={(e) => setF({ ...f, department: e.target.value })} style={{ ...inputStyle, cursor: 'pointer' }}>
-            <option value="" disabled>— Select —</option>
-            {REQ_DEPARTMENTS.concat(f.department && !REQ_DEPARTMENTS.includes(f.department) ? [f.department] : []).map((d) => <option key={d} value={d}>{d}</option>)}
-          </select>
+          <SearchSelect value={f.department} disabled={ro} placeholder="Select department"
+            options={REQ_DEPARTMENTS.concat(f.department && !REQ_DEPARTMENTS.includes(f.department) ? [f.department] : []).map((d) => ({ value: d, label: d }))}
+            onChange={(v) => setF({ ...f, department: v })} />
         </Field>
         <Field label="Submitted"><input type="date" value={f.submitted_on} disabled={ro} onChange={(e) => setF({ ...f, submitted_on: e.target.value })} style={inputStyle} /></Field>
       </div>
@@ -286,7 +285,7 @@ function RequestModal({ req, items, customers, locations, onHand, me, canEdit, c
       <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px 160px', gap: 12 }}>
           <Field label="Item" hint={!f.item_id && f.item_name ? `Requested as "${f.item_name}" — not in the item list yet` : item ? `${usableTotal(onHand, item.id, locations)} usable on hand` : undefined}>
-            <ItemSelect items={items} value={f.item_id} onChange={(v) => setF({ ...f, item_id: v })} allowNone noneLabel={f.item_name && !f.item_id ? `— ${f.item_name} (not in list) —` : '— Not in the item list —'} disabled={ro} />
+            <ItemSelect items={items} value={f.item_id} onChange={(v) => setF({ ...f, item_id: v })} allowNone noneLabel={f.item_name && !f.item_id ? `${f.item_name} (not in list)` : 'Not in the item list'} disabled={ro} />
           </Field>
           <Field label="Qty"><input type="number" min="1" step="1" value={f.qty} disabled={ro} onChange={(e) => setF({ ...f, qty: e.target.value })} style={inputStyle} /></Field>
           <Field label="Required by"><input type="date" value={f.required_by} disabled={ro} onChange={(e) => setF({ ...f, required_by: e.target.value })} style={inputStyle} /></Field>
@@ -374,7 +373,7 @@ function FulfilForm({ req, item, items, locations, onHand, me, onCancel, beforeF
       <ErrorBanner text={err} />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
         <Field label="Issue from" hint={item && loc && avail < req.qty ? `Only ${avail} here — this will take the location negative` : undefined}>
-          <LocationSelect locations={locations} value={loc} onChange={setLoc} itemId={item?.id} onHand={onHand} />
+          <LocationSelect locations={locations} value={loc} onChange={setLoc} itemId={item?.id} onHand={onHand} up />
         </Field>
         <Field label="Delivery / collection date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} /></Field>
         <Field label="Delivered by"><input value={by} onChange={(e) => setBy(e.target.value)} placeholder="Driver / technician / self collect" style={inputStyle} /></Field>
