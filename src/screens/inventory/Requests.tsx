@@ -8,14 +8,12 @@ import { RequestLinksView } from './RequestLinks';
 import { SearchSelect } from '../../components/SearchSelect';
 import {
   useInvCore, insertRequest, REQ_DEPARTMENTS, REQ_META, qtyAt, usableTotal, itemLabel, fmtD, todayISO,
-  Pill, Field, DeliverToField, ErrorBanner, Modal, ItemSelect, LocationSelect, SearchBox, downloadCsv,
+  Pill, Field, DeliverToField, ContactField, useCustomerDirectory, ErrorBanner, Modal, ItemSelect, LocationSelect, SearchBox, downloadCsv,
   inputStyle, primaryBtn, ghostBtn, pillBtn, thStyle, tdStyle,
-  type InvItem, type InvRequest, type InvLocation, type OnHand,
+  type InvItem, type InvRequest, type InvLocation, type OnHand, type CustomerOpt, type ContactOpt,
 } from './invShared';
 
 type ReqStatus = InvRequest['status'];
-
-interface CustomerOpt { id: string; name: string; address: string | null; }
 
 type Filter = 'open' | ReqStatus | 'all';
 const FILTERS: { id: Filter; label: string }[] = [
@@ -31,11 +29,7 @@ export function ScreenInvRequests() {
   const { items, locations, onHand, error: coreErr, reload: reloadCore } = useInvCore();
 
   const [rows, setRows] = useState<InvRequest[]>([]);
-  const [customers, setCustomers] = useState<CustomerOpt[]>([]);
-  useEffect(() => {
-    void supabase.from('customers').select('id, name, address').order('name')
-      .then(({ data }) => setCustomers((data as CustomerOpt[]) ?? []));
-  }, []);
+  const { customers, contactsOf } = useCustomerDirectory();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const load = async () => {
@@ -60,13 +54,13 @@ export function ScreenInvRequests() {
     if (filter === 'open' && !isOpen(r)) return false;
     if (filter !== 'open' && filter !== 'all' && r.status !== filter) return false;
     const q = search.trim().toLowerCase();
-    return !q || [r.pr_no, r.do_no, r.employee, r.department, r.company_project, r.delivery_address, r.item_name, r.remarks].join(' ').toLowerCase().includes(q);
+    return !q || [r.pr_no, r.do_no, r.employee, r.department, r.company_project, r.contact_name, r.delivery_address, r.item_name, r.remarks].join(' ').toLowerCase().includes(q);
   });
 
   const exportCsv = () => {
     downloadCsv(`requests_${today}.csv`, [
-      ['PR Number', 'Submission Date', 'Employee', 'Department', 'Company / Project', 'Delivery Address', 'Item', 'Qty', 'Required By', 'Remarks', 'Status', 'DO Number', 'Fulfilled On', 'Delivered By'],
-      ...visible.map((r) => [r.pr_no, r.submitted_on, r.employee, r.department, r.company_project, r.delivery_address, r.item_name, r.qty, r.required_by, r.remarks, REQ_META[r.status].label, r.do_no, r.fulfilled_on, r.delivered_by]),
+      ['PR Number', 'Submission Date', 'Employee', 'Department', 'Company / Project', 'Contact Person', 'Contact Phone', 'Delivery Address', 'Item', 'Qty', 'Required By', 'Remarks', 'Status', 'DO Number', 'Fulfilled On', 'Delivered By'],
+      ...visible.map((r) => [r.pr_no, r.submitted_on, r.employee, r.department, r.company_project, r.contact_name ?? null, r.contact_phone ?? null, r.delivery_address, r.item_name, r.qty, r.required_by, r.remarks, REQ_META[r.status].label, r.do_no, r.fulfilled_on, r.delivered_by]),
     ]);
   };
 
@@ -114,7 +108,7 @@ export function ScreenInvRequests() {
                     </td>
                     <td style={{ ...tdStyle, color: C.slate, whiteSpace: 'nowrap' }}>{fmtD(r.submitted_on)}</td>
                     <td style={tdStyle}>{r.employee || '—'}<div style={{ fontSize: 11, color: C.slate }}>{r.department}</div></td>
-                    <td style={tdStyle}>{r.company_project || '—'}<div style={{ fontSize: 11, color: C.slate, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.delivery_address}</div></td>
+                    <td style={tdStyle}>{r.company_project || '—'}<div style={{ fontSize: 11, color: C.slate, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{[r.contact_name, r.delivery_address].filter(Boolean).join(' · ')}</div></td>
                     <td style={tdStyle}>
                       {r.item_name}
                       {!r.item_id && <div style={{ fontSize: 10, fontWeight: 700, color: '#B07D00', marginTop: 2 }}>NOT IN ITEM LIST</div>}
@@ -132,11 +126,11 @@ export function ScreenInvRequests() {
       </div>
 
       {open && (
-        <RequestModal key={open.id} req={open} items={items} customers={customers} locations={locations} onHand={onHand} me={me}
+        <RequestModal key={open.id} req={open} items={items} customers={customers} contactsOf={contactsOf} locations={locations} onHand={onHand} me={me}
           canEdit={canEdit} canDelete={canDelete} onClose={() => setOpenId(null)} onChanged={refresh} />
       )}
       {creating && (
-        <RequestModal req={null} items={items} customers={customers} locations={locations} onHand={onHand} me={me}
+        <RequestModal req={null} items={items} customers={customers} contactsOf={contactsOf} locations={locations} onHand={onHand} me={me}
           canEdit={canEdit} canDelete={false} onClose={() => setCreating(false)}
           onChanged={async () => { setCreating(false); await refresh(); }} />
       )}
@@ -144,8 +138,9 @@ export function ScreenInvRequests() {
   );
 }
 
-function RequestModal({ req, items, customers, locations, onHand, me, canEdit, canDelete, onClose, onChanged }: {
-  req: InvRequest | null; items: InvItem[]; customers: CustomerOpt[]; locations: InvLocation[]; onHand: OnHand; me: string;
+function RequestModal({ req, items, customers, contactsOf, locations, onHand, me, canEdit, canDelete, onClose, onChanged }: {
+  req: InvRequest | null; items: InvItem[]; customers: CustomerOpt[]; contactsOf: (customerId: string) => ContactOpt[];
+  locations: InvLocation[]; onHand: OnHand; me: string;
   canEdit: boolean; canDelete: boolean; onClose: () => void; onChanged: () => Promise<void>;
 }) {
   const isNew = !req;
@@ -155,6 +150,8 @@ function RequestModal({ req, items, customers, locations, onHand, me, canEdit, c
     department: req?.department ?? '',
     customer_id: req?.customer_id ?? '',
     company_project: req?.company_project ?? '',
+    contact_name: req?.contact_name ?? '',
+    contact_phone: req?.contact_phone ?? '',
     delivery_address: req?.delivery_address ?? '',
     item_id: req?.item_id ?? '',
     item_name: req?.item_name ?? '',
@@ -173,7 +170,8 @@ function RequestModal({ req, items, customers, locations, onHand, me, canEdit, c
   const pickCustomer = (id: string) => {
     const c = customers.find((x) => x.id === id);
     if (!c) return;
-    setF((x) => ({ ...x, customer_id: c.id, company_project: c.name, delivery_address: c.address ?? '' }));
+    const first = contactsOf(c.id)[0];
+    setF((x) => ({ ...x, customer_id: c.id, company_project: c.name, delivery_address: c.address ?? '', contact_name: first?.name ?? '', contact_phone: first?.phone ?? '' }));
   };
 
   const save = async (extra?: Partial<InvRequest>) => {
@@ -189,6 +187,7 @@ function RequestModal({ req, items, customers, locations, onHand, me, canEdit, c
       employee: requester === '—' ? null : requester, department: f.department || null,
       customer_id: f.customer_id || null,
       company_project: (customer ? customer.name : f.company_project).trim() || null,
+      contact_name: f.contact_name.trim() || null, contact_phone: f.contact_phone.trim() || null,
       delivery_address: f.delivery_address.trim() || null,
       item_id: f.item_id || null,
       item_name: (item ? item.name : f.item_name).trim(),
@@ -265,9 +264,11 @@ function RequestModal({ req, items, customers, locations, onHand, me, canEdit, c
             options={customers.map((c) => ({ value: c.id, label: c.name, sub: c.address ?? undefined }))}
             onChange={pickCustomer} placeholder="Select customer…" emptyText="No customers match" />
         </Field>
-        <DeliverToField value={f.delivery_address} disabled={ro} hasCustomer={!!customer} addressOnFile={customer?.address}
-          onChange={(v) => setF({ ...f, delivery_address: v })} />
+        <ContactField value={f.contact_name} phone={f.contact_phone} contacts={customer ? contactsOf(customer.id) : []} hasCustomer={!!customer} disabled={ro}
+          onChange={(name, phone) => setF({ ...f, contact_name: name, contact_phone: phone })} />
       </div>
+      <DeliverToField value={f.delivery_address} disabled={ro} hasCustomer={!!customer} addressOnFile={customer?.address}
+        onChange={(v) => setF({ ...f, delivery_address: v })} />
       <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px 160px', gap: 12 }}>
           <Field label="Item" hint={!f.item_id && f.item_name ? `Requested as "${f.item_name}" — not in the item list yet` : item ? `${usableTotal(onHand, item.id, locations)} usable on hand` : undefined}>

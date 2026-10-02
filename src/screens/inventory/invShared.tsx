@@ -63,6 +63,8 @@ export interface InvRequest {
   fulfilled_on: string | null;
   delivered_by: string | null;
   delivery_note: string | null;
+  contact_name?: string | null;
+  contact_phone?: string | null;
   void_do_nos?: string[] | null;
   created_by: string | null;
   created_at: string;
@@ -272,6 +274,47 @@ export function Field({ label, children, hint }: { label: string; children: Reac
       {children}
       {hint && <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>{hint}</div>}
     </div>
+  );
+}
+
+// ── Customers (read-only here) ───────────────────────────────────
+// Requests name the company, the person to contact and the delivery address;
+// all three default from Customers and can be changed per request.
+
+export interface CustomerOpt { id: string; name: string; address: string | null; }
+export interface ContactOpt { customer_id: string; name: string; phone: string | null; position: number; }
+
+export function useCustomerDirectory() {
+  const [customers, setCustomers] = useState<CustomerOpt[]>([]);
+  const [contacts, setContacts] = useState<ContactOpt[]>([]);
+  useEffect(() => {
+    void Promise.all([
+      supabase.from('customers').select('id, name, address').order('name'),
+      supabase.from('customer_contacts').select('customer_id, name, phone, position').order('position').order('created_at'),
+    ]).then(([c, k]) => {
+      setCustomers((c.data as CustomerOpt[]) ?? []);
+      setContacts((k.data as ContactOpt[]) ?? []);
+    });
+  }, []);
+  const contactsOf = useCallback((customerId: string) => contacts.filter((k) => k.customer_id === customerId), [contacts]);
+  return { customers, contactsOf };
+}
+
+// Searchable pick of the customer's contacts (phone underneath), defaulting to
+// the first one. A name not on file can be typed in for this request only.
+export function ContactField({ value, phone, contacts, hasCustomer, onChange, disabled }: {
+  value: string; phone: string; contacts: ContactOpt[]; hasCustomer: boolean;
+  onChange: (name: string, phone: string) => void; disabled?: boolean;
+}) {
+  const options: SelectOption[] = contacts.map((k) => ({ value: k.name, label: k.name, sub: k.phone ?? undefined }));
+  if (value && !contacts.some((k) => k.name === value)) options.push({ value, label: value, sub: 'Not on the customer record' });
+  return (
+    <Field label="Contact person" hint={phone ? `Tel ${phone}` : hasCustomer && contacts.length === 0 ? 'No contact on file for this customer — type a name' : undefined}>
+      <SearchSelect value={value} options={options} disabled={disabled || !hasCustomer}
+        placeholder={hasCustomer ? 'Select contact…' : 'Pick the company first'} emptyText="No contacts match"
+        onChange={(v) => onChange(v, contacts.find((k) => k.name === v)?.phone ?? '')}
+        addNewLabel="Use a name not on file" onAddNew={(q) => { if (q.trim()) onChange(q.trim(), ''); }} />
+    </Field>
   );
 }
 

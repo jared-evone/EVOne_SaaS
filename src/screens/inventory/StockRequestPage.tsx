@@ -7,7 +7,7 @@ import type { SignedInUser } from '../../permissions';
 import { Lock, Power, CheckCircle2, FolderClosed } from 'lucide-react';
 import {
   useInvCore, insertRequest, usableTotal, fmtD, todayISO, REQ_DEPARTMENTS, REQ_META, REQUEST_LINKS,
-  Pill, Field, DeliverToField, ErrorBanner, ItemSelect, inputStyle, primaryBtn, ghostBtn,
+  Pill, Field, DeliverToField, ContactField, useCustomerDirectory, ErrorBanner, ItemSelect, inputStyle, primaryBtn, ghostBtn,
   type InvRequest,
 } from './invShared';
 
@@ -16,8 +16,6 @@ interface StockRequestPageProps {
   preset: string;
   onSignOut: () => void;
 }
-
-interface CustomerOpt { id: string; name: string; address: string | null; }
 
 interface Submitted { pr_no: string; what: string; company: string; }
 
@@ -28,11 +26,7 @@ export function StockRequestPage({ user, preset, onSignOut }: StockRequestPagePr
   const me = user.full_name || user.email;
   const { items, locations, onHand, loading, error: coreErr } = useInvCore();
 
-  const [customers, setCustomers] = useState<CustomerOpt[]>([]);
-  useEffect(() => {
-    void supabase.from('customers').select('id, name, address').order('name')
-      .then(({ data }) => setCustomers((data as CustomerOpt[]) ?? []));
-  }, []);
+  const { customers, contactsOf } = useCustomerDirectory();
 
   const [mine, setMine] = useState<InvRequest[]>([]);
   const loadMine = async () => {
@@ -41,7 +35,7 @@ export function StockRequestPage({ user, preset, onSignOut }: StockRequestPagePr
   };
   useEffect(() => { void loadMine(); }, [me]);
 
-  const blank = (department: string) => ({ department, customer_id: '', delivery_address: '', item_id: '', item_name: '', qty: '1', required_by: '', remarks: '' });
+  const blank = (department: string) => ({ department, customer_id: '', contact_name: '', contact_phone: '', delivery_address: '', item_id: '', item_name: '', qty: '1', required_by: '', remarks: '' });
   const [f, setF] = useState(() => blank(link.department));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -52,7 +46,9 @@ export function StockRequestPage({ user, preset, onSignOut }: StockRequestPagePr
 
   const pickCustomer = (id: string) => {
     const c = customers.find((x) => x.id === id);
-    if (c) setF((x) => ({ ...x, customer_id: c.id, delivery_address: c.address ?? '' }));
+    if (!c) return;
+    const first = contactsOf(c.id)[0];
+    setF((x) => ({ ...x, customer_id: c.id, delivery_address: c.address ?? '', contact_name: first?.name ?? '', contact_phone: first?.phone ?? '' }));
   };
 
   const submit = async () => {
@@ -67,6 +63,7 @@ export function StockRequestPage({ user, preset, onSignOut }: StockRequestPagePr
     const res = await insertRequest({
       submitted_on: todayISO(), employee: me, department: f.department,
       customer_id: customer.id, company_project: customer.name,
+      contact_name: f.contact_name.trim() || null, contact_phone: f.contact_phone.trim() || null,
       delivery_address: f.delivery_address.trim() || null,
       item_id: item?.id ?? null, item_name: itemName,
       qty, required_by: f.required_by || null, remarks: f.remarks.trim() || null,
@@ -134,6 +131,8 @@ export function StockRequestPage({ user, preset, onSignOut }: StockRequestPagePr
                     options={customers.map((c) => ({ value: c.id, label: c.name, sub: c.address ?? undefined }))}
                     onChange={pickCustomer} placeholder="Select customer…" emptyText="No customers match" />
                 </Field>
+                <ContactField value={f.contact_name} phone={f.contact_phone} contacts={customer ? contactsOf(customer.id) : []} hasCustomer={!!customer}
+                  onChange={(name, phone) => setF({ ...f, contact_name: name, contact_phone: phone })} />
                 <DeliverToField value={f.delivery_address} hasCustomer={!!customer} addressOnFile={customer?.address}
                   onChange={(v) => setF({ ...f, delivery_address: v })} />
                 <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>

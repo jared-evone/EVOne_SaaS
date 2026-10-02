@@ -507,3 +507,11 @@ alter table inv_shipments add column customer_id uuid references customers(id) o
 
 -- Data (execute_sql): the one Excel shipment "for Chuan Lim" (EV1PO-000244)
 -- linked to customer "Chuan Lim Construction Pte Ltd"; its text is unchanged.
+
+-- 2026-10-02 · migration inv_requests_contact_person — a request names the
+-- company, the person to contact and the delivery address. The person defaults
+-- to the customer's first contact in Customers (customer_contacts) and can be
+-- changed per request; phone is copied from that contact.
+alter table inv_requests add column contact_name text, add column contact_phone text;
+-- Data (execute_sql): PR-2026-0031 / 0032 (the only app-created requests)
+-- filled from their customer's first contact. Excel-migrated rows left blank.
