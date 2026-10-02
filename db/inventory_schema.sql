@@ -386,7 +386,8 @@ select 'Paya Ubi — Spoilt', 'PU-SP', false, 4, id from inv_locations where cod
 update inv_locations set name = 'Spoilt — location not recorded', sort_order = 5 where code = 'SP';
 
 -- 2026-10-02 · migration inv_revert_fulfilment — an admin can send a fulfilled
--- request back to Pending. The stock goes back where it was issued from as a
+-- request back to Pending (checked server-side: delete rights on inv_requests).
+-- The stock goes back where it was issued from as a
 -- 'return' movement (the original issue stays in the ledger). The DO number is
 -- kept in void_do_nos and never handed out again, which is why DO numbering
 -- moves from count(*)+1 (would re-issue a freed number) to "after the highest
@@ -423,6 +424,15 @@ create or replace function inv_revert_fulfilment(p_request uuid, p_reason text, 
 returns void language plpgsql as $$
 declare r inv_requests; m record;
 begin
+  -- Admins only (delete rights on Requests & Delivery). The app hides the
+  -- button from everyone else; this stops a direct API call as well.
+  if not exists (
+    select 1 from app_user_permissions
+     where user_id::text = current_setting('request.jwt.claims', true)::jsonb ->> 'sub'
+       and department = 'inv' and screen_key = 'inv_requests' and can_delete
+  ) then
+    raise exception 'Only an admin can revert a fulfilled request';
+  end if;
   select * into r from inv_requests where id = p_request for update;
   if not found then raise exception 'Request not found'; end if;
   if r.status <> 'fulfilled' then raise exception 'Only fulfilled requests can be reverted'; end if;
