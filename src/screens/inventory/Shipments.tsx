@@ -3,7 +3,7 @@ import { C } from '../../theme';
 import { KPICard } from '../../components/KPICard';
 import { supabase } from '../../lib/supabase';
 import { usePermissions } from '../../permissions';
-import { Plus, PackageCheck, Download, Lock, Building2 } from 'lucide-react';
+import { Plus, PackageCheck, Download, Lock, Building2, Square, SquareCheck } from 'lucide-react';
 import { SearchSelect } from '../../components/SearchSelect';
 import {
   useInvCore, itemLabel, fmtD, todayISO,
@@ -133,7 +133,7 @@ export function ScreenInvShipments() {
                     onMouseEnter={(e) => { e.currentTarget.style.background = '#FAFAFA'; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
                     <td style={{ ...tdStyle, fontWeight: 700, color: C.green, whiteSpace: 'nowrap' }}>
-                      {s.po_no || '—'}
+                      {s.po_no || <span style={{ color: C.slate }}>No PO</span>}
                       {s.legacy_no != null && <div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>Excel #{s.legacy_no}</div>}
                     </td>
                     <td style={tdStyle}>{s.supplier || '—'}{s.customer && <div style={{ fontSize: 11, color: C.slate }}>For {s.customer}</div>}</td>
@@ -199,6 +199,9 @@ function ShipmentModal({ ship, receivedQty, items, locations, onHand, me, suppli
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<null | 'receive' | 'delete'>(null);
+  // Not every shipment has a PO (warranty swaps, samples). Existing lines
+  // without one open with this already ticked.
+  const [noPo, setNoPo] = useState(!!ship && !ship.po_no);
   // Set from the signed-in account when the shipment is created; never typed.
   const employee = ship ? ship.employee : me;
 
@@ -206,11 +209,12 @@ function ShipmentModal({ ship, receivedQty, items, locations, onHand, me, suppli
     const qty = Number(f.qty);
     if (!f.description.trim() && !f.item_id) { setErr('Describe the shipment or pick an item.'); return false; }
     if (!Number.isInteger(qty) || qty <= 0) { setErr('Quantity must be a whole number above zero.'); return false; }
+    if (!noPo && !f.po_no.trim()) { setErr('Enter the PO number, or tick "No PO".'); return false; }
     setBusy(true);
     setErr(null);
     const item = items.find((i) => i.id === f.item_id);
     const payload = {
-      supplier: f.supplier.trim() || null, po_no: f.po_no.trim() || null,
+      supplier: f.supplier.trim() || null, po_no: noPo ? null : f.po_no.trim() || null,
       customer_id: f.customer_id || null, customer: f.customer.trim() || null,
       description: f.description.trim() || (item ? `${qty} × ${item.name}` : ''), item_id: f.item_id || null, qty,
       mode: f.mode || null, order_date: f.order_date || null, in_transit_date: f.in_transit_date || null,
@@ -248,7 +252,7 @@ function ShipmentModal({ ship, receivedQty, items, locations, onHand, me, suppli
   const canReceive = ship && isOpen(ship);
 
   return (
-    <Modal title={isNew ? 'New incoming shipment' : (ship!.po_no || 'Shipment')} width={680} onClose={onClose}
+    <Modal title={isNew ? 'New incoming shipment' : (ship!.po_no || 'Shipment — no PO')} width={680} onClose={onClose}
       subtitle={ship ? `${ship.supplier ?? ''}${ship.legacy_no != null ? ` · Excel #${ship.legacy_no}` : ''}` : 'Track a supplier order until it is received into stock'}
       footer={editable ? (
         <>
@@ -271,7 +275,16 @@ function ShipmentModal({ ship, receivedQty, items, locations, onHand, me, suppli
           <LookupSelect kind="supplier" value={f.supplier} options={suppliers} isAdmin={isAdmin} disabled={ro}
             onChange={(v) => setF({ ...f, supplier: v })} onAdded={reloadSuppliers} />
         </Field>
-        <Field label="PO number"><input value={f.po_no} disabled={ro} onChange={(e) => setF({ ...f, po_no: e.target.value })} placeholder="EV1PO-000000" style={inputStyle} /></Field>
+        <Field label="PO number">
+          <input value={noPo ? '' : f.po_no} disabled={ro || noPo} onChange={(e) => setF({ ...f, po_no: e.target.value })}
+            placeholder={noPo ? 'No PO for this shipment' : 'EV1PO-000000'} style={{ ...inputStyle, background: noPo ? C.seasalt : C.white }} />
+          {!ro && (
+            <button type="button" onClick={() => setNoPo(!noPo)}
+              style={{ marginTop: 6, padding: 0, border: 'none', background: 'transparent', display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, color: noPo ? C.green : C.slate, cursor: 'pointer' }}>
+              {noPo ? <SquareCheck size={14} /> : <Square size={14} />} No PO
+            </button>
+          )}
+        </Field>
         <Field label="Mode">
           <SearchSelect value={f.mode} disabled={ro} placeholder="Select mode"
             options={[{ value: '', label: 'Not set' }, ...MODES.concat(f.mode && !MODES.includes(f.mode) ? [f.mode] : []).map((m) => ({ value: m, label: m }))]}
