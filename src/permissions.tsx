@@ -75,11 +75,12 @@ export const DEPARTMENT_SCREENS: Record<Department, ScreenKey[]> = {
   cpo:   ['charging_dashboard', 'corporatecrm', 'corporatecrm_invoicing', 'cpochargers', 'charging',
           'charging_cpo_carparks', 'charging_sp_price',
           'corporateinvoicing'],
-  sales: ['customers', 'sales', 'sales_manager', 'sales_team', 'quote_machine', 'raise_po'],
+  sales: ['customers', 'sales', 'sales_manager', 'sales_team', 'quote_machine'],
   tech:  ['tsd_technician', 'tsd_sop', 'tsd_workorders', 'tsd_forms', 'tsd_pic', 'tsd_technicians', 'customers', 'projects'],
   pm:    ['dashboard', 'registry_todo', 'charger_projects', 'customers', 'projects', 'email_designer'],
-  // Standalone — no shared screens; stock is only changed from these screens.
-  inv:   ['inv_stock', 'inv_requests', 'inv_shipments', 'inv_grn', 'inv_cannibal', 'inv_ledger'],
+  // Standalone — stock only changes from the inv_* screens. Raise PO lives here
+  // too (moved from Sales, Oct 2026) but never touches stock.
+  inv:   ['inv_stock', 'inv_requests', 'raise_po', 'inv_shipments', 'inv_grn', 'inv_cannibal', 'inv_ledger'],
 };
 
 export interface ScreenCap {
