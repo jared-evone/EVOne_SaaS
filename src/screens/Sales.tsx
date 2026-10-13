@@ -608,7 +608,8 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                 border: `1.5px solid ${isTarget ? C.green : 'transparent'}`,
                 borderRadius: 14, padding: 10, display: 'flex', flexDirection: 'column', gap: 10,
               }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 4px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '2px 4px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
                 {isParkedSlot ? (
                   // Both parked statuses are shown with their counts, so the hidden
                   // one is still visible at a glance; clicking switches the column.
@@ -640,12 +641,12 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                       const pc = wonStage === 'all' ? null : WON_STAGE_COLORS[wonStage];
                       const countOf = (ws: WonStage) => wonAll.filter((q) => q.won_stage === ws).length;
                       return (
-                        <span style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', minWidth: 0 }}>
+                        <span style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', minWidth: 0, flex: '1 1 0', maxWidth: 170 }}>
                           <select value={wonStage} onChange={(e) => setWonStage(e.target.value as 'all' | WonStage)}
                             title="Filter won quotes by delivery stage"
                             style={{
                               appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none',
-                              padding: '3px 24px 3px 10px', borderRadius: 99, maxWidth: 170,
+                              padding: '3px 24px 3px 10px', borderRadius: 99, width: '100%', minWidth: 0,
                               border: `1px solid ${pc ? pc.color : '#E0E5E9'}`,
                               background: pc ? pc.bg : C.white,
                               color: pc ? pc.color : C.slate,
@@ -664,7 +665,8 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                     })()}
                   </>
                 )}
-                <span style={{ marginLeft: 'auto', fontSize: 11, color: C.slate, fontWeight: 600, whiteSpace: 'nowrap' }}>{fmtMoney(colValue)}</span>
+              </div>
+                <span style={{ fontSize: 11, color: C.slate, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{fmtMoney(colValue)}</span>
               </div>
               {/* Fixed-height slot list — holds PER_PAGE cards whether or not they exist */}
               <div style={{ height: LIST_H, display: 'flex', flexDirection: 'column', gap: CARD_GAP, overflow: 'hidden' }}>

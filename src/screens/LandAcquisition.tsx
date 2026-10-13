@@ -259,7 +259,8 @@ function Board({ sites, canEdit, today, onOpen, onDrop }: {
                 if (s) onDrop(s, stage);
               } : undefined}
               style={{ background: dragOver === stage ? C.honeydew : C.seasalt, border: `1.5px solid ${dragOver === stage ? C.green : 'transparent'}`, borderRadius: 14, padding: 10, display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 4px', minHeight: 24 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '2px 4px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
                 {slot === 'parked' ? PARKED.map((ps) => {
                   const on = ps === parked;
                   const pm = STAGE_META[ps];
@@ -273,9 +274,12 @@ function Board({ sites, canEdit, today, onOpen, onDrop }: {
                   <>
                     <span style={{ fontSize: 12, fontWeight: 700, color: meta.color, background: meta.bg, padding: '3px 10px', borderRadius: 99, whiteSpace: 'nowrap' }}>{meta.label}</span>
                     <span style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>{col.length}</span>
-                    <span style={{ marginLeft: 'auto', fontSize: 11, color: C.slate, fontWeight: 600, whiteSpace: 'nowrap' }}>{col.reduce((n, s) => n + chargerCount(s), 0) || ''}{col.some(chargerCount) ? ' chargers' : ''}</span>
                   </>
                 )}
+              </div>
+                <span style={{ fontSize: 11, color: C.slate, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                  {col.reduce((n, s) => n + chargerCount(s), 0)} charger{col.reduce((n, s) => n + chargerCount(s), 0) === 1 ? '' : 's'} proposed
+                </span>
               </div>
               <div style={{ height: LIST_H, display: 'flex', flexDirection: 'column', gap: CARD_GAP, overflow: 'hidden' }}>
                 {pageCol.map((s) => (
