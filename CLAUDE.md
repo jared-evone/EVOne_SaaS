@@ -364,6 +364,11 @@ src/
                                               procedure PDF + programme files
                                               + inline videos; categories, tags,
                                               revisions, review dates, flags)
+                            RegistrySync.tsx (PIC Review: file each form of an
+                                              approved Breakdown / Form A / Form D
+                                              job onto its charger — registry
+                                              LTA/breakdown records, or CPO
+                                              maintenance / cpo_breakdowns)
                             OverlayForm.tsx, PDFExport.tsx
 ```
 

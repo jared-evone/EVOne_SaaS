@@ -627,8 +627,10 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
   };
   const flash = (msg: string) => { setToast(msg); window.setTimeout(() => setToast(null), 2400); };
   const completed = workOrder.status === 'completed';
-  // Approved Breakdown / Form A / Form D jobs file their forms into the registry.
-  const registrySyncable = completed && can('tsd_pic', 'can_edit') && !cpoCustomer && isRegistrySyncCategory(workOrder);
+  // Approved Breakdown / Form A / Form D jobs file their forms onto the chargers —
+  // Charger Registry for registry customers, CPO Chargers for CPO locations.
+  const registrySyncable = completed && can('tsd_pic', 'can_edit') && isRegistrySyncCategory(workOrder);
+  const syncDest = cpoCustomer ? 'CPO Chargers' : 'Charger Registry';
   const registrySynced = Object.keys(workOrder.registrySync ?? {}).length;
 
   const handleSave = () => { store.amend(workOrder.id, forms, DEMO_PIC); if (reviewDirty) saveReview(); setDirty(false); flash('Changes saved.'); };
@@ -700,9 +702,9 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
             </button>
           )}
           {registrySyncable && (
-            <button onClick={() => setSyncOpen(true)} title="File each form into the Charger Registry on the charger it covers"
+            <button onClick={() => setSyncOpen(true)} title={`File each form into ${syncDest} on the charger it covers`}
               style={{ padding: '8px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: registrySynced >= workOrder.forms.length ? '#E4F3E3' : C.white, color: registrySynced >= workOrder.forms.length ? '#1B512D' : C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-              {registrySynced >= workOrder.forms.length ? '✓ In Charger Registry' : `→ Charger Registry${registrySynced ? ` · ${registrySynced}/${workOrder.forms.length}` : ''}`}
+              {registrySynced >= workOrder.forms.length ? `✓ In ${syncDest}` : `→ ${syncDest}${registrySynced ? ` · ${registrySynced}/${workOrder.forms.length}` : ''}`}
             </button>
           )}
           {isCpo && (alreadyPushed ? (

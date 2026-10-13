@@ -4,6 +4,7 @@ import { supabase } from '../../lib/supabase';
 import { SearchSelect } from '../../components/SearchSelect';
 import { Check, RotateCcw } from 'lucide-react';
 import {
+  assigneesLabel,
   useWorkOrderStore,
   type WorkOrder,
   type WorkOrderForm,
@@ -14,6 +15,8 @@ import { generateWorkOrderPdf } from './PDFExport';
 import { CHARGER_FORMS_BUCKET, computeLtaFilename, composeChargerFilename, pathSafe, ltaExistFloor } from '../Projects';
 
 type SyncKind = RegistrySyncEntry['kind'];
+type Target = 'registry' | 'cpo';
+const CPO_BUCKET = 'cpo-maintenance-pdfs';
 const KIND_LABEL: Record<SyncKind, string> = { A: 'Form A', D: 'Form D', breakdown: 'Breakdown' };
 
 interface RegCharger {
@@ -23,6 +26,8 @@ interface RegCharger {
   turn_on_date: string | null;
   procurement_date: string | null;
   siteName: string;
+  formANext?: string | null;
+  formDNext?: string | null;
 }
 
 interface Row {
@@ -49,7 +54,7 @@ function guessKind(form: WorkOrderForm, w: WorkOrder, t: FormTemplate | undefine
   return 'A';
 }
 
-// Structured forms' charger field holds "TAG — Brand @ Site · Registry"; overlay
+// Structured forms' charger field holds "TAG — Brand @ Site · Registry" (or · CPO); overlay
 // forms (Form A) have a typed "Charger ID". Match either to a registry tag,
 // ignoring case and spaces.
 const normTag = (s: string) => s.replace(/\s+/g, '').toLowerCase();
@@ -57,8 +62,8 @@ function guessCharger(form: WorkOrderForm, chargers: RegCharger[]): string {
   const values = Object.values(form.values ?? {}).filter((v): v is string => typeof v === 'string' && v.length > 0 && v.length < 120);
   const byTag = (tag: string) => chargers.find((c) => normTag(c.asset_tag) === normTag(tag))?.id ?? '';
   for (const v of values) {
-    if (!/ · Registry$/.test(v)) continue;
-    const hit = byTag(v.replace(/ · Registry$/, '').split(' @ ')[0].split(' — ')[0]);
+    if (!/ · (Registry|CPO)$/.test(v)) continue;
+    const hit = byTag(v.replace(/ · (Registry|CPO)$/, '').split(' @ ')[0].split(' — ')[0]);
     if (hit) return hit;
   }
   for (const v of values) {
@@ -84,15 +89,18 @@ async function formPdf(w: WorkOrder, form: WorkOrderForm, getTemplate: (id: stri
   return generateWorkOrderPdf(w, [form], getTemplate);
 }
 
-const today = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const isoDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const today = () => isoDay(new Date());
+const addMonths = (iso: string, m: number) => {
+  const [y, mo, d] = iso.split('-').map(Number);
+  return isoDay(new Date(y, mo - 1 + m, d));
 };
 
 // After approval, each form of a Breakdown / Form A / Form D work order is filed
-// into the Charger Registry on the charger the reviewer picks: a Form A or D
-// inspection record, or a breakdown report, with that form's own PDF attached.
-// Six forms for six chargers become six records — never one charger.
+// on the charger the reviewer picks, with that form's own PDF attached. Registry
+// customers: a Form A/D inspection record or a breakdown report. CPO locations:
+// a Form A/D maintenance record (advancing the charger's next due date) or a
+// CPO breakdown. Six forms for six chargers become six records, never one.
 export function RegistrySyncModal({ workOrder, forms, by, onClose, onDone }: {
   workOrder: WorkOrder;
   forms: WorkOrderForm[];
@@ -102,6 +110,7 @@ export function RegistrySyncModal({ workOrder, forms, by, onClose, onDone }: {
 }) {
   const store = useWorkOrderStore();
   const [chargers, setChargers] = useState<RegCharger[] | null>(null);
+  const [target, setTarget] = useState<Target>('registry');
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [rows, setRows] = useState<Record<string, Row>>({});
   const [running, setRunning] = useState(false);
@@ -112,14 +121,29 @@ export function RegistrySyncModal({ workOrder, forms, by, onClose, onDone }: {
     let cancelled = false;
     void (async () => {
       if (!workOrder.customerId) { setChargers([]); return; }
-      const { data, error } = await supabase.from('project_sites')
-        .select('name, position, site_chargers(id, asset_tag, brand_model, turn_on_date, procurement_date)')
-        .eq('project_id', workOrder.customerId).order('position');
-      if (cancelled) return;
-      if (error) { setLoadErr(error.message); setChargers([]); return; }
       const list: RegCharger[] = [];
-      for (const s of (data ?? []) as { name: string; site_chargers: Omit<RegCharger, 'siteName'>[] }[]) {
-        for (const c of s.site_chargers ?? []) list.push({ ...c, siteName: s.name });
+      const loc = await supabase.from('cpo_locations').select('id, name').eq('id', workOrder.customerId).maybeSingle();
+      if (cancelled) return;
+      if (loc.data) {
+        setTarget('cpo');
+        const { data, error } = await supabase.from('cpo_chargers')
+          .select('id, charger_code, brand_model, form_a_next_date, form_d_next_date')
+          .eq('location_id', workOrder.customerId).order('charger_code');
+        if (cancelled) return;
+        if (error) { setLoadErr(error.message); setChargers([]); return; }
+        for (const c of (data ?? []) as { id: string; charger_code: string; brand_model: string | null; form_a_next_date: string | null; form_d_next_date: string | null }[]) {
+          list.push({ id: c.id, asset_tag: c.charger_code, brand_model: c.brand_model, turn_on_date: null, procurement_date: null,
+            siteName: (loc.data as { name: string }).name, formANext: c.form_a_next_date, formDNext: c.form_d_next_date });
+        }
+      } else {
+        const { data, error } = await supabase.from('project_sites')
+          .select('name, position, site_chargers(id, asset_tag, brand_model, turn_on_date, procurement_date)')
+          .eq('project_id', workOrder.customerId).order('position');
+        if (cancelled) return;
+        if (error) { setLoadErr(error.message); setChargers([]); return; }
+        for (const s of (data ?? []) as { name: string; site_chargers: Omit<RegCharger, 'siteName'>[] }[]) {
+          for (const c of s.site_chargers ?? []) list.push({ ...c, siteName: s.name });
+        }
       }
       setChargers(list);
       const init: Record<string, Row> = {};
@@ -148,7 +172,7 @@ export function RegistrySyncModal({ workOrder, forms, by, onClose, onDone }: {
     if (r.date > today()) return "The date can't be in the future.";
     if (r.kind === 'breakdown') return r.description.trim() ? null : 'Describe the breakdown.';
     const ch = chargerOf(r.chargerId);
-    const floor = ch ? ltaExistFloor(ch) : null;
+    const floor = ch && target === 'registry' ? ltaExistFloor(ch) : null;
     return floor && r.date <= floor ? `This charger was only registered on ${floor} — the inspection date must be after it.` : null;
   };
   const todo = forms.filter((f) => isOpen(f) && rows[f.id]?.chargerId && rows[f.id]?.status !== 'done');
@@ -169,22 +193,52 @@ export function RegistrySyncModal({ workOrder, forms, by, onClose, onDone }: {
         const filename = r.kind === 'breakdown'
           ? composeChargerFilename('Breakdown', ch.asset_tag, r.date, ch.siteName)
           : computeLtaFilename(r.kind, ch.asset_tag, r.date, ch.siteName);
-        path = `${r.kind === 'breakdown' ? 'breakdown' : 'lta'}/${ch.id}/${crypto.randomUUID()}/${pathSafe(filename)}`;
-        const up = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(path, blob, { contentType: 'application/pdf' });
-        if (up.error) { path = null; throw new Error(up.error.message); }
-        const ins = r.kind === 'breakdown'
-          ? await supabase.from('charger_breakdowns').insert({
-              charger_id: ch.id, breakdown_date: r.date, description: r.description.trim(), storage_path: path, filename,
-            }).select('id').single()
-          : await supabase.from('charger_lta_records').insert({
-              charger_id: ch.id, form_type: r.kind, performed_at: r.date, period_n: null, storage_path: path, filename,
-              notes: `From work order ${workOrder.id} · ${f.label}`,
+        const note = `From work order ${workOrder.id} · ${f.label}`;
+        let recordId: string;
+        if (target === 'cpo') {
+          path = r.kind === 'breakdown' ? `chargers/${ch.id}/breakdowns/${crypto.randomUUID()}.pdf` : `chargers/${ch.id}/${crypto.randomUUID()}.pdf`;
+          const up = await supabase.storage.from(CPO_BUCKET).upload(path, blob, { contentType: 'application/pdf' });
+          if (up.error) { path = null; throw new Error(up.error.message); }
+          if (r.kind === 'breakdown') {
+            const ins = await supabase.from('cpo_breakdowns').insert({
+              charger_id: ch.id, breakdown_date: r.date, description: r.description.trim(), technician: assigneesLabel(workOrder, '') || null,
+              pdf_path: path, pdf_filename: filename, work_order_id: workOrder.id, created_by: by,
             }).select('id').single();
-        if (ins.error || !ins.data) throw new Error(ins.error?.message ?? 'Could not save the record');
+            if (ins.error || !ins.data) throw new Error(ins.error?.message ?? 'Could not save the breakdown');
+            recordId = (ins.data as { id: string }).id;
+          } else {
+            const nextDue = addMonths(r.date, r.kind === 'A' ? 6 : 12);
+            const ins = await supabase.from('cpo_maintenance_records').insert({
+              charger_id: ch.id, maintenance_type: r.kind === 'A' ? 'preventive_form_a' : 'preventive_form_d', performed_date: r.date,
+              technician: assigneesLabel(workOrder, '') || null, summary: note, pdf_path: path, pdf_filename: filename, next_due_date: nextDue,
+            }).select('id').single();
+            if (ins.error || !ins.data) throw new Error(ins.error?.message ?? 'Could not save the maintenance record');
+            recordId = (ins.data as { id: string }).id;
+            // Only move the due date forward — filing an older report mustn't pull it back.
+            const current = r.kind === 'A' ? ch.formANext : ch.formDNext;
+            if (!current || nextDue > current) {
+              await supabase.from('cpo_chargers').update(r.kind === 'A' ? { form_a_next_date: nextDue } : { form_d_next_date: nextDue }).eq('id', ch.id);
+              if (r.kind === 'A') ch.formANext = nextDue; else ch.formDNext = nextDue;
+            }
+          }
+        } else {
+          path = `${r.kind === 'breakdown' ? 'breakdown' : 'lta'}/${ch.id}/${crypto.randomUUID()}/${pathSafe(filename)}`;
+          const up = await supabase.storage.from(CHARGER_FORMS_BUCKET).upload(path, blob, { contentType: 'application/pdf' });
+          if (up.error) { path = null; throw new Error(up.error.message); }
+          const ins = r.kind === 'breakdown'
+            ? await supabase.from('charger_breakdowns').insert({
+                charger_id: ch.id, breakdown_date: r.date, description: r.description.trim(), storage_path: path, filename,
+              }).select('id').single()
+            : await supabase.from('charger_lta_records').insert({
+                charger_id: ch.id, form_type: r.kind, performed_at: r.date, period_n: null, storage_path: path, filename, notes: note,
+              }).select('id').single();
+          if (ins.error || !ins.data) throw new Error(ins.error?.message ?? 'Could not save the record');
+          recordId = (ins.data as { id: string }).id;
+        }
         path = null;
         sync = {
           ...sync,
-          [f.id]: { chargerId: ch.id, assetTag: ch.asset_tag, kind: r.kind, recordId: (ins.data as { id: string }).id, date: r.date, syncedAt: new Date().toISOString(), syncedBy: by },
+          [f.id]: { target, chargerId: ch.id, assetTag: ch.asset_tag, kind: r.kind, recordId, date: r.date, syncedAt: new Date().toISOString(), syncedBy: by },
         };
         try {
           await store.setRegistrySync(workOrder.id, sync);
@@ -194,12 +248,12 @@ export function RegistrySyncModal({ workOrder, forms, by, onClose, onDone }: {
         }
         ok++;
       } catch (e) {
-        if (path) void supabase.storage.from(CHARGER_FORMS_BUCKET).remove([path]);
+        if (path) void supabase.storage.from(target === 'cpo' ? CPO_BUCKET : CHARGER_FORMS_BUCKET).remove([path]);
         setRow(f.id, { status: 'error', error: (e as Error).message });
       }
     }
     setRunning(false);
-    if (ok === todo.length && ok > 0) onDone(`${ok} form${ok === 1 ? '' : 's'} filed into the Charger Registry.`);
+    if (ok === todo.length && ok > 0) onDone(`${ok} form${ok === 1 ? '' : 's'} filed into ${target === 'cpo' ? 'CPO Chargers' : 'the Charger Registry'}.`);
   };
 
   const label: React.CSSProperties = { fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 };
@@ -214,22 +268,25 @@ export function RegistrySyncModal({ workOrder, forms, by, onClose, onDone }: {
       <div style={{ background: C.white, borderRadius: 20, padding: 28, width: 720, maxWidth: 'calc(100vw - 24px)', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>File into the Charger Registry</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{target === 'cpo' ? 'File into CPO Chargers' : 'File into the Charger Registry'}</div>
             <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>{workOrder.id} · {workOrder.customer}{workOrder.site ? ` · ${workOrder.site}` : ''}</div>
           </div>
           <button onClick={onClose} disabled={running} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: running ? 'default' : 'pointer', fontSize: 18, fontFamily: 'Figtree', flexShrink: 0 }}>×</button>
         </div>
 
         <div style={{ fontSize: 12, color: C.slate, lineHeight: 1.5 }}>
-          Each form becomes its own record on the charger you pick — a Form A or Form D inspection, or a breakdown report — with that form's PDF attached. Pick a different charger for each form when the job covered several.
+          {target === 'cpo'
+            ? "Each form becomes its own record on the CPO charger you pick — a Form A or Form D maintenance record (which moves that charger's next due date on), or a breakdown — with that form's PDF attached."
+            : "Each form becomes its own record on the charger you pick — a Form A or Form D inspection, or a breakdown report — with that form's PDF attached."}
+          {' '}Pick a different charger for each form when the job covered several.
         </div>
 
         {loadErr && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{loadErr}</div>}
         {chargers === null ? (
-          <div style={{ padding: 24, textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading the registry's chargers…</div>
+          <div style={{ padding: 24, textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading chargers…</div>
         ) : chargers.length === 0 ? (
           <div style={{ background: '#FFF8E1', color: '#B07D00', borderRadius: 10, padding: '12px 14px', fontSize: 12, fontWeight: 600 }}>
-            {workOrder.customer} has no chargers in the Charger Registry, so there is nothing to file into. Add its chargers in Charger Registry first.
+            {workOrder.customer} has no chargers {target === 'cpo' ? 'in CPO Chargers' : 'in the Charger Registry'}, so there is nothing to file into. Add its chargers there first.
           </div>
         ) : (
           forms.map((f) => {

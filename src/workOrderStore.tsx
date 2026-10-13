@@ -139,6 +139,8 @@ export interface WorkOrder {
 
 /** One form filed into a registry charger as a Form A / Form D / breakdown record. */
 export interface RegistrySyncEntry {
+  /** Where it was filed — absent on entries written before CPO filing existed (= registry). */
+  target?: 'registry' | 'cpo';
   chargerId: string;
   assetTag: string;
   kind: 'A' | 'D' | 'breakdown';

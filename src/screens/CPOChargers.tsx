@@ -77,6 +77,19 @@ interface MaintenanceRecord {
   created_at: string;
 }
 
+interface CpoBreakdown {
+  id: string;
+  charger_id: string;
+  breakdown_date: string;
+  description: string;
+  technician: string | null;
+  pdf_path: string | null;
+  pdf_filename: string | null;
+  work_order_id: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
 const MAINTENANCE_TYPE_LABEL: Record<MaintenanceType, string> = {
   preventive_form_a: 'Form A (6-mo PM)',
   preventive_form_d: 'Form D (12-mo PM)',
@@ -987,9 +1000,82 @@ function MaintenanceForm({ chargerId, onAdded }: MaintenanceFormProps) {
   );
 }
 
+// Log a breakdown by hand. Breakdown work orders approved in PIC Review land
+// here too (with their work order id).
+function BreakdownForm({ chargerId, onAdded }: { chargerId: string; onAdded: () => Promise<void> }) {
+  const { user } = usePermissions();
+  const [date, setDate] = useState(todayISO());
+  const [description, setDescription] = useState('');
+  const [technician, setTechnician] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const canSave = !!date && !!description.trim() && !saving;
+
+  const submit = async () => {
+    setSaving(true);
+    setError(null);
+    let pdf_path: string | null = null;
+    if (file) {
+      pdf_path = `chargers/${chargerId}/breakdowns/${crypto.randomUUID()}.pdf`;
+      const { error: upErr } = await supabase.storage.from(STORAGE_BUCKET).upload(pdf_path, file, { contentType: 'application/pdf' });
+      if (upErr) { setSaving(false); setError(`PDF upload failed: ${upErr.message}`); return; }
+    }
+    const { error: insErr } = await supabase.from('cpo_breakdowns').insert({
+      charger_id: chargerId, breakdown_date: date, description: description.trim(),
+      technician: technician.trim() || null, pdf_path, pdf_filename: file?.name ?? null,
+      created_by: user.full_name || user.email,
+    });
+    if (insErr) {
+      if (pdf_path) await supabase.storage.from(STORAGE_BUCKET).remove([pdf_path]);
+      setSaving(false);
+      setError(insErr.message);
+      return;
+    }
+    setDate(todayISO());
+    setDescription('');
+    setTechnician('');
+    setFile(null);
+    if (fileRef.current) fileRef.current.value = '';
+    await onAdded();
+    setSaving(false);
+  };
+
+  return (
+    <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: C.green }}>Log Breakdown</div>
+      {error && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '9px 12px', fontSize: 12, fontWeight: 600 }}>{error}</div>}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+        <div>
+          <FieldLabel>Breakdown Date</FieldLabel>
+          <input type="date" value={date} max={todayISO()} onChange={(e) => setDate(e.target.value)} style={inputStyle()} />
+        </div>
+        <div>
+          <FieldLabel>Technician</FieldLabel>
+          <input value={technician} onChange={(e) => setTechnician(e.target.value)} placeholder="Optional" style={inputStyle()} />
+        </div>
+      </div>
+      <div>
+        <FieldLabel>What broke down</FieldLabel>
+        <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="e.g. Gun B not charging — contactor replaced" style={inputStyle()} />
+      </div>
+      <div>
+        <FieldLabel>Report PDF (optional)</FieldLabel>
+        <input ref={fileRef} type="file" accept="application/pdf" onChange={(e) => setFile(e.target.files?.[0] ?? null)} style={{ ...inputStyle(), padding: 8 }} />
+      </div>
+      <button onClick={() => void submit()} disabled={!canSave}
+        style={{ alignSelf: 'flex-end', padding: '9px 20px', borderRadius: 10, border: 'none',
+          background: canSave ? C.green : '#ccc', color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: canSave ? 'pointer' : 'default' }}>
+        {saving ? 'Saving…' : '+ Add Breakdown'}
+      </button>
+    </div>
+  );
+}
+
 // ── Charger Detail Modal (tabs) ───────────────────────────────────
 
-type DetailTab = 'overview' | 'meter' | 'maintenance';
+type DetailTab = 'overview' | 'meter' | 'maintenance' | 'breakdown';
 
 interface DetailModalProps {
   charger: Charger;
@@ -1005,18 +1091,22 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
   const [tab, setTab] = useState<DetailTab>('overview');
   const [readings, setReadings] = useState<MeterReading[]>([]);
   const [maintenance, setMaintenance] = useState<MaintenanceRecord[]>([]);
+  const [breakdowns, setBreakdowns] = useState<CpoBreakdown[]>([]);
+  const [confirmBreakdownId, setConfirmBreakdownId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [confirmReadingId, setConfirmReadingId] = useState<string | null>(null);
   const [confirmMaintenanceId, setConfirmMaintenanceId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   const fetchAll = async () => {
-    const [r1, r2] = await Promise.all([
+    const [r1, r2, r3] = await Promise.all([
       supabase.from('cpo_meter_readings').select('*').eq('charger_id', charger.id).order('reading_date', { ascending: false }),
       supabase.from('cpo_maintenance_records').select('*').eq('charger_id', charger.id).order('performed_date', { ascending: false }),
+      supabase.from('cpo_breakdowns').select('*').eq('charger_id', charger.id).order('breakdown_date', { ascending: false }).order('created_at', { ascending: false }),
     ]);
     setReadings((r1.data as MeterReading[]) ?? []);
     setMaintenance((r2.data as MaintenanceRecord[]) ?? []);
+    setBreakdowns((r3.data as CpoBreakdown[]) ?? []);
     setLoading(false);
   };
 
@@ -1042,6 +1132,15 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
     await fetchAll();
     setDeleting(false);
     setConfirmMaintenanceId(null);
+  };
+
+  const deleteBreakdown = async (rec: CpoBreakdown) => {
+    setDeleting(true);
+    if (rec.pdf_path) await supabase.storage.from(STORAGE_BUCKET).remove([rec.pdf_path]);
+    await supabase.from('cpo_breakdowns').delete().eq('id', rec.id);
+    await fetchAll();
+    setDeleting(false);
+    setConfirmBreakdownId(null);
   };
 
   const viewPdf = async (path: string) => {
@@ -1071,6 +1170,7 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
     { id: 'overview',    label: 'Overview' },
     { id: 'meter',       label: 'Meter Readings', count: readings.length },
     { id: 'maintenance', label: 'Maintenance',    count: maintenance.length },
+    { id: 'breakdown',   label: 'Breakdowns',     count: breakdowns.length },
   ];
 
   return (
@@ -1251,6 +1351,71 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
                     ))}
                   </tbody>
                 </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === 'breakdown' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {canEdit && <BreakdownForm chargerId={charger.id} onAdded={refreshAndParent} />}
+            {loading ? (
+              <div style={{ padding: 24, textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</div>
+            ) : breakdowns.length === 0 ? (
+              <div style={{ padding: 24, textAlign: 'center', color: C.slate, fontSize: 13, background: C.white, border: '1px dashed #EBEBEB', borderRadius: 12 }}>
+                No breakdowns recorded.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {breakdowns.map((b) => (
+                  <div key={b.id} style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 14 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: C.green }}>{fmtDate(b.breakdown_date)}</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: '#FDEAEA', color: '#C0321A', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Breakdown</span>
+                        {b.work_order_id && <span style={{ fontSize: 11, color: C.slate }}>· from {b.work_order_id}</span>}
+                      </div>
+                      <div style={{ fontSize: 13, color: '#1a1a1a' }}>{b.description}</div>
+                      {(b.technician || b.pdf_filename) && (
+                        <div style={{ fontSize: 11, color: C.slate, marginTop: 2 }}>{[b.technician, b.pdf_filename].filter(Boolean).join(' · ')}</div>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                      {b.pdf_path && (
+                        <>
+                          <button onClick={() => viewPdf(b.pdf_path!)} title="View PDF"
+                            style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                            View
+                          </button>
+                          <button onClick={() => downloadPdf(b.pdf_path!, b.pdf_filename)} title="Download PDF"
+                            style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                            <DownloadIcon size={12} strokeWidth={2.25} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }} /> PDF
+                          </button>
+                        </>
+                      )}
+                      {canDelete && (
+                        confirmBreakdownId === b.id ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#FDEAEA', borderRadius: 8, padding: '6px 10px' }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: '#C0321A' }}>Delete this breakdown{b.pdf_path ? ' + PDF' : ''}?</span>
+                            <button onClick={() => setConfirmBreakdownId(null)} disabled={deleting}
+                              style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #FDEAEA', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                              Cancel
+                            </button>
+                            <button onClick={() => void deleteBreakdown(b)} disabled={deleting}
+                              style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: deleting ? 'default' : 'pointer' }}>
+                              {deleting ? 'Deleting…' : 'Yes, delete'}
+                            </button>
+                          </div>
+                        ) : (
+                          <button onClick={() => setConfirmBreakdownId(b.id)}
+                            style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                            Delete
+                          </button>
+                        )
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
