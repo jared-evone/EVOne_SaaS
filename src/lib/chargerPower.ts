@@ -17,3 +17,23 @@ export function parseChargerPower(label: string | null | undefined): ChargerPowe
 }
 
 export const fmtKw = (kw: number) => `${Number.isInteger(kw) ? kw : kw.toFixed(1)} kW`;
+
+// Filter / grouping key for a charger's size: "DC-120", "AC-22", or unknown.
+export const UNKNOWN_POWER = 'unknown';
+export function powerKeyOf(label: string | null | undefined): string {
+  const p = parseChargerPower(label);
+  return p ? `${p.current}-${p.kw}` : UNKNOWN_POWER;
+}
+export function powerKeyLabel(key: string): string {
+  if (key === UNKNOWN_POWER) return 'No kW in Brand & Model';
+  const [cur, kw] = key.split('-');
+  return `${fmtKw(Number(kw))} ${cur}`;
+}
+// DC before AC, bigger first, unknown last.
+export function comparePowerKeys(a: string, b: string): number {
+  if (a === UNKNOWN_POWER || b === UNKNOWN_POWER) return a === b ? 0 : a === UNKNOWN_POWER ? 1 : -1;
+  const [ca, ka] = a.split('-');
+  const [cb, kb] = b.split('-');
+  if (ca !== cb) return ca === 'DC' ? -1 : 1;
+  return Number(kb) - Number(ka);
+}

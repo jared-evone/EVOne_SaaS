@@ -19,6 +19,7 @@ import {
 } from './Customers';
 import { IMPORT_NOTE } from './RegistryInvoiceImport';
 import { FilterSelect, selectionCount, type FilterGroup, type FilterSelection } from '../components/FilterSelect';
+import { powerKeyOf, powerKeyLabel, comparePowerKeys } from '../lib/chargerPower';
 import { takeRegistryTarget, type RegistryTarget } from '../lib/registryNav';
 import { CustomerCreateModal, type CreatedCustomer } from '../components/CustomerCreateModal';
 
@@ -154,6 +155,8 @@ function SearchSelect({ value, options, onChange, disabled, placeholder, addNewL
 
 // ── Top-level screen ──────────────────────────────────────────────
 
+const NO_MODEL = '__none__';
+
 
 export function ScreenProjects() {
   const { can } = usePermissions();
@@ -164,6 +167,8 @@ export function ScreenProjects() {
   const [customers, setCustomers] = useState<CustomerLite[]>([]);
   const [siteCounts, setSiteCounts]       = useState<Record<string, number>>({});
   const [chargerCounts, setChargerCounts] = useState<Record<string, number>>({});
+  // Per registry: each charger's size key + Brand & Model, for the charger filters.
+  const [chargerSpecs, setChargerSpecs] = useState<Record<string, { power: string; model: string }[]>>({});
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState<string | null>(null);
   const [search, setSearch]       = useState('');
@@ -189,7 +194,7 @@ export function ScreenProjects() {
       supabase.from('projects').select('*').order('created_at', { ascending: false }).order('id', { ascending: true }),
       supabase.from('customers').select('id, name, type').order('name'),
       supabase.from('project_sites').select('id, project_id'),
-      supabase.from('site_chargers').select('site_id'),
+      supabase.from('site_chargers').select('site_id, brand_model'),
     ]);
     setLoading(false);
     if (pErr) { setError(pErr.message); return; }
@@ -199,14 +204,21 @@ export function ScreenProjects() {
 
     // Site + charger counts per registry entry (project).
     const sites = (siteData ?? []) as { id: string; project_id: string }[];
-    const chargers = (chargerData ?? []) as { site_id: string }[];
+    const chargers = (chargerData ?? []) as { site_id: string; brand_model: string | null }[];
     const siteToProject = new Map(sites.map((s) => [s.id, s.project_id]));
     const sc: Record<string, number> = {};
     for (const s of sites) sc[s.project_id] = (sc[s.project_id] ?? 0) + 1;
     const cc: Record<string, number> = {};
-    for (const ch of chargers) { const pid = siteToProject.get(ch.site_id); if (pid) cc[pid] = (cc[pid] ?? 0) + 1; }
+    const specs: Record<string, { power: string; model: string }[]> = {};
+    for (const ch of chargers) {
+      const pid = siteToProject.get(ch.site_id);
+      if (!pid) continue;
+      cc[pid] = (cc[pid] ?? 0) + 1;
+      (specs[pid] ??= []).push({ power: powerKeyOf(ch.brand_model), model: ch.brand_model?.trim() || NO_MODEL });
+    }
     setSiteCounts(sc);
     setChargerCounts(cc);
+    setChargerSpecs(specs);
   };
   useEffect(() => { void fetchAll(); }, []);
 
@@ -218,6 +230,15 @@ export function ScreenProjects() {
     return !vs?.length || vs.some(test);
   };
   const typeOf = (p: Project): string => customerById(p.customer_id)?.type ?? '';
+
+  // Charger filters act per charger (size AND model must both match the same
+  // charger); a registry shows when at least one of its chargers matches.
+  const specFilterActive = !!(filters.power?.length || filters.model?.length);
+  const matchingChargers = (p: Project) => (chargerSpecs[p.id] ?? []).filter((c) =>
+    anyOf('power', (v) => c.power === v) && anyOf('model', (v) => c.model === v)).length;
+  const registriesWith = (test: (c: { power: string; model: string }) => boolean) =>
+    projects.filter((p) => (chargerSpecs[p.id] ?? []).some(test)).length;
+  const allSpecs = Object.values(chargerSpecs).flat();
 
   const filterGroups: FilterGroup[] = [
     {
@@ -233,11 +254,22 @@ export function ScreenProjects() {
         .map((t) => ({ value: t, label: TYPE_LABEL[t], sub: String(projects.filter((p) => typeOf(p) === t).length) }))
         .filter((o) => o.sub !== '0'),
     },
+    {
+      key: 'power', label: 'Charger power',
+      options: [...new Set(allSpecs.map((c) => c.power))].sort(comparePowerKeys)
+        .map((k) => ({ value: k, label: powerKeyLabel(k), sub: String(registriesWith((c) => c.power === k)) })),
+    },
+    {
+      key: 'model', label: 'Brand & model',
+      options: [...new Set(allSpecs.map((c) => c.model))].sort((a, b) => (a === NO_MODEL ? 1 : b === NO_MODEL ? -1 : a.localeCompare(b)))
+        .map((m) => ({ value: m, label: m === NO_MODEL ? 'No brand & model set' : m, sub: String(registriesWith((c) => c.model === m)) })),
+    },
   ].filter((g) => g.options.length > 0);
 
   const visible = projects.filter((p) => {
     if (!anyOf('status', (v) => p.status === v)) return false;
     if (!anyOf('type', (v) => typeOf(p) === v)) return false;
+    if (specFilterActive && matchingChargers(p) === 0) return false;
     if (!search) return true;
     const q = search.toLowerCase();
     const customerName = customerById(p.customer_id)?.name ?? '';
@@ -292,6 +324,7 @@ export function ScreenProjects() {
         {(selectionCount(filters) > 0 || search) && (
           <span style={{ fontSize: 11.5, color: C.slate, fontWeight: 600 }}>
             {visible.length} match{visible.length === 1 ? '' : 'es'}
+            {specFilterActive && ` · ${visible.reduce((n, p) => n + matchingChargers(p), 0)} matching chargers`}
           </span>
         )}
         {canEdit && (
@@ -353,7 +386,11 @@ export function ScreenProjects() {
                       </span>
                     </td>
                     <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer', fontSize: 13, color: '#1a1a1a' }}>{siteCounts[p.id] ?? 0}</td>
-                    <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.green }}>{chargerCount}</td>
+                    <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer', fontSize: 13, fontWeight: 700, color: C.green, whiteSpace: 'nowrap' }}>
+                      {specFilterActive
+                        ? <>{matchingChargers(p)}<span style={{ fontSize: 11, fontWeight: 600, color: C.slate }}> of {chargerCount}</span></>
+                        : chargerCount}
+                    </td>
                     <td onClick={open} style={{ padding: '13px 16px', color: C.slate, fontSize: 12, whiteSpace: 'nowrap', cursor: 'pointer' }}>
                       {new Date(p.updated_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
                     </td>
