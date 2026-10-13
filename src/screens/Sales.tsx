@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
 import { useIsMobile } from '../lib/useIsMobile';
 import { CustomerCreateModal, type CreatedCustomer } from '../components/CustomerCreateModal';
-import { Search, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Handshake, FileUp, FileText, X, Plus } from 'lucide-react';
+import { Search, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Handshake, FileUp, FileText, X, Plus, Archive, ArchiveRestore } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -65,6 +65,8 @@ export interface Quote {
   lost_reason: string | null;
   won_at: string | null;
   won_stage?: WonStage | null;
+  archived_at?: string | null;
+  archived_by?: string | null;
   ehvcg: boolean;
   high_potential: boolean;
   referral: boolean;
@@ -225,6 +227,11 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
   const canEdit = can(P.screen, 'can_edit');
   const canDelete = can(P.screen, 'can_delete');
   const isMobile = useIsMobile();
+  const me = user.full_name || user.email;
+  // Archived quotes leave the board and list (still counted in won value / win
+  // rate) and live on the Archived shelf, where they can be restored.
+  const [shelf, setShelf] = useState<'active' | 'archived'>('active');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [customers, setCustomers] = useState<CustomerOpt[]>([]);
@@ -330,8 +337,20 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
     : myPerson;
   const canCreate = isAdmin ? activeSales.length > 0 : !!myPerson;
 
+  const activeScoped = scoped.filter((q) => !q.archived_at);
+  const archivedScoped = scoped.filter((q) => !!q.archived_at);
+
+  const setArchived = async (ids: string[], archive: boolean) => {
+    if (!canEdit || ids.length === 0) return;
+    const patch = archive ? { archived_at: new Date().toISOString(), archived_by: me } : { archived_at: null, archived_by: null };
+    setQuotes((qs) => qs.map((q) => (ids.includes(q.id) ? { ...q, ...patch } : q)));
+    setSelected(new Set());
+    const { error: err } = await supabase.from(P.table).update(patch).in('id', ids);
+    if (err) { setError(err.message); void fetchAll(); }
+  };
+
   // Filters (within the scoped pipeline)
-  const visible = scoped.filter((q) => {
+  const visible = (shelf === 'active' ? activeScoped : archivedScoped).filter((q) => {
     if (statusFilter !== 'all' && q.status !== statusFilter) return false;
     if (month) {
       const d = monthBasis === 'status' ? q.outcome_date : q.quote_date;
@@ -342,8 +361,9 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
     return true;
   });
 
-  // KPIs (scoped pipeline)
-  const open = scoped.filter((q) => q.status === 'Draft' || q.status === 'Sent');
+  // KPIs (scoped pipeline). Open work ignores archived quotes; won / lost keep
+  // them, so archiving old deals never rewrites the track record.
+  const open = activeScoped.filter((q) => q.status === 'Draft' || q.status === 'Sent');
   const won = scoped.filter((q) => q.status === 'Won');
   const lost = scoped.filter((q) => q.status === 'Lost');
   const pipelineValue = open.reduce((s, q) => s + Number(q.total), 0);
@@ -372,7 +392,7 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
         <KPICard label="Won Value" value={fmtMoney(wonValue)}
           sub={<><div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>This month: {fmtMoney(wonValueThisMonth)}</div><div style={{ marginTop: 4 }}>{won.length} won</div></>} />
         <KPICard label="Engaging Leads" value={String(open.length)}
-          sub={<><div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>This month: {openThisMonth.length}</div><div style={{ marginTop: 4 }}>{scoped.filter((q) => q.status === 'Sent').length} awaiting response</div></>} />
+          sub={<><div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>This month: {openThisMonth.length}</div><div style={{ marginTop: 4 }}>{activeScoped.filter((q) => q.status === 'Sent').length} awaiting response</div></>} />
         <KPICard label="Win Rate" value={winRate === null ? '—' : `${winRate}%`} sub={`${won.length} won · ${lost.length} lost`} />
       </div>
 
@@ -424,14 +444,22 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
         )}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
           <div style={{ display: 'flex', gap: 4, background: C.white, borderRadius: 10, padding: 3, border: '1px solid #EBEBEB' }}>
+            {([['active', 'Active'], ['archived', `Archived · ${archivedScoped.length}`]] as const).map(([k, l]) => (
+              <button key={k} onClick={() => { setShelf(k); setSelected(new Set()); }}
+                style={{ padding: '6px 14px', borderRadius: 8, border: 'none', fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', background: shelf === k ? C.green : 'transparent', color: shelf === k ? C.white : C.slate, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                {k === 'archived' && <Archive size={12} strokeWidth={2.25} />}{l}
+              </button>
+            ))}
+          </div>
+          {shelf === 'active' && <div style={{ display: 'flex', gap: 4, background: C.white, borderRadius: 10, padding: 3, border: '1px solid #EBEBEB' }}>
             {([['pipeline', 'Pipeline'], ['list', 'List']] as const).map(([k, l]) => (
               <button key={k} onClick={() => setView(k)}
                 style={{ padding: '6px 14px', borderRadius: 8, border: 'none', fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', background: view === k ? C.green : 'transparent', color: view === k ? C.white : C.slate }}>
                 {l}
               </button>
             ))}
-          </div>
-          {canEdit && canCreate && (
+          </div>}
+          {canEdit && canCreate && shelf === 'active' && (
             <button onClick={() => setModal({ mode: 'new' })}
               style={{ padding: '9px 18px', borderRadius: 10, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
               + New Quote
@@ -456,14 +484,39 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
           </div>
           <div style={{ fontSize: 12, color: C.slate }}>Create a quote for a customer from the Customers tab.</div>
         </div>
+      ) : shelf === 'archived' ? (
+        <QuoteTable quotes={visible} onOpen={(q) => setModal({ mode: 'edit', quote: q })}
+          onRestore={canEdit ? (q) => void setArchived([q.id], false) : undefined} emptyText="No archived quotes match." />
       ) : view === 'pipeline' ? (
         <PipelineBoard quotes={visible} canEdit={canEdit} onOpen={(q) => setModal({ mode: 'edit', quote: q })} onDropStatus={setStatus} />
       ) : (
-        <QuoteTable quotes={visible} onOpen={(q) => setModal({ mode: 'edit', quote: q })} />
+        <>
+          {canEdit && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, color: C.slate, marginTop: -8 }}>
+              {selected.size > 0 ? (
+                <>
+                  <span style={{ fontWeight: 700, color: '#1a1a1a' }}>{selected.size} selected</span>
+                  <button onClick={() => void setArchived([...selected], true)}
+                    style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <Archive size={13} /> Archive selected
+                  </button>
+                  <button onClick={() => setSelected(new Set())} style={{ border: 'none', background: 'none', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Clear</button>
+                </>
+              ) : (
+                <span>Tick quotes to archive them in one go — e.g. filter to Lost, tick the header box, archive.</span>
+              )}
+            </div>
+          )}
+          <QuoteTable quotes={visible} onOpen={(q) => setModal({ mode: 'edit', quote: q })}
+            selectable={canEdit} selected={selected}
+            onToggle={(id) => setSelected((cur) => { const n = new Set(cur); if (n.has(id)) n.delete(id); else n.add(id); return n; })}
+            onToggleAll={(ids) => setSelected((cur) => (ids.every((id) => cur.has(id)) ? new Set() : new Set(ids)))} />
+        </>
       )}
 
       {modal && (
         <QuoteModal
+          onArchive={(q, archive) => void setArchived([q.id], archive).then(() => setModal(null))}
           table={P.table}
           filePrefix={P.filePrefix}
           quote={modal.mode === 'edit' ? modal.quote : null}
@@ -693,35 +746,75 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
 
 // ── List view ────────────────────────────────────────────────────
 
-function QuoteTable({ quotes, onOpen }: { quotes: Quote[]; onOpen: (q: Quote) => void }) {
+function QuoteTable({ quotes, onOpen, selectable, selected, onToggle, onToggleAll, onRestore, emptyText }: {
+  quotes: Quote[];
+  onOpen: (q: Quote) => void;
+  selectable?: boolean;
+  selected?: Set<string>;
+  onToggle?: (id: string) => void;
+  onToggleAll?: (ids: string[]) => void;
+  /** Archived shelf: a Restore button per row. */
+  onRestore?: (q: Quote) => void;
+  emptyText?: string;
+}) {
   const th: React.CSSProperties = {
     padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate,
     letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB',
   };
+  const archived = !!onRestore || quotes.some((q) => q.archived_at);
+  const allOn = quotes.length > 0 && quotes.every((q) => selected?.has(q.id));
+  const box: React.CSSProperties = { width: 15, height: 15, accentColor: C.green, cursor: 'pointer', margin: 0 };
+  const headers = ['Ref', 'Customer', 'Salesperson', 'Value', 'Status', 'Date', archived ? 'Archived' : 'PDF'];
   return (
     <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
       <table style={{ width: '100%', minWidth: 820, borderCollapse: 'collapse', fontSize: 13 }}>
         <thead>
           <tr style={{ background: C.seasalt }}>
-            {['Ref', 'Customer', 'Salesperson', 'Value', 'Status', 'Date', 'PDF'].map((h) => <th key={h} style={th}>{h}</th>)}
+            {selectable && (
+              <th style={{ ...th, width: 36, paddingRight: 0 }}>
+                <input type="checkbox" checked={allOn} onChange={() => onToggleAll?.(quotes.map((q) => q.id))} title="Select all shown" style={box} />
+              </th>
+            )}
+            {headers.map((h) => <th key={h} style={th}>{h}</th>)}
+            {onRestore && <th style={th} />}
           </tr>
         </thead>
         <tbody>
-          {quotes.map((q) => (
-            <tr key={q.id} onClick={() => onOpen(q)} style={{ borderBottom: '1px solid #F3F3F3', cursor: 'pointer' }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = '#FAFAFA'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
-              <td style={{ padding: '13px 16px', fontWeight: 700, color: C.green }}>{q.ref}</td>
-              <td style={{ padding: '13px 16px', fontWeight: 600 }}>{q.customer_name}</td>
-              <td style={{ padding: '13px 16px', color: C.slate }}>{q.salesperson_name}</td>
-              <td style={{ padding: '13px 16px', fontWeight: 700, color: C.green }}>{fmtMoney(Number(q.total))}</td>
-              <td style={{ padding: '13px 16px' }}><QuoteBadge status={q.status} /></td>
-              <td style={{ padding: '13px 16px', color: C.slate }}>{q.quote_date}</td>
-              <td style={{ padding: '13px 16px', color: C.slate }}>{q.pdf_path ? '✓' : '—'}</td>
-            </tr>
-          ))}
+          {quotes.map((q) => {
+            const on = !!selected?.has(q.id);
+            return (
+              <tr key={q.id} onClick={() => onOpen(q)} style={{ borderBottom: '1px solid #F3F3F3', cursor: 'pointer', background: on ? C.honeydew : 'transparent' }}
+                onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = '#FAFAFA'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = on ? C.honeydew : 'transparent'; }}>
+                {selectable && (
+                  <td style={{ padding: '13px 0 13px 16px' }} onClick={(e) => e.stopPropagation()}>
+                    <input type="checkbox" checked={on} onChange={() => onToggle?.(q.id)} style={box} />
+                  </td>
+                )}
+                <td style={{ padding: '13px 16px', fontWeight: 700, color: C.green }}>{q.ref}</td>
+                <td style={{ padding: '13px 16px', fontWeight: 600 }}>{q.customer_name}</td>
+                <td style={{ padding: '13px 16px', color: C.slate }}>{q.salesperson_name}</td>
+                <td style={{ padding: '13px 16px', fontWeight: 700, color: C.green }}>{fmtMoney(Number(q.total))}</td>
+                <td style={{ padding: '13px 16px' }}><QuoteBadge status={q.status} /></td>
+                <td style={{ padding: '13px 16px', color: C.slate }}>{q.quote_date}</td>
+                <td style={{ padding: '13px 16px', color: C.slate, whiteSpace: 'nowrap' }}>
+                  {archived
+                    ? <>{q.archived_at ? q.archived_at.slice(0, 10) : '—'}{q.archived_by && <div style={{ fontSize: 11 }}>by {q.archived_by}</div>}</>
+                    : (q.pdf_path ? '✓' : '—')}
+                </td>
+                {onRestore && (
+                  <td style={{ padding: '13px 16px', textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
+                    <button onClick={() => onRestore(q)}
+                      style={{ padding: '6px 12px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}>
+                      <ArchiveRestore size={13} /> Restore
+                    </button>
+                  </td>
+                )}
+              </tr>
+            );
+          })}
           {quotes.length === 0 && (
-            <tr><td colSpan={8} style={{ padding: '32px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No quotes match the filters.</td></tr>
+            <tr><td colSpan={headers.length + 2} style={{ padding: '32px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>{emptyText ?? 'No quotes match the filters.'}</td></tr>
           )}
         </tbody>
       </table>
@@ -731,7 +824,8 @@ function QuoteTable({ quotes, onOpen }: { quotes: Quote[]; onOpen: (q: Quote) =>
 
 // ── Create / edit modal ──────────────────────────────────────────
 
-function QuoteModal({ table, filePrefix, quote, customers, salespersonId, salespersonName, salespeople, lockSalesperson, canEdit, canDelete, isAdmin, costOptions, onCostOptionsChanged, onClose, onSaved }: {
+function QuoteModal({ onArchive, table, filePrefix, quote, customers, salespersonId, salespersonName, salespeople, lockSalesperson, canEdit, canDelete, isAdmin, costOptions, onCostOptionsChanged, onClose, onSaved }: {
+  onArchive: (q: Quote, archive: boolean) => void;
   table: string;
   filePrefix: string;
   quote: Quote | null;
@@ -1018,6 +1112,12 @@ function QuoteModal({ table, filePrefix, quote, customers, salespersonId, salesp
           <button onClick={onClose} style={{ border: 'none', background: '#F3F3F3', borderRadius: 8, width: 32, height: 32, cursor: 'pointer', fontSize: 16, color: C.slate }}>×</button>
         </div>
 
+        {quote?.archived_at && (
+          <div style={{ background: '#F3F3F3', color: '#767B77', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Archive size={14} style={{ flexShrink: 0 }} />
+            Archived on {quote.archived_at.slice(0, 10)}{quote.archived_by ? ` by ${quote.archived_by}` : ''} — it's off the pipeline. Restore puts it back.
+          </div>
+        )}
         {error && (
           <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{error}</div>
         )}
@@ -1397,10 +1497,18 @@ function QuoteModal({ table, filePrefix, quote, customers, salespersonId, salesp
         <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', alignItems: 'center' }}>
           {!isNew && canDelete && !confirmDelete && (
             <button onClick={() => setConfirmDelete(true)}
-              style={{ marginRight: 'auto', padding: '9px 16px', borderRadius: 10, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+              style={{ padding: '9px 16px', borderRadius: 10, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
               Delete
             </button>
           )}
+          {!isNew && canEdit && !confirmDelete && (
+            <button onClick={() => onArchive(quote!, !quote!.archived_at)}
+              title={quote!.archived_at ? 'Put this quote back on the pipeline' : 'Take this quote off the pipeline — find it later under Archived'}
+              style={{ padding: '9px 16px', borderRadius: 10, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              {quote!.archived_at ? <><ArchiveRestore size={14} /> Restore</> : <><Archive size={14} /> Archive</>}
+            </button>
+          )}
+          <span style={{ marginRight: 'auto' }} />
           <button onClick={onClose} style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
             {readOnly ? 'Close' : 'Cancel'}
           </button>
