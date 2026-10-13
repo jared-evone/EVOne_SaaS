@@ -46,6 +46,7 @@ function fmt12h(t: string): string {
 
 // Review cards per page in the list pane.
 const PER_PAGE = 5;
+const NO_PIC = '__none__';
 
 // Weekly view (Mon–Sun) for the review meeting. Dates are local YYYY-MM-DD.
 const isoDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -283,7 +284,7 @@ export function PICReviewBoard() {
   // Everything a reviewer might recognise a job by — ref, company, site, title,
   // technician, category, submitted date.
   const haystack = (w: WorkOrder) =>
-    [w.id, w.customer, w.site ?? '', w.title, assigneesLabel(w, ''), w.category ?? '', woDate(w)]
+    [w.id, w.customer, w.site ?? '', w.title, assigneesLabel(w, ''), w.pic ?? '', w.category ?? '', woDate(w)]
       .join(' ')
       .toLowerCase();
 
@@ -319,6 +320,10 @@ export function PICReviewBoard() {
       key: 'date', label: 'Date',
       options: [{ value: 'this_month', label: 'This month', sub: String(tabList.filter((w) => woDate(w).startsWith(thisMonth)).length) }],
     },
+    {
+      key: 'pic', label: 'PIC',
+      options: countBy((w) => [w.pic || NO_PIC]).map(([v, n]) => ({ value: v, label: v === NO_PIC ? 'No PIC set' : v, sub: String(n) })),
+    },
     { key: 'tech',     label: 'Technician', options: asOptions(countBy((w) => assigneesOf(w))) },
     { key: 'category', label: 'Category',   options: asOptions(countBy((w) => [w.category ?? ''])) },
     { key: 'company',  label: 'Company',    options: asOptions(countBy((w) => [w.customer])) },
@@ -333,6 +338,7 @@ export function PICReviewBoard() {
     anyOf('type',     (v) => (v === 'cpo' ? isCpoWo(w) : !isCpoWo(w))) &&
     anyOf('sync',     (v) => (v === 'synced' ? pushedIds.has(w.id) : !pushedIds.has(w.id))) &&
     anyOf('date',     () => woDate(w).startsWith(thisMonth)) &&
+    anyOf('pic',      (v) => (w.pic || NO_PIC) === v) &&
     anyOf('tech',     (v) => assigneesOf(w).includes(v)) &&
     anyOf('category', (v) => (w.category ?? '') === v) &&
     anyOf('company',  (v) => w.customer === v);
@@ -500,6 +506,10 @@ export function PICReviewBoard() {
               <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{w.title || w.customer}</div>
               <div style={{ fontSize: 12, color: C.slate }}>{w.customer}</div>
               <div style={{ fontSize: 11, color: C.slate }}>{w.product ? `${w.product} · ` : ''}{assigneesLabel(w, '—')}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 99, background: w.pic ? C.honeydew : '#F3F3F3', color: w.pic ? C.green : '#767B77', letterSpacing: '0.04em' }}>PIC</span>
+                <span style={{ fontWeight: w.pic ? 700 : 400, color: w.pic ? '#1a1a1a' : C.slate }}>{w.pic || 'Not set'}</span>
+              </div>
               {w.response?.submittedAt && (
                 <div style={{ fontSize: 10, color: C.slate, marginTop: 2 }}>
                   Submitted {w.response.submittedAt}
@@ -647,6 +657,7 @@ function PICReportEditor({ workOrder, alreadyPushed = false, onPushed, onDeleted
   const isCpo = !!chargerCode && / · CPO$/.test(chargerVal);
   const auditLine = (
     <>
+      {workOrder.pic && <>PIC {workOrder.pic} · </>}
       {workOrder.response?.submittedAt && <>Submitted by {workOrder.response.submittedBy} on {workOrder.response.submittedAt}</>}
       {workOrder.response?.editedAt && <>{' '}· Last edited by {workOrder.response.editedBy} on {workOrder.response.editedAt}</>}
     </>

@@ -126,6 +126,9 @@ export interface WorkOrder {
   /** Assigned technician(s). Work orders created before multi-assign hold a
    *  single name string — always read this through assigneesOf(). */
   assignedTo: string | string[] | null;
+  /** Person in charge — the staff member who owns the ticket. Optional;
+   *  absent on work orders created before PICs were assigned. */
+  pic?: string | null;
   forms: WorkOrderForm[];      // one or more form instances to complete
   response: FormResponse | null;
   /** Optional — absent on work orders reviewed before the feature existed. */
@@ -198,6 +201,7 @@ interface Store {
   renameWorkOrder(workOrderId: string, title: string): void;
   setWorkOrderCategory(workOrderId: string, category: string | null): void;
   setWorkOrderInstructions(workOrderId: string, instructions: string | null): void;
+  setWorkOrderPic(workOrderId: string, pic: string | null): void;
   reschedule(workOrderId: string, date: string): void;
   deleteWorkOrder(workOrderId: string): void;
   saveTemplate(template: FormTemplate): void;
@@ -482,6 +486,15 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
           if (w.id !== id) return w;
           patchWorkOrder(id, { instructions });
           return { ...w, instructions };
+        }),
+      ),
+
+    setWorkOrderPic: (id, pic) =>
+      setWorkOrders((ws) =>
+        ws.map((w) => {
+          if (w.id !== id) return w;
+          patchWorkOrder(id, { pic });
+          return { ...w, pic };
         }),
       ),
 

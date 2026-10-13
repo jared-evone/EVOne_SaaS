@@ -399,7 +399,10 @@ export function WorkOrdersAdmin() {
                     )}
                   </td>
                   <td style={{ padding: '11px 14px', color: C.slate }}>{formLabel(w) || '—'}</td>
-                  <td style={{ padding: '11px 14px', color: C.slate }}>{assigneesLabel(w, '—')}</td>
+                  <td style={{ padding: '11px 14px', color: C.slate }}>
+                    {assigneesLabel(w, '—')}
+                    {w.pic && <div style={{ fontSize: 11, marginTop: 2 }}><span style={{ fontWeight: 700, color: C.green }}>PIC</span> {w.pic}</div>}
+                  </td>
                   <td style={{ padding: '11px 14px', color: C.slate }}>{w.scheduledDate}</td>
                   <td style={{ padding: '11px 14px' }}>
                     <span
@@ -494,6 +497,7 @@ function WorkOrderModal({
     scheduledDate: workOrder?.scheduledDate ?? new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10),
     priority: workOrder?.priority ?? ('normal' as 'low' | 'normal' | 'high'),
     assignedTo: assigneesOf(workOrder ?? { assignedTo: null }),
+    pic: workOrder?.pic ?? '',
   });
 
   // A work order can bundle several forms, each with a quantity.
@@ -581,6 +585,32 @@ function WorkOrderModal({
     return () => { cancelled = true; };
   }, []);
 
+  // PICs are the staff who can open PIC Review in Technical Service.
+  const [pics, setPics] = useState<string[]>([]);
+  const [picsLoading, setPicsLoading] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const { data: grants } = await supabase.from('app_user_permissions').select('user_id')
+        .eq('department', 'tech').eq('screen_key', 'tsd_pic').eq('can_view', true);
+      const ids = [...new Set(((grants ?? []) as { user_id: string }[]).map((g) => g.user_id))];
+      const { data: users } = ids.length
+        ? await supabase.from('app_users').select('full_name, email, is_active').in('id', ids)
+        : { data: [] };
+      if (cancelled) return;
+      const names = ((users ?? []) as { full_name: string | null; email: string; is_active: boolean | null }[])
+        .filter((u) => u.is_active !== false).map((u) => (u.full_name || u.email).trim());
+      setPics([...new Set(names)].sort((a, b) => a.localeCompare(b)));
+      setPicsLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  const picOptions: BrandSelectOption[] = [
+    { value: '', label: '— No PIC —' },
+    ...pics.map((n) => ({ value: n, label: n })),
+    ...(form.pic && !pics.includes(form.pic) ? [{ value: form.pic, label: form.pic }] : []),
+  ];
+
   const canCreate = !!form.customerId && (selectedEntry?.source === 'cpo' || !!form.siteId) && totalForms > 0;
 
   // Titles aren't hand-typed — they're always "Category - Customer" (or just the
@@ -616,6 +646,7 @@ function WorkOrderModal({
         priority: form.priority,
         forms,
         assignedTo: form.assignedTo,
+        pic: form.pic || null,
       });
     } else if (workOrder) {
       // Reassign without resetting an in-flight status back to "assigned".
@@ -626,6 +657,7 @@ function WorkOrderModal({
         if ((form.category ?? null) !== (workOrder.category ?? null)) store.setWorkOrderCategory(workOrder.id, form.category ?? null);
         const instr = form.instructions.trim() || null;
         if (instr !== (workOrder.instructions ?? null)) store.setWorkOrderInstructions(workOrder.id, instr);
+        if ((form.pic || null) !== (workOrder.pic ?? null)) store.setWorkOrderPic(workOrder.id, form.pic || null);
       }
     }
     onClose();
@@ -799,6 +831,20 @@ function WorkOrderModal({
             rows={4}
             style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box', resize: 'vertical', lineHeight: 1.5, background: fieldsLocked ? C.seasalt : C.white, color: fieldsLocked ? C.slate : '#1a1a1a' }}
           />
+        </FormRow>
+        <FormRow label="PIC (person in charge)">
+          <SearchSelect
+            value={form.pic}
+            options={picOptions}
+            onChange={(v) => setForm((f) => ({ ...f, pic: v }))}
+            loading={picsLoading}
+            disabled={fieldsLocked}
+            placeholder="— No PIC —"
+            emptyText="No one has PIC Review access yet"
+          />
+          <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>
+            Who owns this ticket. Anyone with PIC Review access in Technical Service can be picked.
+          </div>
         </FormRow>
         <FormRow label={form.assignedTo.length > 1 ? 'Assigned technicians' : 'Assigned technician'}>
           <TechnicianSelect

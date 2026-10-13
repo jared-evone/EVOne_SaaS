@@ -91,7 +91,7 @@ the answers.
 **The four rules:**
 
 1. **Metadata edits go through `patchWorkOrder`** — assignee, status, title,
-   category, instructions, schedule, picReview (the PIC admin review — internal
+   category, instructions, schedule, pic (person in charge), picReview (the PIC admin review — internal
    only, never printed on the report PDF). It calls the `tsd_work_order_patch` RPC,
    which merges server-side (`data = data || patch`), so untouched fields —
    including `forms` — are never rewritten. This is always safe on a light row.
