@@ -643,20 +643,29 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
   // code is the token before the em-dash (e.g. "S17321 — …"), and Gun A/B come from their
   // own labelled fields.
   const labeled: { label: string; value: string }[] = [];
-  const walkFields = (fields: FormField[], values: Record<string, string | boolean> | undefined) => {
+  // Labels carry their group's name ("DB Meter kWh Reading Value") — the number
+  // usually sits in a child field labelled just "Value".
+  const walkFields = (fields: FormField[], values: Record<string, string | boolean> | undefined, parent = '') => {
     for (const f of fields) {
       const v = values?.[f.id];
-      if (typeof v === 'string' && v.trim()) labeled.push({ label: (f.label ?? '').toLowerCase(), value: v });
-      if (f.children) walkFields(f.children, values);
+      if (typeof v === 'string' && v.trim()) labeled.push({ label: `${parent} ${f.label ?? ''}`.trim().toLowerCase(), value: v });
+      if (f.children) walkFields(f.children, values, f.label ?? '');
     }
   };
   for (const inst of forms) { const tpl = store.getTemplate(inst.templateId); if (tpl) walkFields(tpl.fields, inst.values); }
-  const numByLabel = (re: RegExp) => { const h = labeled.find((x) => re.test(x.label)); return h ? (h.value.replace(/,/g, '').match(/[\d.]+/)?.[0] ?? '') : ''; };
+  // Only plain numbers count — photo URLs and signature data ("…base64…") must
+  // never be read as a meter value.
+  const isNumeric = (v: string) => /^\s*-?[\d,]*\.?\d+\s*(k?wh)?\s*$/i.test(v);
+  const numByLabel = (re: RegExp, not?: RegExp) => {
+    const h = labeled.find((x) => re.test(x.label) && !(not && not.test(x.label)) && isNumeric(x.value));
+    return h ? (h.value.replace(/,/g, '').match(/-?[\d.]+/)?.[0] ?? '') : '';
+  };
   const allValues = labeled.map((x) => x.value);
   const chargerVal = allValues.find((v) => / · CPO$/.test(v)) ?? '';
   const chargerCode = chargerVal ? chargerVal.split('—')[0].trim() : '';
-  const prefillReading = numByLabel(/db meter|meter.*reading|kwh reading|reading.*kwh/)
-    || ((allValues.find((v) => /[\d.,]+\s*k?wh/i.test(v)) ?? '').replace(/,/g, '').match(/[\d.]+/)?.[0] ?? '');
+  const prefillReading = numByLabel(/db meter/)
+    || numByLabel(/meter|kwh/, /gun|connector|charger meter/)
+    || ((allValues.find((v) => /^\s*[\d.,]+\s*k?wh\s*$/i.test(v)) ?? '').replace(/,/g, '').match(/[\d.]+/)?.[0] ?? '');
   const prefillGunA = numByLabel(/gun\s*a\b|connector\s*a\b|gun a/);
   const prefillGunB = numByLabel(/gun\s*b\b|connector\s*b\b|gun b/);
   const isCpo = !!chargerCode && / · CPO$/.test(chargerVal);
