@@ -588,3 +588,25 @@ end $$;
 revoke execute on function inv_receive_shipment_lines(jsonb, uuid, date, text, text, text) from public, anon;
 grant execute on function inv_receive_shipment_lines(jsonb, uuid, date, text, text, text) to authenticated;
 -- (inv_shipments_from_po re-created with one gen_random_uuid() group per PO.)
+
+-- 2026-10-13 · migration inv_items_product_catalog_merge — Stock Levels items
+-- are the single product list. The Raise PO catalog fields move onto
+-- inv_items; Raise PO picks from inv_items (PO lines carry the inv_items id as
+-- product_id) and items are only added in Stock Levels. po_products /
+-- po_categories / po_suppliers stay as legacy data (read by older builds only).
+alter table inv_items
+  add column description text,
+  add column supplier    text,
+  add column unit        text not null default 'unit',
+  add column currency    text not null default 'SGD';
+-- inv_shipments_from_po re-created: item link = product_id when it is an
+-- inv_items id, else the active item with the same name.
+
+-- Data (execute_sql, backups in backup.inv_items_before_catalog_merge_20261013 and
+-- backup.po_products_before_catalog_merge_20261013): the five catalog chargers
+-- already stocked (HiCi 30/120/180/240/360 kW DC = 'Hici DC - NNkW - 7m gun')
+-- got the catalog's description, supplier, unit, price and currency; the six
+-- not stocked (NEG Power 60/120/180/240 kW, HiCi 60/300 kW DC) were added as
+-- items at zero stock, keeping the catalog ids so existing PO lines still
+-- resolve. Stock untouched: inv_on_hand fingerprint identical before/after
+-- (536 units over 83 item×location rows).

@@ -340,7 +340,9 @@ src/
                             department reads or changes stock). invShared.tsx
                             (types, useInvCore, UI bits) + StockLevels,
                             Requests (fulfil → delivery order), Raise PO
-                            (moved from Sales; a PO finance marks completed
+                            (moved from Sales; picks from inv_items — Stock
+                            Levels is the ONE item/product list, new items
+                            only there; po_products is legacy; a PO finance marks completed
                             becomes Ordered shipments via the
                             purchase_orders_to_shipments trigger), Shipments
                             (one shipment = the inv_shipments item lines

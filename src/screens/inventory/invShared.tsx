@@ -18,7 +18,16 @@ export interface InvItem {
   notes: string | null;
   active: boolean;
   sort_order: number;
+  // Purchasing details (the old Raise PO catalog) — Raise PO picks from these.
+  description: string | null;
+  supplier: string | null;
+  unit: string;
+  currency: string;
 }
+
+export const CURRENCIES = ['SGD', 'CNY', 'USD', 'MYR', 'EUR'];
+export const fmtPrice = (n: number | null | undefined, currency: string) =>
+  n == null ? '—' : `${currency} ${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export interface InvLocation {
   id: string; name: string; code: string | null; usable: boolean; sort_order: number;

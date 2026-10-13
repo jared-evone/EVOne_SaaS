@@ -6,7 +6,7 @@ import { usePermissions } from '../../permissions';
 import { Download, Plus, Trash2, Archive, ArchiveRestore, Tags, Pencil } from 'lucide-react';
 import {
   useInvCore, qtyAt, usableTotal, itemLabel, fmtD, todayISO, MOVEMENT_LABELS, MOVEMENT_COLORS,
-  Pill, Field, ErrorBanner, Modal, SearchBox, downloadCsv, LookupSelect, LookupList, type LookupRow,
+  Pill, Field, ErrorBanner, Modal, SearchBox, downloadCsv, LookupSelect, LookupList, useLookupRows, CURRENCIES, fmtPrice, type LookupRow,
   inputStyle, primaryBtn, ghostBtn, pillBtn, thStyle, tdStyle,
   type InvItem, type InvLocation, type InvMovement, type OnHand,
 } from './invShared';
@@ -103,7 +103,7 @@ export function ScreenInvStock() {
       if (st !== 'negative' && st !== 'below') return false;
     }
     const q = search.trim().toLowerCase();
-    return !q || `${i.name} ${i.brand ?? ''} ${i.category ?? ''}`.toLowerCase().includes(q);
+    return !q || `${i.name} ${i.brand ?? ''} ${i.category ?? ''} ${i.supplier ?? ''} ${i.description ?? ''}`.toLowerCase().includes(q);
   });
 
   const active = items.filter((i) => i.active);
@@ -114,13 +114,13 @@ export function ScreenInvStock() {
 
   const exportCsv = () => {
     const rows: (string | number | null)[][] = [[
-      'Item Name', 'Brand', 'Category', ...usable.map((l) => `${l.name} (Now)`), ...spoiltLocs.map((l) => l.name), 'Total (Now)', 'Incoming', 'Reorder Point', 'Reorder Qty', 'Price',
+      'Item Name', 'Brand', 'Category', ...usable.map((l) => `${l.name} (Now)`), ...spoiltLocs.map((l) => l.name), 'Total (Now)', 'Incoming', 'Reorder Point', 'Reorder Qty', 'Supplier', 'Unit', 'Unit Price', 'Currency', 'Description',
     ]];
     for (const i of visible) {
       rows.push([
         i.name, i.brand, i.category, ...usable.map((l) => qtyAt(onHand, i.id, l.id)),
         ...spoiltLocs.map((l) => qtyAt(onHand, i.id, l.id)), usableTotal(onHand, i.id, locations),
-        incoming.get(i.id) ?? 0, i.reorder_point, i.reorder_qty, i.unit_price,
+        incoming.get(i.id) ?? 0, i.reorder_point, i.reorder_qty, i.supplier, i.unit, i.unit_price, i.currency, i.description,
       ]);
     }
     downloadCsv(`stock_levels_${todayISO()}.csv`, rows);
@@ -298,7 +298,9 @@ function ItemDrawer({ item, items, locations, onHand, me, lookups, onLookupsChan
         </div>
       </div>
       <div style={{ fontSize: 12, color: C.slate }}>
-        Reorder point <b style={{ color: '#1a1a1a' }}>{item.reorder_point ?? '—'}</b> · reorder qty <b style={{ color: '#1a1a1a' }}>{item.reorder_qty ?? '—'}</b> · unit price <b style={{ color: '#1a1a1a' }}>{item.unit_price != null ? `$${Number(item.unit_price).toLocaleString()}` : '—'}</b>
+        Reorder point <b style={{ color: '#1a1a1a' }}>{item.reorder_point ?? '—'}</b> · reorder qty <b style={{ color: '#1a1a1a' }}>{item.reorder_qty ?? '—'}</b> · unit price <b style={{ color: '#1a1a1a' }}>{fmtPrice(item.unit_price, item.currency)}</b> / {item.unit}
+        {item.supplier && <> · supplier <b style={{ color: '#1a1a1a' }}>{item.supplier}</b></>}
+        {item.description && <div style={{ marginTop: 4, color: '#1a1a1a' }}>{item.description}</div>}
         {item.notes && <div style={{ marginTop: 4 }}>{item.notes}</div>}
       </div>
 
@@ -484,7 +486,9 @@ function ItemFields({ item, items, lookups, isAdmin, onLookupsChanged, onCancel,
     reorder_qty: item?.reorder_qty != null ? String(item.reorder_qty) : '',
     unit_price: item?.unit_price != null ? String(item.unit_price) : '',
     notes: item?.notes ?? '',
+    description: item?.description ?? '', supplier: item?.supplier ?? '', unit: item?.unit ?? 'unit', currency: item?.currency ?? 'SGD',
   });
+  const { rows: suppliers, reload: reloadSuppliers } = useLookupRows('supplier');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const num = (s: string) => (s.trim() === '' ? null : Number(s));
@@ -498,6 +502,7 @@ function ItemFields({ item, items, lookups, isAdmin, onLookupsChanged, onCancel,
       name: f.name.trim(), brand: f.brand.trim() || null, category: f.category.trim() || null,
       reorder_point: num(f.reorder_point), reorder_qty: num(f.reorder_qty), unit_price: num(f.unit_price),
       notes: f.notes.trim() || null, updated_at: new Date().toISOString(),
+      description: f.description.trim() || null, supplier: f.supplier.trim() || null, unit: f.unit.trim() || 'unit', currency: f.currency || 'SGD',
     };
     const res = item
       ? await supabase.from('inv_items').update(payload).eq('id', item.id).select('id').single()
@@ -521,10 +526,29 @@ function ItemFields({ item, items, lookups, isAdmin, onLookupsChanged, onCancel,
             onChange={(v) => setF((x) => ({ ...x, category: v }))} onAdded={onLookupsChanged} />
         </Field>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
+      <Field label="Model / specification" hint="Shown on purchase orders under the item name">
+        <textarea value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} rows={2}
+          placeholder="e.g. Model: HK-EE-120-A1 · Power: 120kW · Dual Gun (7 m) · Warranty: 2 years" style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.5 }} />
+      </Field>
+      <div style={{ background: C.seasalt, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Purchasing — used by Raise PO</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+          <Field label="Supplier">
+            <LookupSelect kind="supplier" value={f.supplier} options={suppliers} isAdmin={isAdmin}
+              onChange={(v) => setF((x) => ({ ...x, supplier: v }))} onAdded={reloadSuppliers} />
+          </Field>
+          <Field label="Unit"><input value={f.unit} onChange={(e) => setF({ ...f, unit: e.target.value })} placeholder="unit, set, metre…" style={inputStyle} /></Field>
+          <Field label="Unit price"><input type="number" min="0" step="0.01" value={f.unit_price} onChange={(e) => setF({ ...f, unit_price: e.target.value })} style={inputStyle} /></Field>
+          <Field label="Currency">
+            <select value={f.currency} onChange={(e) => setF({ ...f, currency: e.target.value })} style={{ ...inputStyle, cursor: 'pointer' }}>
+              {CURRENCIES.concat(CURRENCIES.includes(f.currency) ? [] : [f.currency]).map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </Field>
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
         <Field label="Reorder point"><input type="number" min="0" value={f.reorder_point} onChange={(e) => setF({ ...f, reorder_point: e.target.value })} style={inputStyle} /></Field>
         <Field label="Reorder qty"><input type="number" min="0" value={f.reorder_qty} onChange={(e) => setF({ ...f, reorder_qty: e.target.value })} style={inputStyle} /></Field>
-        <Field label="Unit price ($)"><input type="number" min="0" step="0.01" value={f.unit_price} onChange={(e) => setF({ ...f, unit_price: e.target.value })} style={inputStyle} /></Field>
       </div>
       <Field label="Notes"><input value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} placeholder="Part numbers, supplier codes…" style={inputStyle} /></Field>
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
