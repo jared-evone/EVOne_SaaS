@@ -3,7 +3,7 @@ import { C } from '../../theme';
 import { KPICard } from '../../components/KPICard';
 import { supabase } from '../../lib/supabase';
 import { usePermissions } from '../../permissions';
-import { Plus, PackageCheck, Download, Lock, Building2, Square, SquareCheck } from 'lucide-react';
+import { Plus, PackageCheck, Download, Lock, Building2, Square, SquareCheck, X } from 'lucide-react';
 import { SearchSelect } from '../../components/SearchSelect';
 import { ScreenInvGrn, CompleteModal } from './GoodsReceived';
 import {
@@ -14,6 +14,9 @@ import {
 } from './invShared';
 
 type ShipStatus = InvShipment['status'];
+// A shipment's status is derived from its item lines; 'pending' = a receipt was
+// logged as in transit (Excel leftovers) but never received.
+type ShipState = ShipStatus | 'pending';
 
 export const SHIP_META: Record<ShipStatus, { label: string; bg: string; color: string }> = {
   ordered:    { label: 'Ordered',    bg: '#F3F3F3', color: '#767B77' },
@@ -22,19 +25,28 @@ export const SHIP_META: Record<ShipStatus, { label: string; bg: string; color: s
   received:   { label: 'Received',   bg: '#E4F3E3', color: '#1B512D' },
   cancelled:  { label: 'Cancelled',  bg: '#FDEAEA', color: '#C0321A' },
 };
+const STATE_META: Record<ShipState, { label: string; bg: string; color: string }> = {
+  ...SHIP_META,
+  pending: { label: 'Receipt pending', bg: '#FFF8E1', color: '#B07D00' },
+};
 
 type Filter = 'open' | 'not_completed' | ShipStatus | 'all';
 const FILTERS: { id: Filter; label: string }[] = [
-  { id: 'open', label: 'Open' }, { id: 'not_completed', label: 'Not completed' }, { id: 'ordered', label: 'Ordered' }, { id: 'in_transit', label: 'In transit' },
-  { id: 'partial', label: 'Partly received' }, { id: 'received', label: 'Received' }, { id: 'cancelled', label: 'Cancelled' }, { id: 'all', label: 'All' },
+  { id: 'open', label: 'Open' }, { id: 'not_completed', label: 'Not completed' }, { id: 'ordered', label: 'Ordered' },
+  { id: 'in_transit', label: 'In transit' }, { id: 'partial', label: 'Partly received' }, { id: 'received', label: 'Received' },
+  { id: 'cancelled', label: 'Cancelled' }, { id: 'all', label: 'All' },
 ];
 
 interface CustomerOpt { id: string; name: string; }
 
-const MODES = ['Air', 'Sea', 'Local'];
+/** One shipment = the item lines (inv_shipments rows) sharing a group_id. Header
+ *  fields (supplier, PO, dates…) are identical across lines, so read them off `head`. */
+interface Shipment { id: string; head: InvShipment; lines: InvShipment[] }
 
-const isOpen = (s: InvShipment) => s.status === 'ordered' || s.status === 'in_transit' || s.status === 'partial';
-const PENDING_META = { label: 'Receipt pending', bg: '#FFF8E1', color: '#B07D00' };
+const MODES = ['Air', 'Sea', 'Local'];
+const lineOpen = (s: InvShipment) => s.status === 'ordered' || s.status === 'in_transit' || s.status === 'partial';
+const lineOrder = (a: InvShipment, b: InvShipment) =>
+  (a.legacy_no ?? Number.MAX_SAFE_INTEGER) - (b.legacy_no ?? Number.MAX_SAFE_INTEGER) || a.created_at.localeCompare(b.created_at);
 
 export function ScreenInvShipments() {
   const { can, user } = usePermissions();
@@ -52,7 +64,7 @@ export function ScreenInvShipments() {
 
   const [rows, setRows] = useState<InvShipment[]>([]);
   const [received, setReceived] = useState<Map<string, number>>(new Map());
-  // Every receipt line per shipment — received ones and ones still awaiting receipt.
+  // Every receipt line per item line — received ones and ones still awaiting receipt.
   const [receipts, setReceipts] = useState<Map<string, InvGrn[]>>(new Map());
   const [view, setView] = useState<'shipments' | 'log'>('shipments');
   const [loading, setLoading] = useState(true);
@@ -65,14 +77,14 @@ export function ScreenInvShipments() {
     if (e) setError(e.message);
     setRows((data as InvShipment[]) ?? []);
     const m = new Map<string, number>();
-    const byShip = new Map<string, InvGrn[]>();
+    const byLine = new Map<string, InvGrn[]>();
     for (const r of (g ?? []) as InvGrn[]) {
       if (!r.shipment_id) continue;
       if (r.status === 'received') m.set(r.shipment_id, (m.get(r.shipment_id) ?? 0) + (r.qty_received ?? 0));
-      byShip.set(r.shipment_id, [...(byShip.get(r.shipment_id) ?? []), r]);
+      byLine.set(r.shipment_id, [...(byLine.get(r.shipment_id) ?? []), r]);
     }
     setReceived(m);
-    setReceipts(byShip);
+    setReceipts(byLine);
     setLoading(false);
   };
   useEffect(() => { void load(); }, []);
@@ -85,39 +97,69 @@ export function ScreenInvShipments() {
 
   const today = todayISO();
   const month = today.slice(0, 7);
-  const outstanding = (s: InvShipment) => (s.status === 'received' || s.status === 'cancelled' ? 0 : Math.max(0, s.qty - (received.get(s.id) ?? 0)));
-  // A receipt logged as "in transit" that was never received (Excel leftovers).
-  const hasPending = (s: InvShipment) => (receipts.get(s.id) ?? []).some((g) => g.status === 'pending');
-  // What to chase the supplier about: part-delivered, or a receipt still outstanding.
-  const notCompleted = (s: InvShipment) => s.status === 'partial' || hasPending(s);
-  const openRow = (s: InvShipment) => isOpen(s) || hasPending(s);
 
-  const visible = rows.filter((s) => {
-    if (filter === 'open' && !openRow(s)) return false;
+  const groups: Shipment[] = (() => {
+    const by = new Map<string, InvShipment[]>();
+    for (const r of rows) by.set(r.group_id, [...(by.get(r.group_id) ?? []), r]);
+    return [...by.entries()].map(([id, ls]) => {
+      const lines = [...ls].sort(lineOrder);
+      return { id, head: lines[0], lines };
+    });
+  })();
+
+  const gotOf = (l: InvShipment) => received.get(l.id) ?? 0;
+  const lineOutstanding = (l: InvShipment) => (l.status === 'received' || l.status === 'cancelled' ? 0 : Math.max(0, l.qty - gotOf(l)));
+  const linePending = (l: InvShipment) => (receipts.get(l.id) ?? []).some((g) => g.status === 'pending');
+  const live = (s: Shipment) => s.lines.filter((l) => l.status !== 'cancelled');
+  const stateOf = (s: Shipment): ShipState => {
+    const ls = live(s);
+    if (ls.length === 0) return 'cancelled';
+    if (s.lines.some(linePending)) return 'pending';
+    if (ls.every((l) => l.status === 'received')) return 'received';
+    if (ls.some((l) => l.status === 'received' || l.status === 'partial' || gotOf(l) > 0)) return 'partial';
+    if (ls.some((l) => l.status === 'in_transit')) return 'in_transit';
+    return 'ordered';
+  };
+  const qtyOf = (s: Shipment) => live(s).reduce((n, l) => n + l.qty, 0);
+  const gotTotal = (s: Shipment) => live(s).reduce((n, l) => n + gotOf(l), 0);
+  const outOf = (s: Shipment) => live(s).reduce((n, l) => n + lineOutstanding(l), 0);
+  const isOpenShip = (s: Shipment) => ['ordered', 'in_transit', 'partial', 'pending'].includes(stateOf(s));
+  // What to chase the supplier about: part-delivered, or a receipt still outstanding.
+  const notCompleted = (s: Shipment) => stateOf(s) === 'partial' || stateOf(s) === 'pending';
+
+  const visible = groups.filter((s) => {
+    const st = stateOf(s);
+    if (filter === 'open' && !isOpenShip(s)) return false;
     if (filter === 'not_completed' && !notCompleted(s)) return false;
-    if (filter !== 'open' && filter !== 'not_completed' && filter !== 'all' && s.status !== filter) return false;
+    if (!['open', 'not_completed', 'all'].includes(filter) && st !== filter) return false;
     const q = search.trim().toLowerCase();
-    return !q || [s.po_no, s.supplier, s.description, s.customer, s.employee, itemLabel(items.find((i) => i.id === s.item_id), items)].join(' ').toLowerCase().includes(q);
+    if (!q) return true;
+    const h = s.head;
+    return [h.po_no, h.supplier, h.customer, h.employee, ...s.lines.flatMap((l) => [l.description, itemLabel(items.find((i) => i.id === l.item_id), items)])]
+      .join(' ').toLowerCase().includes(q);
   });
 
   const exportCsv = () => {
     downloadCsv(`incoming_shipments_${today}.csv`, [
-      ['No', 'Supplier', 'PO', 'Employee', 'Customer', 'Description', 'Item', 'Qty Ordered', 'Qty Received', 'Outstanding', 'Mode', 'Order Date', 'In Transit Date', 'Est. Arrival', 'Status'],
-      ...visible.map((s) => [s.legacy_no, s.supplier, s.po_no, s.employee, s.customer, s.description, itemLabel(items.find((i) => i.id === s.item_id), items), s.qty, received.get(s.id) ?? null, outstanding(s), s.mode, s.order_date, s.in_transit_date, s.eta ?? s.eta_note, hasPending(s) ? PENDING_META.label : SHIP_META[s.status].label]),
+      ['PO', 'Supplier', 'Employee', 'Customer', 'Excel No', 'Description', 'Item', 'Qty Ordered', 'Qty Received', 'Outstanding', 'Mode', 'Order Date', 'In Transit Date', 'Est. Arrival', 'Shipment Status'],
+      ...visible.flatMap((s) => s.lines.map((l) => [
+        s.head.po_no, s.head.supplier, s.head.employee, s.head.customer, l.legacy_no, l.description, itemLabel(items.find((i) => i.id === l.item_id), items),
+        l.qty, gotOf(l) || null, lineOutstanding(l), s.head.mode, s.head.order_date, s.head.in_transit_date, s.head.eta ?? s.head.eta_note, STATE_META[stateOf(s)].label,
+      ])),
     ]);
   };
 
-  const open = openId ? rows.find((s) => s.id === openId) ?? null : null;
+  const open = openId ? groups.find((s) => s.id === openId) ?? null : null;
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading shipments…</div>;
 
-  const openRows = rows.filter(openRow);
-  const overdue = rows.filter((s) => isOpen(s) && s.eta && s.eta < today);
-  const chase = rows.filter(notCompleted);
+  const openShips = groups.filter(isOpenShip);
+  const overdue = groups.filter((s) => ['ordered', 'in_transit', 'partial'].includes(stateOf(s)) && s.head.eta && s.head.eta < today);
+  const chase = groups.filter(notCompleted);
   const receivedThisMonth = [...receipts.values()].flat().filter((g) => g.status === 'received' && (g.received_on ?? '').startsWith(month));
 
   const viewSwitch = (
     <div style={{ display: 'flex', gap: 4, background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, padding: 4, alignSelf: 'flex-start' }}>
-      {([['shipments', `Shipments · ${rows.length}`], ['log', 'Receipt log']] as const).map(([id, label]) => (
+      {([['shipments', `Shipments · ${groups.length}`], ['log', 'Receipt log']] as const).map(([id, label]) => (
         <button key={id} onClick={() => setView(id)}
           style={{ padding: '7px 16px', borderRadius: 10, border: 'none', background: view === id ? C.green : 'transparent', color: view === id ? C.white : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
           {label}
@@ -139,7 +181,7 @@ export function ScreenInvShipments() {
       <ErrorBanner text={error ?? coreErr} />
       {viewSwitch}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
-        <KPICard accent label="Open shipments" value={openRows.length} sub={`${openRows.reduce((n, s) => n + outstanding(s), 0).toLocaleString()} units to come · ${rows.filter((s) => s.status === 'in_transit').length} in transit`} />
+        <KPICard accent label="Open shipments" value={openShips.length} sub={`${openShips.reduce((n, s) => n + outOf(s), 0).toLocaleString()} units to come · ${groups.filter((s) => stateOf(s) === 'in_transit').length} in transit`} />
         <KPICard label="Not completed" value={chase.length} sub="Part-delivered or awaiting receipt — chase the supplier" />
         <KPICard label="Past ETA" value={overdue.length} sub="Open with an arrival date already gone" />
         <KPICard label="Received this month" value={receivedThisMonth.reduce((n, g) => n + (g.qty_received ?? 0), 0).toLocaleString()} sub={`units over ${receivedThisMonth.length} receipt${receivedThisMonth.length === 1 ? '' : 's'}`} />
@@ -159,39 +201,50 @@ export function ScreenInvShipments() {
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1050 }}>
             <thead>
-              <tr>{['PO', 'Supplier', 'Description', 'Qty', 'Ordered', 'ETA', 'Status'].map((h) => <th key={h} style={{ ...thStyle, textAlign: h === 'Qty' ? 'right' : 'left' }}>{h === 'Qty' ? 'Received / Qty' : h}</th>)}</tr>
+              <tr>{['PO', 'Supplier', 'Items', 'Received / Qty', 'Ordered', 'ETA', 'Status'].map((h) => <th key={h} style={{ ...thStyle, textAlign: h === 'Received / Qty' ? 'right' : 'left' }}>{h}</th>)}</tr>
             </thead>
             <tbody>
               {visible.map((s) => {
-                const meta = hasPending(s) ? PENDING_META : SHIP_META[s.status];
-                const got = received.get(s.id) ?? 0;
-                const out = outstanding(s);
-                const late = isOpen(s) && s.eta && s.eta < today;
-                const linked = items.find((i) => i.id === s.item_id);
+                const h = s.head;
+                const st = stateOf(s);
+                const meta = STATE_META[st];
+                const got = gotTotal(s);
+                const out = outOf(s);
+                const late = ['ordered', 'in_transit', 'partial'].includes(st) && h.eta && h.eta < today;
+                const excel = s.lines.map((l) => l.legacy_no).filter((n): n is number => n != null);
                 return (
-                  <tr key={s.id} onClick={() => setOpenId(s.id)} style={{ borderBottom: '1px solid #F3F3F3', cursor: 'pointer' }}
+                  <tr key={s.id} onClick={() => setOpenId(s.id)} style={{ borderBottom: '1px solid #F3F3F3', cursor: 'pointer', verticalAlign: 'top' }}
                     onMouseEnter={(e) => { e.currentTarget.style.background = '#FAFAFA'; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
                     <td style={{ ...tdStyle, fontWeight: 700, color: C.green, whiteSpace: 'nowrap' }}>
-                      {s.po_no || <span style={{ color: C.slate }}>No PO</span>}
-                      {s.po_id && <div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>From Raise PO</div>}
-                      {s.legacy_no != null && <div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>Excel #{s.legacy_no}</div>}
+                      {h.po_no || <span style={{ color: C.slate }}>No PO</span>}
+                      {h.po_id && <div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>From Raise PO</div>}
+                      {excel.length > 0 && <div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>Excel #{excel.join(', ')}</div>}
                     </td>
-                    <td style={tdStyle}>{s.supplier || '—'}{s.customer && <div style={{ fontSize: 11, color: C.slate }}>For {s.customer}</div>}</td>
+                    <td style={tdStyle}>{h.supplier || '—'}{h.customer && <div style={{ fontSize: 11, color: C.slate }}>For {h.customer}</div>}</td>
                     <td style={tdStyle}>
-                      {s.description}
-                      <div style={{ fontSize: 11, color: linked ? C.slate : '#B07D00', fontWeight: linked ? 400 : 700, marginTop: 2 }}>
-                        {linked ? `→ ${itemLabel(linked, items)}` : 'NOT LINKED TO AN ITEM'}
-                      </div>
+                      {s.lines.slice(0, 3).map((l) => {
+                        const linked = items.find((i) => i.id === l.item_id);
+                        return (
+                          <div key={l.id} style={{ marginBottom: 4, textDecoration: l.status === 'cancelled' ? 'line-through' : 'none' }}>
+                            {l.description}
+                            <div style={{ fontSize: 11, color: linked ? C.slate : '#B07D00', fontWeight: linked ? 400 : 700 }}>
+                              {linked ? `→ ${itemLabel(linked, items)}` : 'NOT LINKED TO AN ITEM'}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {s.lines.length > 3 && <div style={{ fontSize: 11, fontWeight: 700, color: C.slate }}>+ {s.lines.length - 3} more item{s.lines.length - 3 === 1 ? '' : 's'}</div>}
                     </td>
                     <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 700, whiteSpace: 'nowrap' }}>
-                      {got > 0 ? <>{got}<span style={{ color: C.slate, fontWeight: 600 }}> / {s.qty}</span></> : s.qty}
+                      {got > 0 ? <>{got}<span style={{ color: C.slate, fontWeight: 600 }}> / {qtyOf(s)}</span></> : qtyOf(s)}
+                      {s.lines.length > 1 && <div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>{s.lines.length} items</div>}
                       {got > 0 && out > 0 && <div style={{ fontSize: 11, color: '#B07D00' }}>{out} outstanding</div>}
                     </td>
-                    <td style={{ ...tdStyle, color: C.slate, whiteSpace: 'nowrap' }}>{fmtD(s.order_date)}</td>
+                    <td style={{ ...tdStyle, color: C.slate, whiteSpace: 'nowrap' }}>{fmtD(h.order_date)}</td>
                     <td style={{ ...tdStyle, whiteSpace: 'nowrap', color: late ? '#C0321A' : C.slate, fontWeight: late ? 700 : 400 }}>
-                      {s.eta_note && !s.eta ? s.eta_note : fmtD(s.eta)}
-                      {s.eta && s.eta_note && <div style={{ fontSize: 11, color: C.slate, fontWeight: 400 }}>{s.eta_note}</div>}
+                      {h.eta_note && !h.eta ? h.eta_note : fmtD(h.eta)}
+                      {h.eta && h.eta_note && <div style={{ fontSize: 11, color: C.slate, fontWeight: 400 }}>{h.eta_note}</div>}
                     </td>
                     <td style={tdStyle}><Pill bg={meta.bg} color={meta.color}>{meta.label}</Pill></td>
                   </tr>
@@ -204,19 +257,21 @@ export function ScreenInvShipments() {
       </div>
 
       {open && (
-        <ShipmentModal key={open.id} ship={open} receivedQty={received.get(open.id) ?? 0} receipts={receipts.get(open.id) ?? []} items={items} locations={locations} onHand={onHand} me={me}
+        <ShipmentModal key={open.id} shipment={open} state={stateOf(open)} received={received} receipts={receipts}
+          items={items} locations={locations} onHand={onHand} me={me}
           suppliers={suppliers} reloadSuppliers={reloadSuppliers} customers={customers} isAdmin={canDelete}
           canEdit={canEdit} canDelete={canDelete} onClose={() => setOpenId(null)} onChanged={refresh} />
       )}
       {creating && (
-        <ShipmentModal ship={null} receivedQty={0} receipts={[]} items={items} locations={locations} onHand={onHand} me={me}
+        <ShipmentModal shipment={null} state={null} received={received} receipts={receipts}
+          items={items} locations={locations} onHand={onHand} me={me}
           suppliers={suppliers} reloadSuppliers={reloadSuppliers} customers={customers} isAdmin={canDelete}
           canEdit={canEdit} canDelete={false} onClose={() => setCreating(false)} onChanged={async () => { setCreating(false); await refresh(); }} />
       )}
       {managingSuppliers && (
         <Modal title="Suppliers" subtitle="The options in the shipment Supplier dropdown. Renaming updates every shipment and goods-received record that uses it." width={440} onClose={() => setManagingSuppliers(false)}>
           <LookupList kind="supplier" rows={suppliers} unit="shipment"
-            usage={(n) => rows.filter((s) => (s.supplier ?? '').toLowerCase() === n.toLowerCase()).length}
+            usage={(n) => groups.filter((s) => (s.head.supplier ?? '').toLowerCase() === n.toLowerCase()).length}
             onChanged={async () => { await Promise.all([reloadSuppliers(), load()]); }} />
         </Modal>
       )}
@@ -224,57 +279,111 @@ export function ScreenInvShipments() {
   );
 }
 
-function ShipmentModal({ ship, receivedQty, receipts, items, locations, onHand, me, suppliers, reloadSuppliers, customers, isAdmin, canEdit, canDelete, onClose, onChanged }: {
-  ship: InvShipment | null; receivedQty: number; receipts: InvGrn[]; items: InvItem[]; locations: InvLocation[]; onHand: OnHand; me: string;
+interface LineDraft {
+  key: string;
+  id: string | null;
+  item_id: string;
+  description: string;
+  qty: string;
+  status: ShipStatus;
+  got: number;
+  hasReceipts: boolean;
+}
+
+function ShipmentModal({ shipment, state, received, receipts, items, locations, onHand, me, suppliers, reloadSuppliers, customers, isAdmin, canEdit, canDelete, onClose, onChanged }: {
+  shipment: Shipment | null; state: ShipState | null; received: Map<string, number>; receipts: Map<string, InvGrn[]>;
+  items: InvItem[]; locations: InvLocation[]; onHand: OnHand; me: string;
   suppliers: LookupRow[]; reloadSuppliers: () => Promise<void>; customers: CustomerOpt[]; isAdmin: boolean;
   canEdit: boolean; canDelete: boolean; onClose: () => void; onChanged: () => Promise<void>;
 }) {
-  const isNew = !ship;
-  const editable = canEdit && (isNew || ship!.status !== 'cancelled');
+  const isNew = !shipment;
+  const head = shipment?.head ?? null;
+  const editable = canEdit && state !== 'cancelled';
   const [completing, setCompleting] = useState<InvGrn | null>(null);
   const locName = (id: string | null) => locations.find((l) => l.id === id)?.name ?? '—';
-  const [f, setF] = useState({
-    supplier: ship?.supplier ?? '', po_no: ship?.po_no ?? '', customer: ship?.customer ?? '', customer_id: ship?.customer_id ?? '',
-    description: ship?.description ?? '', item_id: ship?.item_id ?? '',
-    qty: String(ship?.qty ?? 1), mode: ship?.mode ?? '', order_date: ship?.order_date ?? todayISO(),
-    in_transit_date: ship?.in_transit_date ?? '', eta: ship?.eta ?? '', eta_note: ship?.eta_note ?? '', notes: ship?.notes ?? '',
-  });
+
+  const initHeader = {
+    supplier: head?.supplier ?? '', po_no: head?.po_no ?? '', customer: head?.customer ?? '', customer_id: head?.customer_id ?? '',
+    mode: head?.mode ?? '', order_date: head?.order_date ?? todayISO(), in_transit_date: head?.in_transit_date ?? '',
+    eta: head?.eta ?? '', eta_note: head?.eta_note ?? '', notes: head?.notes ?? '',
+  };
+  const initLines: LineDraft[] = shipment
+    ? shipment.lines.map((l) => ({
+        key: l.id, id: l.id, item_id: l.item_id ?? '', description: l.description, qty: String(l.qty), status: l.status,
+        got: received.get(l.id) ?? 0, hasReceipts: (receipts.get(l.id) ?? []).length > 0,
+      }))
+    : [{ key: crypto.randomUUID(), id: null, item_id: '', description: '', qty: '1', status: 'ordered', got: 0, hasReceipts: false }];
+  const [f, setF] = useState(initHeader);
+  const [lines, setLines] = useState<LineDraft[]>(initLines);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<null | 'receive' | 'delete'>(null);
-  // Not every shipment has a PO (warranty swaps, samples). Existing lines
+  // Not every shipment has a PO (warranty swaps, samples). Existing shipments
   // without one open with this already ticked.
-  const [noPo, setNoPo] = useState(!!ship && !ship.po_no);
+  const [noPo, setNoPo] = useState(!!head && !head.po_no);
   // Set from the signed-in account when the shipment is created; never typed.
-  const employee = ship ? ship.employee : me;
+  const employee = head ? head.employee : me;
+  const dirty = JSON.stringify(f) !== JSON.stringify(initHeader) || noPo !== (!!head && !head.po_no)
+    || JSON.stringify(lines.map(({ id, item_id, description, qty }) => ({ id, item_id, description, qty })))
+       !== JSON.stringify(initLines.map(({ id, item_id, description, qty }) => ({ id, item_id, description, qty })));
 
-  const save = async (extra?: Record<string, unknown>) => {
-    const qty = Number(f.qty);
-    if (!f.description.trim() && !f.item_id) { setErr('Describe the shipment or pick an item.'); return false; }
-    if (!Number.isInteger(qty) || qty <= 0) { setErr('Quantity must be a whole number above zero.'); return false; }
+  const setLine = (key: string, patch: Partial<LineDraft>) => setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
+  const addLine = () => setLines((ls) => [...ls, { key: crypto.randomUUID(), id: null, item_id: '', description: '', qty: '1', status: 'ordered', got: 0, hasReceipts: false }]);
+  const removeLine = (key: string) => setLines((ls) => ls.filter((l) => l.key !== key));
+
+  const allReceipts = (shipment?.lines ?? []).flatMap((l) => receipts.get(l.id) ?? []);
+  const anyReceipts = allReceipts.length > 0;
+
+  const save = async (headerExtra?: Record<string, unknown>) => {
+    if (lines.length === 0) { setErr('Add at least one item.'); return false; }
+    for (const [i, l] of lines.entries()) {
+      const n = Number(l.qty);
+      if (!l.description.trim() && !l.item_id) { setErr(`Item ${i + 1}: describe it or pick an item.`); return false; }
+      if (!Number.isInteger(n) || n <= 0) { setErr(`Item ${i + 1}: quantity must be a whole number above zero.`); return false; }
+      if (n < l.got) { setErr(`Item ${i + 1}: ${l.got} already received — the quantity can't go below that.`); return false; }
+    }
     if (!noPo && !f.po_no.trim()) { setErr('Enter the PO number, or tick "No PO".'); return false; }
     setBusy(true);
     setErr(null);
-    const item = items.find((i) => i.id === f.item_id);
-    const payload = {
+    const header = {
       supplier: f.supplier.trim() || null, po_no: noPo ? null : f.po_no.trim() || null,
       customer_id: f.customer_id || null, customer: f.customer.trim() || null,
-      description: f.description.trim() || (item ? `${qty} × ${item.name}` : ''), item_id: f.item_id || null, qty,
       mode: f.mode || null, order_date: f.order_date || null, in_transit_date: f.in_transit_date || null,
       eta: f.eta || null, eta_note: f.eta_note.trim() || null, notes: f.notes.trim() || null, updated_at: new Date().toISOString(),
-      ...extra,
+      ...headerExtra,
     };
-    const { error } = isNew
-      ? await supabase.from('inv_shipments').insert({ ...payload, status: 'ordered', employee: me, created_by: me })
-      : await supabase.from('inv_shipments').update(payload).eq('id', ship!.id);
+    const lineFields = (l: LineDraft) => {
+      const item = items.find((i) => i.id === l.item_id);
+      const qty = Number(l.qty);
+      return { item_id: l.item_id || null, qty, description: l.description.trim() || (item ? `${qty} × ${item.name}` : '') };
+    };
+    const groupId = shipment?.id ?? crypto.randomUUID();
+    // New lines join a shipment already on its way as in transit.
+    const newStatus: ShipStatus = state === 'in_transit' || state === 'partial' ? 'in_transit' : 'ordered';
+    const errors: string[] = [];
+    const kept = new Set(lines.map((l) => l.id).filter(Boolean));
+    for (const old of shipment?.lines ?? []) {
+      if (kept.has(old.id)) continue;
+      const { error } = await supabase.from('inv_shipments').delete().eq('id', old.id);
+      if (error) errors.push(error.message);
+    }
+    for (const l of lines) {
+      const { error } = l.id
+        ? await supabase.from('inv_shipments').update({ ...header, ...lineFields(l) }).eq('id', l.id)
+        : await supabase.from('inv_shipments').insert({ ...header, ...lineFields(l), group_id: groupId, status: newStatus, employee: employee ?? me, created_by: me });
+      if (error) errors.push(error.message);
+    }
     setBusy(false);
-    if (error) { setErr(error.message); return false; }
+    if (errors.length) { setErr(errors[0]); return false; }
     return true;
   };
 
-  const setStatus = async (status: ShipStatus, extra?: Record<string, unknown>) => {
+  // Status changes apply to every item line still in that state.
+  const setLinesStatus = async (from: ShipStatus[], to: ShipStatus, extra?: Record<string, unknown>) => {
+    const ids = (shipment?.lines ?? []).filter((l) => from.includes(l.status)).map((l) => l.id);
+    if (!ids.length) return;
     setBusy(true);
-    const { error } = await supabase.from('inv_shipments').update({ status, updated_at: new Date().toISOString(), ...extra }).eq('id', ship!.id);
+    const { error } = await supabase.from('inv_shipments').update({ status: to, updated_at: new Date().toISOString(), ...extra }).in('id', ids);
     setBusy(false);
     if (error) { setErr(error.message); return; }
     await onChanged();
@@ -283,7 +392,7 @@ function ShipmentModal({ ship, receivedQty, receipts, items, locations, onHand, 
 
   const remove = async () => {
     setBusy(true);
-    const { error } = await supabase.from('inv_shipments').delete().eq('id', ship!.id);
+    const { error } = await supabase.from('inv_shipments').delete().in('id', (shipment?.lines ?? []).map((l) => l.id));
     setBusy(false);
     if (error) { setErr(error.message); return; }
     await onChanged();
@@ -291,12 +400,15 @@ function ShipmentModal({ ship, receivedQty, receipts, items, locations, onHand, 
   };
 
   const ro = !editable;
-  const meta = ship ? SHIP_META[ship.status] : null;
-  const canReceive = ship && isOpen(ship);
+  const meta = state ? STATE_META[state] : null;
+  const openLines = (shipment?.lines ?? []).filter(lineOpen);
+  const totalQty = lines.reduce((n, l) => n + (Number(l.qty) || 0), 0);
+  const totalGot = lines.reduce((n, l) => n + l.got, 0);
+  const excel = (shipment?.lines ?? []).map((l) => l.legacy_no).filter((n): n is number => n != null);
 
   return (
-    <Modal title={isNew ? 'New incoming shipment' : (ship!.po_no || 'Shipment — no PO')} width={680} onClose={onClose}
-      subtitle={ship ? `${ship.supplier ?? ''}${ship.legacy_no != null ? ` · Excel #${ship.legacy_no}` : ''}` : 'Track a supplier order until it is received into stock'}
+    <Modal title={isNew ? 'New incoming shipment' : (head!.po_no || 'Shipment — no PO')} width={760} onClose={onClose}
+      subtitle={head ? `${head.supplier ?? ''}${excel.length ? ` · Excel #${excel.join(', ')}` : ''}` : 'Track a supplier order until it is received into stock'}
       footer={editable ? (
         <>
           <button onClick={onClose} style={ghostBtn}>Close</button>
@@ -307,11 +419,11 @@ function ShipmentModal({ ship, receivedQty, receipts, items, locations, onHand, 
       {meta && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <Pill bg={meta.bg} color={meta.color}>{meta.label}</Pill>
-          {receivedQty > 0 && <span style={{ fontSize: 12, color: C.slate }}>{receivedQty} of {ship!.qty} received in the app</span>}
-          {ship!.received_on && <span style={{ fontSize: 12, color: C.slate }}>Received {fmtD(ship!.received_on)}</span>}
+          {totalGot > 0 && <span style={{ fontSize: 12, color: C.slate }}>{totalGot} of {totalQty} received in the app</span>}
+          {head?.received_on && <span style={{ fontSize: 12, color: C.slate }}>Last received {fmtD(head.received_on)}</span>}
         </div>
       )}
-      {ship?.notes && <div style={{ background: '#FFF8E1', color: '#7A5A00', borderRadius: 10, padding: '10px 14px', fontSize: 12, lineHeight: 1.5 }}>{ship.notes}</div>}
+      {head?.notes && <div style={{ background: '#FFF8E1', color: '#7A5A00', borderRadius: 10, padding: '10px 14px', fontSize: 12, lineHeight: 1.5 }}>{head.notes}</div>}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
         <Field label="Supplier">
@@ -334,15 +446,47 @@ function ShipmentModal({ ship, receivedQty, receipts, items, locations, onHand, 
             onChange={(v) => setF({ ...f, mode: v })} />
         </Field>
       </div>
-      <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: 12 }}>
-          <Field label="Item it becomes in stock" hint={!f.item_id ? 'Link an item so receiving can add it to stock' : undefined}>
-            <ItemSelect items={items} value={f.item_id} onChange={(v) => setF({ ...f, item_id: v })} allowNone noneLabel="Not linked" disabled={ro} />
-          </Field>
-          <Field label="Qty"><input type="number" min="1" step="1" value={f.qty} disabled={ro} onChange={(e) => setF({ ...f, qty: e.target.value })} style={inputStyle} /></Field>
+
+      {/* Item lines */}
+      <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Items · {lines.length}</div>
+          <span style={{ fontSize: 12, color: C.slate }}>{totalQty} unit{totalQty === 1 ? '' : 's'} in total</span>
         </div>
-        <Field label="Supplier description"><input value={f.description} disabled={ro} onChange={(e) => setF({ ...f, description: e.target.value })} placeholder="As written on the PO / packing list" style={inputStyle} /></Field>
+        {lines.map((l, i) => {
+          const locked = l.hasReceipts || l.status === 'received';
+          const lm = SHIP_META[l.status];
+          return (
+            <div key={l.key} style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#1a1a1a' }}>Item {i + 1}</span>
+                {l.id && <Pill bg={lm.bg} color={lm.color}>{lm.label}</Pill>}
+                {l.got > 0 && <span style={{ fontSize: 11, color: C.slate }}>{l.got} received</span>}
+                {!ro && !locked && lines.length > 1 && (
+                  <button type="button" onClick={() => removeLine(l.key)} title="Remove this item"
+                    style={{ marginLeft: 'auto', width: 26, height: 26, borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}>
+                    <X size={13} strokeWidth={2.5} />
+                  </button>
+                )}
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: 12 }}>
+                <Field label="Item it becomes in stock" hint={!l.item_id ? 'Link an item so receiving can add it to stock' : undefined}>
+                  <ItemSelect items={items} value={l.item_id} onChange={(v) => setLine(l.key, { item_id: v })} allowNone noneLabel="Not linked" disabled={ro} />
+                </Field>
+                <Field label="Qty"><input type="number" min={Math.max(1, l.got)} step="1" value={l.qty} disabled={ro} onChange={(e) => setLine(l.key, { qty: e.target.value })} style={inputStyle} /></Field>
+              </div>
+              <Field label="Supplier description"><input value={l.description} disabled={ro} onChange={(e) => setLine(l.key, { description: e.target.value })} placeholder="As written on the PO / packing list" style={inputStyle} /></Field>
+            </div>
+          );
+        })}
+        {!ro && (
+          <button type="button" onClick={addLine}
+            style={{ alignSelf: 'flex-start', padding: '8px 14px', borderRadius: 10, border: `1px dashed ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <Plus size={13} /> Add another item
+          </button>
+        )}
       </div>
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
         <Field label="Order date"><input type="date" value={f.order_date} disabled={ro} onChange={(e) => setF({ ...f, order_date: e.target.value })} style={inputStyle} /></Field>
         <Field label="In transit (ETD)"><input type="date" value={f.in_transit_date} disabled={ro} onChange={(e) => setF({ ...f, in_transit_date: e.target.value })} style={inputStyle} /></Field>
@@ -350,7 +494,7 @@ function ShipmentModal({ ship, receivedQty, receipts, items, locations, onHand, 
         <Field label="Arrival note"><input value={f.eta_note} disabled={ro} onChange={(e) => setF({ ...f, eta_note: e.target.value })} placeholder="e.g. TBC, 16/06 - 17/06" style={inputStyle} /></Field>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
-        <Field label="EV1 employee" hint={ship && !ship.employee ? 'Not recorded in Excel' : undefined}>
+        <Field label="EV1 employee" hint={head && !head.employee ? 'Not recorded in Excel' : undefined}>
           <div title="Set from the signed-in account — cannot be changed"
             style={{ ...inputStyle, background: C.seasalt, color: '#1a1a1a', display: 'flex', alignItems: 'center', gap: 8 }}>
             <Lock size={12} color={C.slate} style={{ flexShrink: 0 }} />
@@ -368,18 +512,19 @@ function ShipmentModal({ ship, receivedQty, receipts, items, locations, onHand, 
       </div>
       <Field label="Notes"><input value={f.notes} disabled={ro} onChange={(e) => setF({ ...f, notes: e.target.value })} style={inputStyle} /></Field>
 
-      {receipts.length > 0 && (
+      {allReceipts.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Receipts</div>
-          {receipts.map((g) => {
+          {allReceipts.map((g) => {
             const pending = g.status === 'pending';
             const short = !pending && g.qty_ordered != null && g.qty_received != null && g.qty_received < g.qty_ordered;
             return (
-              <div key={g.id} style={{ display: 'flex', alignItems: 'center', gap: 10, background: pending ? '#FFFCF2' : C.seasalt, border: '1px solid #F3F3F3', borderRadius: 10, padding: '10px 12px', fontSize: 12.5 }}>
+              <div key={g.id} style={{ display: 'flex', alignItems: 'center', gap: 10, background: pending ? '#FFFCF2' : C.seasalt, border: '1px solid #F3F3F3', borderRadius: 10, padding: '10px 12px', fontSize: 12.5, flexWrap: 'wrap' }}>
                 <span style={{ fontWeight: 700, color: pending ? '#B07D00' : C.green, whiteSpace: 'nowrap' }}>{pending ? 'Awaiting receipt' : fmtD(g.received_on)}</span>
-                <span style={{ color: '#1a1a1a', whiteSpace: 'nowrap' }}>{pending ? `${g.qty_ordered ?? '?'} expected` : `${g.qty_received ?? 0} of ${g.qty_ordered ?? '?'} received`}</span>
+                <span style={{ fontWeight: 600, color: '#1a1a1a' }}>{g.item_name}</span>
+                <span style={{ color: '#1a1a1a', whiteSpace: 'nowrap' }}>{pending ? `${g.qty_ordered ?? '?'} expected` : `${g.qty_received ?? 0} of ${g.qty_ordered ?? '?'}`}</span>
                 {short && <span style={{ fontSize: 11, fontWeight: 700, color: '#C0321A', whiteSpace: 'nowrap' }}>short {(g.qty_ordered ?? 0) - (g.qty_received ?? 0)}</span>}
-                <span style={{ flex: 1, minWidth: 0, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <span style={{ flex: 1, minWidth: 120, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {[!pending && locName(g.location_id), g.condition, g.notes].filter(Boolean).join(' · ')}
                 </span>
                 {pending && canEdit && (
@@ -400,25 +545,29 @@ function ShipmentModal({ ship, receivedQty, receipts, items, locations, onHand, 
       {!isNew && canEdit && (
         <div style={{ borderTop: '1px solid #F3F3F3', paddingTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
           {mode === null && (
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {canReceive && (
-                <button onClick={() => setMode('receive')} style={{ ...primaryBtn(), display: 'inline-flex', alignItems: 'center', gap: 6 }}><PackageCheck size={14} /> Receive into stock</button>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              {openLines.length > 0 && (
+                <button onClick={() => setMode('receive')} disabled={dirty} title={dirty ? 'Save your changes first' : undefined}
+                  style={{ ...primaryBtn(dirty), display: 'inline-flex', alignItems: 'center', gap: 6 }}><PackageCheck size={14} /> Receive into stock</button>
               )}
-              {ship!.status === 'ordered' && (
-                <button onClick={async () => { if (await save({ status: 'in_transit', in_transit_date: f.in_transit_date || todayISO() })) { await onChanged(); onClose(); } }} disabled={busy} style={ghostBtn}>Mark in transit</button>
+              {shipment!.lines.some((l) => l.status === 'ordered') && (
+                <button onClick={() => void setLinesStatus(['ordered'], 'in_transit', { in_transit_date: f.in_transit_date || todayISO() })} disabled={busy || dirty} style={ghostBtn}>Mark in transit</button>
               )}
-              {isOpen(ship!) && receivedQty === 0 && <button onClick={() => void setStatus('cancelled')} disabled={busy} style={{ ...ghostBtn, color: '#C0321A' }}>Cancel shipment</button>}
-              {ship!.status === 'cancelled' && <button onClick={() => void setStatus('ordered')} disabled={busy} style={ghostBtn}>Reopen</button>}
-              {canDelete && receivedQty === 0 && <button onClick={() => setMode('delete')} style={{ ...ghostBtn, marginLeft: 'auto', color: '#C0321A' }}>Delete</button>}
+              {openLines.length > 0 && !anyReceipts && (
+                <button onClick={() => void setLinesStatus(['ordered', 'in_transit'], 'cancelled')} disabled={busy} style={{ ...ghostBtn, color: '#C0321A' }}>Cancel shipment</button>
+              )}
+              {state === 'cancelled' && <button onClick={() => void setLinesStatus(['cancelled'], 'ordered')} disabled={busy} style={ghostBtn}>Reopen</button>}
+              {dirty && openLines.length > 0 && <span style={{ fontSize: 11, color: C.slate }}>Save changes before receiving.</span>}
+              {canDelete && !anyReceipts && <button onClick={() => setMode('delete')} style={{ ...ghostBtn, marginLeft: 'auto', color: '#C0321A' }}>Delete</button>}
             </div>
           )}
           {mode === 'receive' && (
-            <ReceiveForm ship={ship!} receivedQty={receivedQty} items={items} locations={locations} onHand={onHand} me={me}
-              beforeReceive={save} onCancel={() => setMode(null)} onDone={async () => { await onChanged(); onClose(); }} />
+            <ReceiveForm lines={openLines} received={received} items={items} locations={locations} me={me}
+              onCancel={() => setMode(null)} onDone={async () => { await onChanged(); onClose(); }} />
           )}
           {mode === 'delete' && (
             <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: '#C0321A' }}>Delete this shipment line? This can't be undone.</span>
+              <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: '#C0321A' }}>Delete this shipment and its {shipment!.lines.length} item{shipment!.lines.length === 1 ? '' : 's'}? This can't be undone.</span>
               <button onClick={() => setMode(null)} style={ghostBtn}>Cancel</button>
               <button onClick={() => void remove()} disabled={busy} style={{ ...primaryBtn(busy), background: '#C0321A' }}>Yes, delete</button>
             </div>
@@ -429,51 +578,72 @@ function ShipmentModal({ ship, receivedQty, receipts, items, locations, onHand, 
   );
 }
 
-function ReceiveForm({ ship, receivedQty, items, locations, onHand, me, beforeReceive, onCancel, onDone }: {
-  ship: InvShipment; receivedQty: number; items: InvItem[]; locations: InvLocation[]; onHand: OnHand; me: string;
-  beforeReceive: () => Promise<boolean>; onCancel: () => void; onDone: () => Promise<void>;
+// Receive any or all of a shipment's open items in one go: one location, date
+// and condition for the delivery, a quantity per item. All-or-nothing.
+function ReceiveForm({ lines, received, items, locations, me, onCancel, onDone }: {
+  lines: InvShipment[]; received: Map<string, number>; items: InvItem[]; locations: InvLocation[]; me: string;
+  onCancel: () => void; onDone: () => Promise<void>;
 }) {
-  const outstanding = Math.max(0, ship.qty - receivedQty);
-  const [qty, setQty] = useState(String(outstanding));
+  const outstanding = (l: InvShipment) => Math.max(0, l.qty - (received.get(l.id) ?? 0));
+  const [qtys, setQtys] = useState<Record<string, string>>(() => Object.fromEntries(lines.map((l) => [l.id, l.item_id ? String(outstanding(l)) : '0'])));
   const [loc, setLoc] = useState(locations.find((l) => l.usable)?.id ?? '');
   const [date, setDate] = useState(todayISO());
   const [condition, setCondition] = useState('Good');
   const [note, setNote] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const item = items.find((i) => i.id === ship.item_id);
 
   const go = async () => {
-    const n = Number(qty);
-    if (!Number.isInteger(n) || n < 0) { setErr('Enter the quantity received (0 or more).'); return; }
+    const payload: { shipment: string; qty: number }[] = [];
+    for (const l of lines) {
+      const n = Number(qtys[l.id] ?? 0);
+      if (!Number.isInteger(n) || n < 0) { setErr('Quantities must be whole numbers (0 or more).'); return; }
+      if (n > 0 && !l.item_id) { setErr(`"${l.description}" isn't linked to an item — link it above and save first.`); return; }
+      if (n > 0) payload.push({ shipment: l.id, qty: n });
+    }
+    if (payload.length === 0) { setErr('Enter a received quantity for at least one item.'); return; }
     if (!loc) { setErr('Pick where it is going.'); return; }
     setBusy(true);
     setErr(null);
-    if (!(await beforeReceive())) { setBusy(false); return; }
-    const { error } = await supabase.rpc('inv_receive_shipment', {
-      p_shipment: ship.id, p_qty: n, p_location: loc, p_date: date, p_condition: condition.trim() || null, p_note: note.trim() || null, p_by: me,
+    const { error } = await supabase.rpc('inv_receive_shipment_lines', {
+      p_lines: payload, p_location: loc, p_date: date, p_condition: condition.trim() || null, p_note: note.trim() || null, p_by: me,
     });
     setBusy(false);
     if (error) { setErr(error.message); return; }
     await onDone();
   };
 
-  const n = Number(qty);
   return (
     <div style={{ background: C.honeydew, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>Receive {item ? itemLabel(item, items) : 'shipment'} — {outstanding} outstanding</div>
-      {!item && <div style={{ fontSize: 12, color: '#B07D00', fontWeight: 600 }}>Link this shipment to an item above first — receiving adds the quantity to that item.</div>}
+      <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>Receive into stock</div>
       <ErrorBanner text={err} />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {lines.map((l) => {
+          const item = items.find((i) => i.id === l.item_id);
+          const out = outstanding(l);
+          const n = Number(qtys[l.id] ?? 0);
+          return (
+            <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 10, background: C.white, borderRadius: 10, padding: '8px 12px' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item ? itemLabel(item, items) : l.description}</div>
+                <div style={{ fontSize: 11, color: item ? C.slate : '#B07D00', fontWeight: item ? 400 : 700 }}>
+                  {item ? `${out} outstanding${Number.isInteger(n) && n > 0 && n !== out ? ` · variance ${n - out > 0 ? '+' : ''}${n - out}` : ''}` : 'Not linked to an item — link it above first'}
+                </div>
+              </div>
+              <input type="number" min="0" step="1" value={qtys[l.id] ?? '0'} disabled={!item}
+                onChange={(e) => setQtys((q) => ({ ...q, [l.id]: e.target.value }))}
+                style={{ ...inputStyle, width: 90, textAlign: 'right', background: item ? C.white : C.seasalt }} />
+            </div>
+          );
+        })}
+      </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
-        <Field label="Qty received" hint={Number.isInteger(n) && n !== outstanding ? `Variance ${n - outstanding > 0 ? '+' : ''}${n - outstanding}${n < outstanding ? ' — rest stays open' : ''}` : undefined}>
-          <input type="number" min="0" step="1" value={qty} onChange={(e) => setQty(e.target.value)} style={inputStyle} />
-        </Field>
-        <Field label="Into location"><LocationSelect locations={locations} value={loc} onChange={setLoc} itemId={ship.item_id} onHand={onHand} /></Field>
+        <Field label="Into location"><LocationSelect locations={locations} value={loc} onChange={setLoc} /></Field>
         <Field label="Date received"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} /></Field>
         <Field label="Condition"><input value={condition} onChange={(e) => setCondition(e.target.value)} placeholder="Good / damaged…" style={inputStyle} /></Field>
       </div>
       <Field label="Note"><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Optional — damaged box, short-shipped…" style={inputStyle} /></Field>
-      <div style={{ fontSize: 11, color: C.slate }}>Creates the Goods Received entry and adds the quantity to stock. A short receipt keeps the shipment open for the rest.</div>
+      <div style={{ fontSize: 11, color: C.slate }}>Each item with a quantity becomes a receipt and goes into stock at the chosen location. Anything short stays open on the shipment. Leave an item at 0 if it didn't come.</div>
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
         <button onClick={onCancel} style={ghostBtn}>Back</button>
         <button onClick={() => void go()} disabled={busy} style={primaryBtn(busy)}>{busy ? 'Receiving…' : 'Confirm receipt'}</button>

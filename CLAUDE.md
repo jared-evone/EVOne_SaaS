@@ -340,7 +340,10 @@ src/
                             (moved from Sales; a PO finance marks completed
                             becomes Ordered shipments via the
                             purchase_orders_to_shipments trigger), Shipments
-                            (receive → GRN + stock; per-shipment receipts,
+                            (one shipment = the inv_shipments item lines
+                            sharing group_id — header fields kept identical
+                            across lines; receive several lines at once via
+                            inv_receive_shipment_lines → GRN + stock; per-shipment receipts,
                             "Not completed" filter, and the Receipt log view —
                             GoodsReceived.tsx is embedded there, no longer a
                             sidebar screen), Cannibalisation, StockLedger.

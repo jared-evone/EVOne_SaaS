@@ -554,3 +554,37 @@ revoke execute on function inv_shipments_from_po() from public, anon, authentica
 create trigger purchase_orders_to_shipments
   after update of status on purchase_orders
   for each row execute function inv_shipments_from_po();
+
+-- 2026-10-13 · migration inv_shipments_multi_item — one shipment, many items.
+-- inv_shipments rows stay ONE ITEM LINE each (so the live one-row-per-item app
+-- keeps working); lines sharing group_id form one shipment. Header fields
+-- (supplier, PO, mode, dates, customer, notes) are kept identical across a
+-- group's lines by the app. Existing lines with the same PO + supplier were
+-- grouped (28 lines -> 16 shipments). Raise PO now makes one shipment per PO.
+alter table inv_shipments add column group_id uuid not null default gen_random_uuid();
+create index inv_shipments_group_idx on inv_shipments (group_id);
+
+with g as (
+  select po_no, coalesce(supplier, '') as sup, min(group_id::text)::uuid as gid
+    from inv_shipments where po_no is not null
+   group by po_no, coalesce(supplier, '') having count(*) > 1
+)
+update inv_shipments s set group_id = g.gid
+  from g where s.po_no = g.po_no and coalesce(s.supplier, '') = g.sup;
+
+create or replace function inv_receive_shipment_lines(p_lines jsonb, p_location uuid, p_date date, p_condition text, p_note text, p_by text)
+returns int language plpgsql as $$
+declare l jsonb; n int := 0;
+begin
+  if p_location is null then raise exception 'Pick where the stock is going'; end if;
+  for l in select * from jsonb_array_elements(coalesce(p_lines, '[]'::jsonb)) loop
+    if coalesce((l->>'qty')::int, 0) <= 0 then continue; end if;
+    perform inv_receive_shipment((l->>'shipment')::uuid, (l->>'qty')::int, p_location, p_date, p_condition, p_note, p_by);
+    n := n + 1;
+  end loop;
+  if n = 0 then raise exception 'Enter a received quantity for at least one item'; end if;
+  return n;
+end $$;
+revoke execute on function inv_receive_shipment_lines(jsonb, uuid, date, text, text, text) from public, anon;
+grant execute on function inv_receive_shipment_lines(jsonb, uuid, date, text, text, text) to authenticated;
+-- (inv_shipments_from_po re-created with one gen_random_uuid() group per PO.)

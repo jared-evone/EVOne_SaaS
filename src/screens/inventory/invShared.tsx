@@ -79,6 +79,7 @@ export interface InvShipment {
   customer: string | null;
   customer_id?: string | null;
   po_id?: string | null;
+  group_id: string;
   warranty: string | null;
   description: string;
   item_id: string | null;
