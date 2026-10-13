@@ -4,6 +4,7 @@ import { KPICard } from '../components/KPICard';
 import { ChargerLocationMap, type ChargerMapLocation } from '../components/ChargerLocationMap';
 import { supabase } from '../lib/supabase';
 import { useScreenNav } from '../App';
+import { parseChargerPower, fmtKw, type ChargerCurrent } from '../lib/chargerPower';
 import { ltaSchedule, ltaScheduleBase, toPerformed, type LtaFormType, type LetterForms } from './Projects';
 
 interface ProjectRow {
@@ -16,6 +17,7 @@ interface ProjectRow {
 interface ChargerRow {
   id: string;
   asset_tag: string;
+  brand_model: string | null;
   form_1_path: string | null;
   turn_on_date: string | null;
   procurement_date: string | null;
@@ -46,6 +48,13 @@ interface LtaRow {
 // The registry-wide outstanding categories, in display order. Same rules as the
 // per-registry Overview tab, so the dashboard totals match what each registry
 // reports about itself.
+interface PowerBucket { key: string; kw: number | null; current: ChargerCurrent | null; count: number; sites: Set<string>; models: Map<string, number> }
+
+const CURRENT_TAG: Record<ChargerCurrent, { bg: string; color: string }> = {
+  DC: { bg: '#E3F0FF', color: '#1A62C0' },
+  AC: { bg: '#E4F3E3', color: '#1B512D' },
+};
+
 const ISSUE_KINDS = ['formA', 'formD', 'form1', 'invoice'] as const;
 type IssueKind = (typeof ISSUE_KINDS)[number];
 const ISSUE_META: Record<IssueKind, { label: string; sub: string; bg: string; color: string }> = {
@@ -62,13 +71,14 @@ export function ScreenDashboard() {
   const [lta, setLta] = useState<LtaRow[]>([]);
   const [customerTypes, setCustomerTypes] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
+  const [powerKey, setPowerKey] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       const [{ data: projs }, { data: siteRows }, { data: ltaRows }, { data: custRows }] = await Promise.all([
         supabase.from('projects').select('id, name, status, customer_id'),
-        supabase.from('project_sites').select('id, project_id, name, address, latitude, longitude, site_chargers(id, asset_tag, form_1_path, turn_on_date, procurement_date, lta_letter_date, lta_letter_forms, warranty_end_date)'),
+        supabase.from('project_sites').select('id, project_id, name, address, latitude, longitude, site_chargers(id, asset_tag, brand_model, form_1_path, turn_on_date, procurement_date, lta_letter_date, lta_letter_forms, warranty_end_date)'),
         supabase.from('charger_lta_records').select('id, charger_id, form_type, performed_at, invoice_path, period_n').order('performed_at', { ascending: false }),
         supabase.from('customers').select('id, type'),
       ]);
@@ -137,6 +147,32 @@ export function ScreenDashboard() {
     return { totals, total, affectedRegistries: perProject.size, worst };
   }, [sites, lta, projectById, customerTypes]);
 
+  // Installed base by charger size, read from each charger's Brand & Model.
+  const power = useMemo(() => {
+    const buckets = new Map<string, PowerBucket>();
+    const unknown: PowerBucket = { key: 'unknown', kw: null, current: null, count: 0, sites: new Set(), models: new Map() };
+    for (const site of sites) {
+      for (const c of site.site_chargers) {
+        const p = parseChargerPower(c.brand_model);
+        const model = c.brand_model?.trim() || 'No brand & model set';
+        let b = unknown;
+        if (p) {
+          const key = `${p.current}-${p.kw}`;
+          b = buckets.get(key) ?? { key, kw: p.kw, current: p.current, count: 0, sites: new Set(), models: new Map() };
+          buckets.set(key, b);
+        }
+        b.count++;
+        b.sites.add(site.id);
+        b.models.set(model, (b.models.get(model) ?? 0) + 1);
+      }
+    }
+    const byKw = (cur: ChargerCurrent) => [...buckets.values()].filter((b) => b.current === cur).sort((a, b) => (b.kw ?? 0) - (a.kw ?? 0));
+    const dc = byKw('DC');
+    const ac = byKw('AC');
+    return { dc, ac, unknown, dcTotal: dc.reduce((n, b) => n + b.count, 0), acTotal: ac.reduce((n, b) => n + b.count, 0) };
+  }, [sites]);
+  const powerSelected = powerKey === 'unknown' ? power.unknown : [...power.dc, ...power.ac].find((b) => b.key === powerKey) ?? null;
+
   // One pin per site. Pop-up shows site name + project + address + charger count.
   const locations: ChargerMapLocation[] = sitesWithCoords.map((s) => {
     const project = projectById.get(s.project_id);
@@ -164,6 +200,80 @@ export function ScreenDashboard() {
         <KPICard label="In Warranty"       value={inWarrantyChargers.toString()} sub={`${totalChargers - inWarrantyChargers} out / unknown`} />
         <KPICard label="Outstanding"       value={loading ? '…' : outstanding.total.toString()}
           sub={loading ? 'Calculating…' : outstanding.total === 0 ? 'All clear' : `across ${outstanding.affectedRegistries} registr${outstanding.affectedRegistries === 1 ? 'y' : 'ies'}`} />
+      </div>
+
+      {/* Installed chargers by size */}
+      <div style={{ background: C.white, borderRadius: 16, padding: '20px 24px', border: '1px solid #EBEBEB', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>Chargers by Power</div>
+            <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>
+              Installed chargers by size, read from each charger's Brand &amp; Model (brand ignored). Click a size to see the models behind it.
+            </div>
+          </div>
+          {!loading && (
+            <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, padding: '4px 12px', borderRadius: 99, ...CURRENT_TAG.DC }}>{power.dcTotal} DC</span>
+              <span style={{ fontSize: 12, fontWeight: 700, padding: '4px 12px', borderRadius: 99, ...CURRENT_TAG.AC }}>{power.acTotal} AC</span>
+            </span>
+          )}
+        </div>
+
+        {loading ? (
+          <div style={{ background: C.seasalt, border: '1px dashed #EBEBEB', borderRadius: 12, padding: '28px 16px', fontSize: 13, color: C.slate, textAlign: 'center' }}>
+            Counting chargers…
+          </div>
+        ) : (
+          <>
+            {([['DC', 'DC fast charging', power.dc], ['AC', 'AC charging', power.ac]] as const).filter(([, , list]) => list.length > 0).map(([cur, title, list]) => (
+              <div key={cur} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{title}</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 12 }}>
+                  {list.map((b) => {
+                    const on = powerKey === b.key;
+                    return (
+                      <button key={b.key} type="button" onClick={() => setPowerKey(on ? null : b.key)}
+                        style={{ textAlign: 'left', padding: '14px 16px', borderRadius: 14, border: on ? `1.5px solid ${C.green}` : '1px solid #EBEBEB', background: on ? C.honeydew : C.white, cursor: 'pointer', fontFamily: 'Figtree' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                          <span style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{fmtKw(b.kw ?? 0)}</span>
+                          <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 99, ...CURRENT_TAG[cur] }}>{cur}</span>
+                        </div>
+                        <div style={{ fontSize: 28, fontWeight: 700, color: C.green, letterSpacing: '-0.04em', lineHeight: 1, marginTop: 10 }}>{b.count}</div>
+                        <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>at {b.sites.size} site{b.sites.size === 1 ? '' : 's'}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+
+            {power.unknown.count > 0 && (
+              <button type="button" onClick={() => setPowerKey(powerKey === 'unknown' ? null : 'unknown')}
+                style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 14px', borderRadius: 10, border: powerKey === 'unknown' ? '1.5px solid #B45309' : '1px solid #EBEBEB', background: '#FFF0E0', color: '#B45309', fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                {power.unknown.count} charger{power.unknown.count === 1 ? '' : 's'} with no kW in the Brand &amp; Model
+              </button>
+            )}
+
+            {powerSelected && (
+              <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>
+                  {powerSelected.kw != null ? `${fmtKw(powerSelected.kw)} ${powerSelected.current}` : 'Size unknown'} · {powerSelected.count} charger{powerSelected.count === 1 ? '' : 's'} at {powerSelected.sites.size} site{powerSelected.sites.size === 1 ? '' : 's'}
+                </div>
+                {[...powerSelected.models.entries()].sort((a, b) => b[1] - a[1]).map(([model, n]) => (
+                  <div key={model} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
+                    <span style={{ flex: 1, minWidth: 0, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{model}</span>
+                    <span style={{ fontWeight: 700, color: C.slate }}>{n}</span>
+                  </div>
+                ))}
+                {powerSelected.kw == null && (
+                  <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5, marginTop: 4 }}>
+                    These labels don't say how many kW. Put the size in the name (e.g. "Hiconics 120kW DC") — in a project, edit the charger and pick a Brand &amp; Model that includes it.
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       {/* Map (smaller) + registry-wide outstanding issues side by side */}
