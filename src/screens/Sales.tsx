@@ -210,10 +210,20 @@ function SearchSelect({ value, options, onChange, disabled, placeholder, addNewL
 
 // ── Screen ────────────────────────────────────────────────────────
 
-export function ScreenSales() {
+// The same pipeline serves Sales (sales_quotations, SQ- refs) and CPO — selling
+// CPO locations to other CPOs (cpo_sales_quotations, CQ- refs). Kept as separate
+// tables so the two never mix in each other's pipeline or dashboards.
+type Pipeline = 'sales' | 'cpo';
+const PIPELINE: Record<Pipeline, { table: string; screen: 'sales' | 'cpo_sales'; filePrefix: string }> = {
+  sales: { table: 'sales_quotations',     screen: 'sales',     filePrefix: '' },
+  cpo:   { table: 'cpo_sales_quotations', screen: 'cpo_sales', filePrefix: 'cpo/' },
+};
+
+export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}) {
+  const P = PIPELINE[pipeline];
   const { can, user, isAdmin } = usePermissions();
-  const canEdit = can('sales', 'can_edit');
-  const canDelete = can('sales', 'can_delete');
+  const canEdit = can(P.screen, 'can_edit');
+  const canDelete = can(P.screen, 'can_delete');
   const isMobile = useIsMobile();
 
   const [quotes, setQuotes] = useState<Quote[]>([]);
@@ -239,7 +249,7 @@ export function ScreenSales() {
   const fetchAll = async () => {
     setError(null);
     const [q, c, cc, u] = await Promise.all([
-      supabase.from('sales_quotations').select('*').order('quote_date', { ascending: false }).order('created_at', { ascending: false }),
+      supabase.from(P.table).select('*').order('quote_date', { ascending: false }).order('created_at', { ascending: false }),
       supabase.from('customers').select('id, name, email').order('name'),
       supabase.from('customer_contacts').select('customer_id, name, email, position, created_at').order('position').order('created_at'),
       supabase.from('sales_people').select('id, name, is_active, user_id').order('name'),
@@ -270,7 +280,7 @@ export function ScreenSales() {
       if (status !== 'Won' || !stage || quote.won_stage === stage) return;
       setQuotes((qs) => qs.map((q) => (q.id === quote.id ? { ...q, won_stage: stage } : q)));
       const { error: err } = await supabase
-        .from('sales_quotations')
+        .from(P.table)
         .update({ won_stage: stage, updated_at: new Date().toISOString() })
         .eq('id', quote.id);
       if (err) { setError(err.message); void fetchAll(); }
@@ -288,7 +298,7 @@ export function ScreenSales() {
     const won_stage: WonStage | null = status === 'Won' ? (stage ?? 'onboarding') : null;
     setQuotes((qs) => qs.map((q) => (q.id === quote.id ? { ...q, status, outcome_date, won_at, won_stage } : q)));
     const { error: err } = await supabase
-      .from('sales_quotations')
+      .from(P.table)
       .update({ status, outcome_date, won_at, won_stage, updated_at: new Date().toISOString() })
       .eq('id', quote.id);
     if (err) { setError(err.message); void fetchAll(); }
@@ -454,6 +464,8 @@ export function ScreenSales() {
 
       {modal && (
         <QuoteModal
+          table={P.table}
+          filePrefix={P.filePrefix}
           quote={modal.mode === 'edit' ? modal.quote : null}
           customers={customers}
           salespersonId={defaultPerson?.id ?? ''}
@@ -719,7 +731,9 @@ function QuoteTable({ quotes, onOpen }: { quotes: Quote[]; onOpen: (q: Quote) =>
 
 // ── Create / edit modal ──────────────────────────────────────────
 
-function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeople, lockSalesperson, canEdit, canDelete, isAdmin, costOptions, onCostOptionsChanged, onClose, onSaved }: {
+function QuoteModal({ table, filePrefix, quote, customers, salespersonId, salespersonName, salespeople, lockSalesperson, canEdit, canDelete, isAdmin, costOptions, onCostOptionsChanged, onClose, onSaved }: {
+  table: string;
+  filePrefix: string;
   quote: Quote | null;
   customers: CustomerOpt[];
   salespersonId: string;
@@ -923,7 +937,7 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
       for (const f of v.files) {
         if (f.newFile) {
           const safe = f.newFile.name.replace(/[^a-zA-Z0-9.]/g, '_');
-          const path = `quote_${Date.now()}_${Math.round(performance.now() % 1000)}_${outFiles.length}_${safe}`;
+          const path = `${filePrefix}quote_${Date.now()}_${Math.round(performance.now() % 1000)}_${outFiles.length}_${safe}`;
           const { error: upErr } = await supabase.storage.from('sales-quotations').upload(path, f.newFile, { upsert: true, contentType: 'application/pdf' });
           if (upErr) { setError(`Upload failed (${f.newFile.name}): ${upErr.message}`); setSaving(false); return; }
           outFiles.push({ path, name: f.newFile.name, quote_no: f.quoteNo.trim() || undefined });
@@ -971,8 +985,8 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
       updated_at: new Date().toISOString(),
     };
     const { error: err } = isNew
-      ? await supabase.from('sales_quotations').insert(payload)
-      : await supabase.from('sales_quotations').update(payload).eq('id', quote.id);
+      ? await supabase.from(table).insert(payload)
+      : await supabase.from(table).update(payload).eq('id', quote.id);
     setSaving(false);
     if (err) { setError(err.message); return; }
     onSaved();
@@ -981,7 +995,7 @@ function QuoteModal({ quote, customers, salespersonId, salespersonName, salespeo
   const handleDelete = async () => {
     if (!quote) return;
     setSaving(true);
-    const { error: err } = await supabase.from('sales_quotations').delete().eq('id', quote.id);
+    const { error: err } = await supabase.from(table).delete().eq('id', quote.id);
     setSaving(false);
     if (err) { setError(err.message); return; }
     onSaved();

@@ -89,6 +89,7 @@ type NavEntry = NavLeaf | NavGroup;
 const NAV_ALL: NavEntry[] = [
   { kind: 'leaf', id: 'dashboard',         icon: LayoutDashboard, label: 'Dashboard' },
   { kind: 'leaf', id: 'charging_dashboard',icon: LayoutDashboard, label: 'Charging Dashboard' },
+  { kind: 'leaf', id: 'cpo_sales',         icon: Handshake,       label: 'CPO Sales Pipeline' },
   { kind: 'leaf', id: 'overview',          icon: Home,            label: 'Overview' },
   { kind: 'leaf', id: 'orders',            icon: Receipt,         label: 'Invoices' },
   { kind: 'leaf', id: 'installations',     icon: Wrench,          label: 'Installations' },
@@ -148,6 +149,7 @@ const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
   charging:            'Charging Records',
   corporateinvoicing:  'Corporate Invoicing',
   charging_dashboard:  'Charging Dashboard',
+  cpo_sales:           'CPO Sales Pipeline',
   quote_machine:       'Quote Machine',
   raise_po:            'Raise PO',
   tsd_technician:      'Calendar',
@@ -187,6 +189,7 @@ const screens: Partial<Record<ScreenId, JSX.Element>> = {
   charging:            <ScreenChargingRecords />,
   corporateinvoicing:  <ScreenCorporateInvoicing />,
   charging_dashboard:  <ScreenChargingDashboard />,
+  cpo_sales:           <ScreenSales key="cpo" pipeline="cpo" />,
   quote_machine:       <ScreenQuoteMachine />,
   raise_po:            <ScreenRaisePO />,
   tsd_technician:      <TechApp />,
