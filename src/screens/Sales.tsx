@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
 import { useIsMobile } from '../lib/useIsMobile';
 import { CustomerCreateModal, type CreatedCustomer } from '../components/CustomerCreateModal';
-import { Search, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Handshake, FileUp, FileText, X, Plus, Archive, ArchiveRestore } from 'lucide-react';
+import { Search, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Handshake, FileUp, FileText, X, Plus, Archive, ArchiveRestore, ArrowRightLeft } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -216,14 +216,34 @@ function SearchSelect({ value, options, onChange, disabled, placeholder, addNewL
 // CPO locations to other CPOs (cpo_sales_quotations, CQ- refs). Kept as separate
 // tables so the two never mix in each other's pipeline or dashboards.
 type Pipeline = 'sales' | 'cpo';
-const PIPELINE: Record<Pipeline, { table: string; screen: 'sales' | 'cpo_sales'; filePrefix: string }> = {
-  sales: { table: 'sales_quotations',     screen: 'sales',     filePrefix: '' },
-  cpo:   { table: 'cpo_sales_quotations', screen: 'cpo_sales', filePrefix: 'cpo/' },
+const PIPELINE: Record<Pipeline, { table: string; screen: 'sales' | 'cpo_sales'; dept: 'sales' | 'cpo'; label: string; filePrefix: string }> = {
+  sales: { table: 'sales_quotations',     screen: 'sales',     dept: 'sales', label: 'Sales Pipeline',     filePrefix: '' },
+  cpo:   { table: 'cpo_sales_quotations', screen: 'cpo_sales', dept: 'cpo',   label: 'CPO Sales Pipeline', filePrefix: 'cpo/' },
 };
+
+// Move a quote to the other pipeline exactly as it is — same id, same SQ-/CQ-
+// number, files and history. Copy first, then remove the original; if the
+// removal fails the copy is taken back out, so it never sits in both.
+async function moveQuote(id: string, from: Pipeline, to: Pipeline): Promise<string | null> {
+  const src = PIPELINE[from].table;
+  const dst = PIPELINE[to].table;
+  const { data: row, error: readErr } = await supabase.from(src).select('*').eq('id', id).single();
+  if (readErr || !row) return readErr?.message ?? 'Quote not found.';
+  const { error: insErr } = await supabase.from(dst).insert(row);
+  if (insErr) return insErr.message.includes('duplicate') ? `${(row as Quote).ref} already exists in the ${PIPELINE[to].label}.` : insErr.message;
+  const { error: delErr } = await supabase.from(src).delete().eq('id', id);
+  if (delErr) {
+    await supabase.from(dst).delete().eq('id', id);
+    return delErr.message;
+  }
+  return null;
+}
 
 export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}) {
   const P = PIPELINE[pipeline];
-  const { can, user, isAdmin } = usePermissions();
+  const { can, canIn, user, isAdmin } = usePermissions();
+  const other: Pipeline = pipeline === 'sales' ? 'cpo' : 'sales';
+  const canMove = can(P.screen, 'can_edit') && canIn(PIPELINE[other].dept, PIPELINE[other].screen, 'can_edit');
   const canEdit = can(P.screen, 'can_edit');
   const canDelete = can(P.screen, 'can_delete');
   const isMobile = useIsMobile();
@@ -517,6 +537,7 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
       {modal && (
         <QuoteModal
           onArchive={(q, archive) => void setArchived([q.id], archive).then(() => setModal(null))}
+          moveTo={canMove ? { label: PIPELINE[other].label, run: (q) => moveQuote(q.id, pipeline, other) } : undefined}
           table={P.table}
           filePrefix={P.filePrefix}
           quote={modal.mode === 'edit' ? modal.quote : null}
@@ -826,8 +847,10 @@ function QuoteTable({ quotes, onOpen, selectable, selected, onToggle, onToggleAl
 
 // ── Create / edit modal ──────────────────────────────────────────
 
-function QuoteModal({ onArchive, table, filePrefix, quote, customers, salespersonId, salespersonName, salespeople, lockSalesperson, canEdit, canDelete, isAdmin, costOptions, onCostOptionsChanged, onClose, onSaved }: {
+function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, salespersonId, salespersonName, salespeople, lockSalesperson, canEdit, canDelete, isAdmin, costOptions, onCostOptionsChanged, onClose, onSaved }: {
   onArchive: (q: Quote, archive: boolean) => void;
+  /** Present when the user can edit both pipelines: move this quote across. */
+  moveTo?: { label: string; run: (q: Quote) => Promise<string | null> };
   table: string;
   filePrefix: string;
   quote: Quote | null;
@@ -886,6 +909,15 @@ function QuoteModal({ onArchive, table, filePrefix, quote, customers, salesperso
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmMove, setConfirmMove] = useState(false);
+  const doMove = async () => {
+    if (!quote || !moveTo) return;
+    setSaving(true);
+    const err = await moveTo.run(quote);
+    setSaving(false);
+    if (err) { setError(err); setConfirmMove(false); return; }
+    onSaved();
+  };
 
   // Quotation versions: each is an amount + one or more PDFs. Pipeline = largest.
   interface VFile { path: string | null; name: string; newFile: File | null; quoteNo: string; }
@@ -1488,6 +1520,15 @@ function QuoteModal({ onArchive, table, filePrefix, quote, customers, salesperso
           </div>
         </>)}
 
+        {confirmMove && moveTo && (
+          <div style={{ background: '#E3F0FF', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: '#1A62C0', flex: 1, minWidth: 200 }}>
+              Move {quote?.ref} to the {moveTo.label}? It keeps its number, files and history, and leaves this pipeline.
+            </span>
+            <button onClick={() => setConfirmMove(false)} disabled={saving} style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+            <button onClick={() => void doMove()} disabled={saving} style={{ padding: '7px 14px', borderRadius: 8, border: 'none', background: '#1A62C0', color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: saving ? 'default' : 'pointer' }}>{saving ? 'Moving…' : 'Yes, move'}</button>
+          </div>
+        )}
         {confirmDelete && (
           <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 12, fontWeight: 600, color: '#C0321A', flex: 1, minWidth: 160 }}>Delete {quote?.ref}? This cannot be undone.</span>
@@ -1496,7 +1537,7 @@ function QuoteModal({ onArchive, table, filePrefix, quote, customers, salesperso
           </div>
         )}
 
-        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap' }}>
           {!isNew && canDelete && !confirmDelete && (
             <button onClick={() => setConfirmDelete(true)}
               style={{ padding: '9px 16px', borderRadius: 10, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
@@ -1508,6 +1549,12 @@ function QuoteModal({ onArchive, table, filePrefix, quote, customers, salesperso
               title={quote!.archived_at ? 'Put this quote back on the pipeline' : 'Take this quote off the pipeline — find it later under Archived'}
               style={{ padding: '9px 16px', borderRadius: 10, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               {quote!.archived_at ? <><ArchiveRestore size={14} /> Restore</> : <><Archive size={14} /> Archive</>}
+            </button>
+          )}
+          {!isNew && moveTo && !confirmMove && !confirmDelete && (
+            <button onClick={() => setConfirmMove(true)} title={`Move this quote to the ${moveTo.label}`}
+              style={{ padding: '9px 16px', borderRadius: 10, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <ArrowRightLeft size={14} /> Move to {moveTo.label.replace(' Pipeline', '')}
             </button>
           )}
           <span style={{ marginRight: 'auto' }} />
