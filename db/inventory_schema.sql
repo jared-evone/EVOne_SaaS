@@ -515,3 +515,42 @@ alter table inv_shipments add column customer_id uuid references customers(id) o
 alter table inv_requests add column contact_name text, add column contact_phone text;
 -- Data (execute_sql): PR-2026-0031 / 0032 (the only app-created requests)
 -- filled from their customer's first contact. Excel-migrated rows left blank.
+
+-- 2026-10-13 · migrations inv_shipments_from_raise_po (+ _qty_format_fix) —
+-- Raise PO feeds Incoming Shipments. When finance marks a purchase order
+-- completed (sent to the supplier — from the email link or in the app), each
+-- PO line becomes an 'ordered' shipment carrying po_id / PO number, supplier,
+-- quantity and an item link when the line name matches an active item. The
+-- supplier joins inv_suppliers if new. Fires once per PO (po_id guard).
+alter table inv_shipments add column po_id uuid references purchase_orders(id) on delete set null;
+create index inv_shipments_po_idx on inv_shipments (po_id);
+
+create or replace function inv_shipments_from_po() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare l jsonb; q numeric; v_name text; v_supplier text; v_item uuid;
+begin
+  if new.status is distinct from 'completed' or old.status = 'completed' then return new; end if;
+  if exists (select 1 from inv_shipments where po_id = new.id) then return new; end if;
+  for l in select * from jsonb_array_elements(coalesce(new.lines, '[]'::jsonb)) loop
+    q := nullif(btrim(l->>'qty'), '')::numeric;
+    if q is null or q <= 0 then continue; end if;
+    v_name := btrim(coalesce(l->>'name', ''));
+    v_supplier := coalesce(nullif(btrim(l->>'supplier'), ''), nullif(btrim(new.supplier), ''));
+    v_item := (select id from inv_items where active and lower(name) = lower(v_name) limit 1);
+    insert into inv_shipments (supplier, po_no, po_id, employee, description, item_id, qty, order_date, status, notes, created_by)
+    values (v_supplier, new.po_number, new.id, new.created_by,
+            btrim((case when q = trunc(q) then trunc(q)::text else q::text end) || ' ' || coalesce(l->>'unit', '') || ' ' || v_name),
+            v_item, greatest(1, ceil(q))::int,
+            coalesce((new.finance_decided_at at time zone 'Asia/Singapore')::date, current_date), 'ordered',
+            'From Raise PO ' || new.po_number || coalesce(' — ' || nullif(btrim(new.title), ''), ''), 'Raise PO');
+    if v_supplier is not null and not exists (select 1 from inv_suppliers where lower(name) = lower(v_supplier)) then
+      insert into inv_suppliers (name, sort_order) values (v_supplier, coalesce((select max(sort_order) from inv_suppliers), 0) + 1);
+    end if;
+  end loop;
+  return new;
+end $$;
+revoke execute on function inv_shipments_from_po() from public, anon, authenticated;
+
+create trigger purchase_orders_to_shipments
+  after update of status on purchase_orders
+  for each row execute function inv_shipments_from_po();

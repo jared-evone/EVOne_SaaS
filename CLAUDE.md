@@ -336,9 +336,15 @@ src/
     inventory/              Inventory department (STANDALONE — no other
                             department reads or changes stock). invShared.tsx
                             (types, useInvCore, UI bits) + StockLevels,
-                            Requests (fulfil → delivery order), Shipments
-                            (receive → GRN + stock), GoodsReceived,
-                            Cannibalisation, StockLedger. Stock = sum of
+                            Requests (fulfil → delivery order), Raise PO
+                            (moved from Sales; a PO finance marks completed
+                            becomes Ordered shipments via the
+                            purchase_orders_to_shipments trigger), Shipments
+                            (receive → GRN + stock; per-shipment receipts,
+                            "Not completed" filter, and the Receipt log view —
+                            GoodsReceived.tsx is embedded there, no longer a
+                            sidebar screen), Cannibalisation, StockLedger.
+                            Stock = sum of
                             inv_movements; every stock change goes through the
                             inv_* plpgsql functions or a single movement insert
                             — never edit balances. See db/inventory_schema.sql.

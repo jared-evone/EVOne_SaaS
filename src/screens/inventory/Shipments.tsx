@@ -5,11 +5,12 @@ import { supabase } from '../../lib/supabase';
 import { usePermissions } from '../../permissions';
 import { Plus, PackageCheck, Download, Lock, Building2, Square, SquareCheck } from 'lucide-react';
 import { SearchSelect } from '../../components/SearchSelect';
+import { ScreenInvGrn, CompleteModal } from './GoodsReceived';
 import {
   useInvCore, itemLabel, fmtD, todayISO,
   Pill, Field, ErrorBanner, Modal, ItemSelect, LocationSelect, SearchBox, downloadCsv, LookupSelect, LookupList, useLookupRows, type LookupRow,
   inputStyle, primaryBtn, ghostBtn, pillBtn, thStyle, tdStyle,
-  type InvItem, type InvShipment, type InvLocation, type OnHand,
+  type InvItem, type InvShipment, type InvLocation, type OnHand, type InvGrn,
 } from './invShared';
 
 type ShipStatus = InvShipment['status'];
@@ -22,9 +23,9 @@ export const SHIP_META: Record<ShipStatus, { label: string; bg: string; color: s
   cancelled:  { label: 'Cancelled',  bg: '#FDEAEA', color: '#C0321A' },
 };
 
-type Filter = 'open' | ShipStatus | 'all';
+type Filter = 'open' | 'not_completed' | ShipStatus | 'all';
 const FILTERS: { id: Filter; label: string }[] = [
-  { id: 'open', label: 'Open' }, { id: 'ordered', label: 'Ordered' }, { id: 'in_transit', label: 'In transit' },
+  { id: 'open', label: 'Open' }, { id: 'not_completed', label: 'Not completed' }, { id: 'ordered', label: 'Ordered' }, { id: 'in_transit', label: 'In transit' },
   { id: 'partial', label: 'Partly received' }, { id: 'received', label: 'Received' }, { id: 'cancelled', label: 'Cancelled' }, { id: 'all', label: 'All' },
 ];
 
@@ -33,6 +34,7 @@ interface CustomerOpt { id: string; name: string; }
 const MODES = ['Air', 'Sea', 'Local'];
 
 const isOpen = (s: InvShipment) => s.status === 'ordered' || s.status === 'in_transit' || s.status === 'partial';
+const PENDING_META = { label: 'Receipt pending', bg: '#FFF8E1', color: '#B07D00' };
 
 export function ScreenInvShipments() {
   const { can, user } = usePermissions();
@@ -50,18 +52,27 @@ export function ScreenInvShipments() {
 
   const [rows, setRows] = useState<InvShipment[]>([]);
   const [received, setReceived] = useState<Map<string, number>>(new Map());
+  // Every receipt line per shipment — received ones and ones still awaiting receipt.
+  const [receipts, setReceipts] = useState<Map<string, InvGrn[]>>(new Map());
+  const [view, setView] = useState<'shipments' | 'log'>('shipments');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const load = async () => {
     const [{ data, error: e }, { data: g }] = await Promise.all([
       supabase.from('inv_shipments').select('*').order('order_date', { ascending: false, nullsFirst: false }).order('legacy_no', { ascending: false }),
-      supabase.from('inv_grn').select('shipment_id, qty_received').eq('status', 'received').not('shipment_id', 'is', null),
+      supabase.from('inv_grn').select('*').not('shipment_id', 'is', null).order('received_on', { ascending: true, nullsFirst: false }).order('created_at'),
     ]);
     if (e) setError(e.message);
     setRows((data as InvShipment[]) ?? []);
     const m = new Map<string, number>();
-    for (const r of (g ?? []) as { shipment_id: string; qty_received: number | null }[]) m.set(r.shipment_id, (m.get(r.shipment_id) ?? 0) + (r.qty_received ?? 0));
+    const byShip = new Map<string, InvGrn[]>();
+    for (const r of (g ?? []) as InvGrn[]) {
+      if (!r.shipment_id) continue;
+      if (r.status === 'received') m.set(r.shipment_id, (m.get(r.shipment_id) ?? 0) + (r.qty_received ?? 0));
+      byShip.set(r.shipment_id, [...(byShip.get(r.shipment_id) ?? []), r]);
+    }
     setReceived(m);
+    setReceipts(byShip);
     setLoading(false);
   };
   useEffect(() => { void load(); }, []);
@@ -75,35 +86,63 @@ export function ScreenInvShipments() {
   const today = todayISO();
   const month = today.slice(0, 7);
   const outstanding = (s: InvShipment) => (s.status === 'received' || s.status === 'cancelled' ? 0 : Math.max(0, s.qty - (received.get(s.id) ?? 0)));
+  // A receipt logged as "in transit" that was never received (Excel leftovers).
+  const hasPending = (s: InvShipment) => (receipts.get(s.id) ?? []).some((g) => g.status === 'pending');
+  // What to chase the supplier about: part-delivered, or a receipt still outstanding.
+  const notCompleted = (s: InvShipment) => s.status === 'partial' || hasPending(s);
+  const openRow = (s: InvShipment) => isOpen(s) || hasPending(s);
 
   const visible = rows.filter((s) => {
-    if (filter === 'open' && !isOpen(s)) return false;
-    if (filter !== 'open' && filter !== 'all' && s.status !== filter) return false;
+    if (filter === 'open' && !openRow(s)) return false;
+    if (filter === 'not_completed' && !notCompleted(s)) return false;
+    if (filter !== 'open' && filter !== 'not_completed' && filter !== 'all' && s.status !== filter) return false;
     const q = search.trim().toLowerCase();
     return !q || [s.po_no, s.supplier, s.description, s.customer, s.employee, itemLabel(items.find((i) => i.id === s.item_id), items)].join(' ').toLowerCase().includes(q);
   });
 
   const exportCsv = () => {
     downloadCsv(`incoming_shipments_${today}.csv`, [
-      ['No', 'Supplier', 'PO', 'Employee', 'Customer', 'Description', 'Item', 'Qty', 'Mode', 'Order Date', 'In Transit Date', 'Est. Arrival', 'Status'],
-      ...visible.map((s) => [s.legacy_no, s.supplier, s.po_no, s.employee, s.customer, s.description, itemLabel(items.find((i) => i.id === s.item_id), items), s.qty, s.mode, s.order_date, s.in_transit_date, s.eta ?? s.eta_note, SHIP_META[s.status].label]),
+      ['No', 'Supplier', 'PO', 'Employee', 'Customer', 'Description', 'Item', 'Qty Ordered', 'Qty Received', 'Outstanding', 'Mode', 'Order Date', 'In Transit Date', 'Est. Arrival', 'Status'],
+      ...visible.map((s) => [s.legacy_no, s.supplier, s.po_no, s.employee, s.customer, s.description, itemLabel(items.find((i) => i.id === s.item_id), items), s.qty, received.get(s.id) ?? null, outstanding(s), s.mode, s.order_date, s.in_transit_date, s.eta ?? s.eta_note, hasPending(s) ? PENDING_META.label : SHIP_META[s.status].label]),
     ]);
   };
 
   const open = openId ? rows.find((s) => s.id === openId) ?? null : null;
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading shipments…</div>;
 
-  const openRows = rows.filter(isOpen);
-  const overdue = openRows.filter((s) => s.eta && s.eta < today);
+  const openRows = rows.filter(openRow);
+  const overdue = rows.filter((s) => isOpen(s) && s.eta && s.eta < today);
+  const chase = rows.filter(notCompleted);
+  const receivedThisMonth = [...receipts.values()].flat().filter((g) => g.status === 'received' && (g.received_on ?? '').startsWith(month));
+
+  const viewSwitch = (
+    <div style={{ display: 'flex', gap: 4, background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, padding: 4, alignSelf: 'flex-start' }}>
+      {([['shipments', `Shipments · ${rows.length}`], ['log', 'Receipt log']] as const).map(([id, label]) => (
+        <button key={id} onClick={() => setView(id)}
+          style={{ padding: '7px 16px', borderRadius: 10, border: 'none', background: view === id ? C.green : 'transparent', color: view === id ? C.white : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+  if (view === 'log') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+        {viewSwitch}
+        <ScreenInvGrn embedded onChanged={load} />
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <ErrorBanner text={error ?? coreErr} />
+      {viewSwitch}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
-        <KPICard accent label="Open shipments" value={openRows.length} sub={`${openRows.reduce((n, s) => n + outstanding(s), 0).toLocaleString()} units to come`} />
-        <KPICard label="In transit" value={rows.filter((s) => s.status === 'in_transit').length} sub="Shipped by the supplier" />
+        <KPICard accent label="Open shipments" value={openRows.length} sub={`${openRows.reduce((n, s) => n + outstanding(s), 0).toLocaleString()} units to come · ${rows.filter((s) => s.status === 'in_transit').length} in transit`} />
+        <KPICard label="Not completed" value={chase.length} sub="Part-delivered or awaiting receipt — chase the supplier" />
         <KPICard label="Past ETA" value={overdue.length} sub="Open with an arrival date already gone" />
-        <KPICard label="Received this month" value={rows.filter((s) => s.status === 'received' && (s.received_on ?? '').startsWith(month)).length} sub="Shipment lines closed" />
+        <KPICard label="Received this month" value={receivedThisMonth.reduce((n, g) => n + (g.qty_received ?? 0), 0).toLocaleString()} sub={`units over ${receivedThisMonth.length} receipt${receivedThisMonth.length === 1 ? '' : 's'}`} />
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -120,12 +159,13 @@ export function ScreenInvShipments() {
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1050 }}>
             <thead>
-              <tr>{['PO', 'Supplier', 'Description', 'Qty', 'Ordered', 'ETA', 'Status'].map((h) => <th key={h} style={{ ...thStyle, textAlign: h === 'Qty' ? 'right' : 'left' }}>{h}</th>)}</tr>
+              <tr>{['PO', 'Supplier', 'Description', 'Qty', 'Ordered', 'ETA', 'Status'].map((h) => <th key={h} style={{ ...thStyle, textAlign: h === 'Qty' ? 'right' : 'left' }}>{h === 'Qty' ? 'Received / Qty' : h}</th>)}</tr>
             </thead>
             <tbody>
               {visible.map((s) => {
-                const meta = SHIP_META[s.status];
+                const meta = hasPending(s) ? PENDING_META : SHIP_META[s.status];
                 const got = received.get(s.id) ?? 0;
+                const out = outstanding(s);
                 const late = isOpen(s) && s.eta && s.eta < today;
                 const linked = items.find((i) => i.id === s.item_id);
                 return (
@@ -134,6 +174,7 @@ export function ScreenInvShipments() {
                     onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
                     <td style={{ ...tdStyle, fontWeight: 700, color: C.green, whiteSpace: 'nowrap' }}>
                       {s.po_no || <span style={{ color: C.slate }}>No PO</span>}
+                      {s.po_id && <div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>From Raise PO</div>}
                       {s.legacy_no != null && <div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>Excel #{s.legacy_no}</div>}
                     </td>
                     <td style={tdStyle}>{s.supplier || '—'}{s.customer && <div style={{ fontSize: 11, color: C.slate }}>For {s.customer}</div>}</td>
@@ -144,8 +185,8 @@ export function ScreenInvShipments() {
                       </div>
                     </td>
                     <td style={{ ...tdStyle, textAlign: 'right', fontWeight: 700, whiteSpace: 'nowrap' }}>
-                      {s.qty}
-                      {s.status === 'partial' && <div style={{ fontSize: 11, color: '#B07D00' }}>{got} in</div>}
+                      {got > 0 ? <>{got}<span style={{ color: C.slate, fontWeight: 600 }}> / {s.qty}</span></> : s.qty}
+                      {got > 0 && out > 0 && <div style={{ fontSize: 11, color: '#B07D00' }}>{out} outstanding</div>}
                     </td>
                     <td style={{ ...tdStyle, color: C.slate, whiteSpace: 'nowrap' }}>{fmtD(s.order_date)}</td>
                     <td style={{ ...tdStyle, whiteSpace: 'nowrap', color: late ? '#C0321A' : C.slate, fontWeight: late ? 700 : 400 }}>
@@ -163,12 +204,12 @@ export function ScreenInvShipments() {
       </div>
 
       {open && (
-        <ShipmentModal key={open.id} ship={open} receivedQty={received.get(open.id) ?? 0} items={items} locations={locations} onHand={onHand} me={me}
+        <ShipmentModal key={open.id} ship={open} receivedQty={received.get(open.id) ?? 0} receipts={receipts.get(open.id) ?? []} items={items} locations={locations} onHand={onHand} me={me}
           suppliers={suppliers} reloadSuppliers={reloadSuppliers} customers={customers} isAdmin={canDelete}
           canEdit={canEdit} canDelete={canDelete} onClose={() => setOpenId(null)} onChanged={refresh} />
       )}
       {creating && (
-        <ShipmentModal ship={null} receivedQty={0} items={items} locations={locations} onHand={onHand} me={me}
+        <ShipmentModal ship={null} receivedQty={0} receipts={[]} items={items} locations={locations} onHand={onHand} me={me}
           suppliers={suppliers} reloadSuppliers={reloadSuppliers} customers={customers} isAdmin={canDelete}
           canEdit={canEdit} canDelete={false} onClose={() => setCreating(false)} onChanged={async () => { setCreating(false); await refresh(); }} />
       )}
@@ -183,13 +224,15 @@ export function ScreenInvShipments() {
   );
 }
 
-function ShipmentModal({ ship, receivedQty, items, locations, onHand, me, suppliers, reloadSuppliers, customers, isAdmin, canEdit, canDelete, onClose, onChanged }: {
-  ship: InvShipment | null; receivedQty: number; items: InvItem[]; locations: InvLocation[]; onHand: OnHand; me: string;
+function ShipmentModal({ ship, receivedQty, receipts, items, locations, onHand, me, suppliers, reloadSuppliers, customers, isAdmin, canEdit, canDelete, onClose, onChanged }: {
+  ship: InvShipment | null; receivedQty: number; receipts: InvGrn[]; items: InvItem[]; locations: InvLocation[]; onHand: OnHand; me: string;
   suppliers: LookupRow[]; reloadSuppliers: () => Promise<void>; customers: CustomerOpt[]; isAdmin: boolean;
   canEdit: boolean; canDelete: boolean; onClose: () => void; onChanged: () => Promise<void>;
 }) {
   const isNew = !ship;
   const editable = canEdit && (isNew || ship!.status !== 'cancelled');
+  const [completing, setCompleting] = useState<InvGrn | null>(null);
+  const locName = (id: string | null) => locations.find((l) => l.id === id)?.name ?? '—';
   const [f, setF] = useState({
     supplier: ship?.supplier ?? '', po_no: ship?.po_no ?? '', customer: ship?.customer ?? '', customer_id: ship?.customer_id ?? '',
     description: ship?.description ?? '', item_id: ship?.item_id ?? '',
@@ -324,6 +367,35 @@ function ShipmentModal({ ship, receivedQty, items, locations, onHand, me, suppli
         </Field>
       </div>
       <Field label="Notes"><input value={f.notes} disabled={ro} onChange={(e) => setF({ ...f, notes: e.target.value })} style={inputStyle} /></Field>
+
+      {receipts.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Receipts</div>
+          {receipts.map((g) => {
+            const pending = g.status === 'pending';
+            const short = !pending && g.qty_ordered != null && g.qty_received != null && g.qty_received < g.qty_ordered;
+            return (
+              <div key={g.id} style={{ display: 'flex', alignItems: 'center', gap: 10, background: pending ? '#FFFCF2' : C.seasalt, border: '1px solid #F3F3F3', borderRadius: 10, padding: '10px 12px', fontSize: 12.5 }}>
+                <span style={{ fontWeight: 700, color: pending ? '#B07D00' : C.green, whiteSpace: 'nowrap' }}>{pending ? 'Awaiting receipt' : fmtD(g.received_on)}</span>
+                <span style={{ color: '#1a1a1a', whiteSpace: 'nowrap' }}>{pending ? `${g.qty_ordered ?? '?'} expected` : `${g.qty_received ?? 0} of ${g.qty_ordered ?? '?'} received`}</span>
+                {short && <span style={{ fontSize: 11, fontWeight: 700, color: '#C0321A', whiteSpace: 'nowrap' }}>short {(g.qty_ordered ?? 0) - (g.qty_received ?? 0)}</span>}
+                <span style={{ flex: 1, minWidth: 0, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {[!pending && locName(g.location_id), g.condition, g.notes].filter(Boolean).join(' · ')}
+                </span>
+                {pending && canEdit && (
+                  <button onClick={() => setCompleting(g)} style={{ ...primaryBtn(), padding: '6px 12px', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                    <PackageCheck size={13} /> Receive
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {completing && (
+        <CompleteModal grn={completing} items={items} locations={locations} onHand={onHand} me={me}
+          onClose={() => setCompleting(null)} onDone={async () => { setCompleting(null); await onChanged(); onClose(); }} />
+      )}
 
       {!isNew && canEdit && (
         <div style={{ borderTop: '1px solid #F3F3F3', paddingTop: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>

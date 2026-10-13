@@ -7,7 +7,7 @@ import {
   Handshake, ClipboardList, Boxes, Truck, Building2, Plug, Zap, FileText,
   Settings as SettingsIcon, ShieldCheck, Database, ChevronRight, ChevronDown,
   Power, Menu, TrendingUp, UserCog, Mail, Calculator, ClipboardCheck, GanttChartSquare, ListTodo, BookOpen,
-  PackageCheck, ScrollText,
+  ScrollText,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -57,7 +57,6 @@ import { SopLibrary } from './screens/tsd/SopLibrary';
 import { ScreenInvStock } from './screens/inventory/StockLevels';
 import { ScreenInvRequests } from './screens/inventory/Requests';
 import { ScreenInvShipments } from './screens/inventory/Shipments';
-import { ScreenInvGrn } from './screens/inventory/GoodsReceived';
 import { ScreenInvCannibal } from './screens/inventory/Cannibalisation';
 import { ScreenInvLedger } from './screens/inventory/StockLedger';
 import { StockRequestPage } from './screens/inventory/StockRequestPage';
@@ -120,7 +119,6 @@ const NAV_ALL: NavEntry[] = [
   { kind: 'leaf', id: 'inv_requests',      icon: ClipboardList,   label: 'Requests & Delivery' },
   { kind: 'leaf', id: 'raise_po',          icon: ClipboardCheck,  label: 'Raise PO' },
   { kind: 'leaf', id: 'inv_shipments',     icon: Truck,           label: 'Incoming Shipments' },
-  { kind: 'leaf', id: 'inv_grn',           icon: PackageCheck,    label: 'Goods Received' },
   { kind: 'leaf', id: 'inv_cannibal',      icon: Wrench,          label: 'Cannibalisation' },
   { kind: 'leaf', id: 'inv_ledger',        icon: ScrollText,      label: 'Stock Ledger' },
   { kind: 'group', key: 'settings_group', icon: SettingsIcon,     label: 'Settings', children: [
@@ -161,7 +159,6 @@ const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
   inv_stock:           'Stock Levels',
   inv_requests:        'Requests & Delivery',
   inv_shipments:       'Incoming Shipments',
-  inv_grn:             'Goods Received',
   inv_cannibal:        'Cannibalisation',
   inv_ledger:          'Stock Ledger',
   email_designer:      'Email',
@@ -201,7 +198,6 @@ const screens: Partial<Record<ScreenId, JSX.Element>> = {
   inv_stock:           <ScreenInvStock />,
   inv_requests:        <ScreenInvRequests />,
   inv_shipments:       <ScreenInvShipments />,
-  inv_grn:             <ScreenInvGrn />,
   inv_cannibal:        <ScreenInvCannibal />,
   inv_ledger:          <ScreenInvLedger />,
   email_designer:      <ScreenEmailDesigner />,

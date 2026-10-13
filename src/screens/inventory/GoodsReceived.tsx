@@ -13,9 +13,11 @@ import {
 
 type Filter = 'all' | 'pending' | 'received' | 'variance';
 
-export function ScreenInvGrn() {
+// The receipt log — shown inside Incoming Shipments ("Receipt log" view): every
+// receipt, including Excel history that isn't tied to a shipment.
+export function ScreenInvGrn({ embedded = false, onChanged }: { embedded?: boolean; onChanged?: () => Promise<void> } = {}) {
   const { can, user } = usePermissions();
-  const canEdit = can('inv_grn', 'can_edit');
+  const canEdit = can('inv_shipments', 'can_edit');
   const me = user.full_name || user.email;
   const { items, locations, onHand, error: coreErr, reload: reloadCore } = useInvCore();
 
@@ -30,7 +32,7 @@ export function ScreenInvGrn() {
     setLoading(false);
   };
   useEffect(() => { void load(); }, []);
-  const refresh = async () => { await Promise.all([load(), reloadCore()]); };
+  const refresh = async () => { await Promise.all([load(), reloadCore(), onChanged?.()]); };
 
   const [filter, setFilter] = useState<Filter>('all');
   const [search, setSearch] = useState('');
@@ -64,12 +66,12 @@ export function ScreenInvGrn() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <ErrorBanner text={error ?? coreErr} />
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
+      {!embedded && <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
         <KPICard accent label="Received this month" value={thisMonth.reduce((n, g) => n + (g.qty_received ?? 0), 0).toLocaleString()} sub={`${thisMonth.length} receipt line${thisMonth.length === 1 ? '' : 's'}`} />
         <KPICard label="Awaiting receipt" value={rows.filter((g) => g.status === 'pending').length} sub="Logged as in transit" />
         <KPICard label="With variance" value={rows.filter((g) => variance(g) !== 0).length} sub="Received ≠ ordered" />
         <KPICard label="Total receipts" value={rows.filter((g) => g.status === 'received').length} sub={`${rows.filter((g) => g.legacy).length} migrated from Excel`} />
-      </div>
+      </div>}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <SearchBox value={search} onChange={setSearch} placeholder="Search PO, item, supplier…" />
@@ -81,7 +83,7 @@ export function ScreenInvGrn() {
         </div>
       </div>
       <div style={{ fontSize: 12, color: C.slate, marginTop: -8 }}>
-        The log of everything received. New stock comes in from <b>Incoming Shipments → Receive into stock</b>, which adds a line here automatically.
+        Every receipt, including the history migrated from Excel. Receiving a shipment adds its line here automatically.
       </div>
 
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
@@ -156,7 +158,7 @@ export function ScreenInvGrn() {
   );
 }
 
-function CompleteModal({ grn, items, locations, onHand, me, onClose, onDone }: {
+export function CompleteModal({ grn, items, locations, onHand, me, onClose, onDone }: {
   grn: InvGrn; items: InvItem[]; locations: InvLocation[]; onHand: OnHand; me: string; onClose: () => void; onDone: () => Promise<void>;
 }) {
   const [qty, setQty] = useState(String(grn.qty_ordered ?? ''));
