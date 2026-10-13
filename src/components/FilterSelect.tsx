@@ -45,10 +45,13 @@ export function FilterSelect({ groups, selected, onChange, placeholder = 'All re
   };
 
   // A fixed panel doesn't follow its trigger — close it if the page scrolls or
-  // resizes underneath.
+  // resizes underneath. Scrolling the panel's own option list must not count.
   useEffect(() => {
     if (!open) return;
-    const close = () => setOpen(false);
+    const close = (e: Event) => {
+      if (e.type === 'scroll' && e.target instanceof Node && ref.current?.contains(e.target)) return;
+      setOpen(false);
+    };
     window.addEventListener('scroll', close, true);
     window.addEventListener('resize', close);
     return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close); };
