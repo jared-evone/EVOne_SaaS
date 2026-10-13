@@ -49,14 +49,21 @@ function guessKind(form: WorkOrderForm, w: WorkOrder, t: FormTemplate | undefine
   return 'A';
 }
 
-// The technician's charger field holds "TAG — Brand @ Site · Registry"; pick
-// the first such value in the form and match its tag to a registry charger.
+// Structured forms' charger field holds "TAG — Brand @ Site · Registry"; overlay
+// forms (Form A) have a typed "Charger ID". Match either to a registry tag,
+// ignoring case and spaces.
+const normTag = (s: string) => s.replace(/\s+/g, '').toLowerCase();
 function guessCharger(form: WorkOrderForm, chargers: RegCharger[]): string {
-  for (const v of Object.values(form.values ?? {})) {
-    if (typeof v !== 'string' || !/ · Registry$/.test(v)) continue;
-    const tag = v.replace(/ · Registry$/, '').split(' @ ')[0].split(' — ')[0].trim().toLowerCase();
-    const hit = chargers.find((c) => c.asset_tag.trim().toLowerCase() === tag);
-    if (hit) return hit.id;
+  const values = Object.values(form.values ?? {}).filter((v): v is string => typeof v === 'string' && v.length > 0 && v.length < 120);
+  const byTag = (tag: string) => chargers.find((c) => normTag(c.asset_tag) === normTag(tag))?.id ?? '';
+  for (const v of values) {
+    if (!/ · Registry$/.test(v)) continue;
+    const hit = byTag(v.replace(/ · Registry$/, '').split(' @ ')[0].split(' — ')[0]);
+    if (hit) return hit;
+  }
+  for (const v of values) {
+    const hit = byTag(v);
+    if (hit) return hit;
   }
   return '';
 }
