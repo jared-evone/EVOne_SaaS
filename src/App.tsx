@@ -4,7 +4,7 @@ import { Logo } from './components/Logo';
 import { NavItem } from './components/NavItem';
 import {
   LayoutDashboard, Home, Receipt, Wrench, Users, FolderKanban, CalendarDays,
-  Handshake, ClipboardList, Boxes, Truck, Building2, Plug, Zap, FileText,
+  Handshake, LandPlot, ClipboardList, Boxes, Truck, Building2, Plug, Zap, FileText,
   Settings as SettingsIcon, ShieldCheck, Database, ChevronRight, ChevronDown,
   Power, Menu, TrendingUp, UserCog, Mail, Calculator, ClipboardCheck, GanttChartSquare, ListTodo, BookOpen,
   ScrollText,
@@ -62,6 +62,7 @@ import { ScreenInvLedger } from './screens/inventory/StockLedger';
 import { StockRequestPage } from './screens/inventory/StockRequestPage';
 import { PICReviewBoard } from './screens/tsd/PICApp';
 import { FormTestPage } from './screens/tsd/FormTestPage';
+import { ScreenLandAcquisition } from './screens/LandAcquisition';
 import {
   PermissionsProvider, usePermissions,
   DEPARTMENT_LABELS, DEPARTMENT_SCREENS,
@@ -89,6 +90,7 @@ type NavEntry = NavLeaf | NavGroup;
 const NAV_ALL: NavEntry[] = [
   { kind: 'leaf', id: 'dashboard',         icon: LayoutDashboard, label: 'Dashboard' },
   { kind: 'leaf', id: 'charging_dashboard',icon: LayoutDashboard, label: 'Charging Dashboard' },
+  { kind: 'leaf', id: 'cpo_land',          icon: LandPlot,        label: 'Land Acquisition' },
   { kind: 'leaf', id: 'cpo_sales',         icon: Handshake,       label: 'CPO Sales Pipeline' },
   { kind: 'leaf', id: 'overview',          icon: Home,            label: 'Overview' },
   { kind: 'leaf', id: 'orders',            icon: Receipt,         label: 'Invoices' },
@@ -149,6 +151,7 @@ const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
   charging:            'Charging Records',
   corporateinvoicing:  'Corporate Invoicing',
   charging_dashboard:  'Charging Dashboard',
+  cpo_land:            'Land Acquisition',
   cpo_sales:           'CPO Sales Pipeline',
   quote_machine:       'Quote Machine',
   raise_po:            'Raise PO',
@@ -189,6 +192,7 @@ const screens: Partial<Record<ScreenId, JSX.Element>> = {
   charging:            <ScreenChargingRecords />,
   corporateinvoicing:  <ScreenCorporateInvoicing />,
   charging_dashboard:  <ScreenChargingDashboard />,
+  cpo_land:            <ScreenLandAcquisition />,
   cpo_sales:           <ScreenSales key="cpo" pipeline="cpo" />,
   quote_machine:       <ScreenQuoteMachine />,
   raise_po:            <ScreenRaisePO />,

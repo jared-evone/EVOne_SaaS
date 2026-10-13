@@ -16,7 +16,7 @@ export type ScreenKey =
   | 'overview' | 'orders' | 'installations' | 'customers' | 'projects' | 'social' | 'sales' | 'sales_manager' | 'sales_team'
   | 'purchaseorders' | 'inventory' | 'suppliers'
   | 'corporatecrm' | 'corporatecrm_invoicing'
-  | 'cpochargers' | 'charging' | 'corporateinvoicing' | 'charging_dashboard' | 'cpo_sales'
+  | 'cpochargers' | 'charging' | 'corporateinvoicing' | 'charging_dashboard' | 'cpo_land' | 'cpo_sales'
   | 'charging_cpo_carparks' | 'charging_sp_price'
   | 'tsd_technician' | 'tsd_workorders' | 'tsd_forms' | 'tsd_pic' | 'tsd_technicians' | 'tsd_sop'
   | 'email_designer' | 'quote_machine' | 'raise_po'
@@ -46,6 +46,7 @@ export const SCREEN_LABELS: Record<ScreenKey, string> = {
   charging_sp_price:     'Charging Records › SP Price tab',
   corporateinvoicing:    'Corporate Invoicing',
   charging_dashboard:    'Charging Dashboard',
+  cpo_land:              'Land Acquisition',
   cpo_sales:             'CPO Sales Pipeline',
   tsd_technician:        'Calendar',
   tsd_workorders:        'Work Orders',
@@ -73,7 +74,7 @@ export const DEPARTMENT_SCREENS: Record<Department, ScreenKey[]> = {
   // Users & Permissions ('settings') and DB Health ('dbhealth') are no longer
   // per-department — they live only in the hidden cross-department superadmin
   // console (superadmin_login / 1234). Don't add them back to any department.
-  cpo:   ['charging_dashboard', 'cpo_sales', 'corporatecrm', 'corporatecrm_invoicing', 'cpochargers', 'charging',
+  cpo:   ['charging_dashboard', 'cpo_land', 'cpo_sales', 'corporatecrm', 'corporatecrm_invoicing', 'cpochargers', 'charging',
           'charging_cpo_carparks', 'charging_sp_price',
           'corporateinvoicing'],
   sales: ['customers', 'sales', 'sales_manager', 'sales_team', 'quote_machine'],
