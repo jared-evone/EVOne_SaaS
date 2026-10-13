@@ -22,6 +22,7 @@ import {
 import { FieldList, FormHeader, FormPaper, openBase64Pdf } from './TechApp';
 import { OverlayFormRenderer, isOverlay } from './OverlayForm';
 import { PDFPreviewModal, generateWorkOrderPdf } from './PDFExport';
+import { RegistrySyncModal, isRegistrySyncCategory } from './RegistrySync';
 
 const CPO_BUCKET = 'cpo-maintenance-pdfs';
 
@@ -539,7 +540,7 @@ export function PICReviewBoard() {
       <div>
         {selected ? (
           detailReadyId === selected.id ? (
-            <PICReportEditor workOrder={selected} key={selected.id} alreadyPushed={pushedIds.has(selected.id)} onPushed={loadPushed} onDeleted={() => setSelectedId(null)} />
+            <PICReportEditor workOrder={selected} key={selected.id} cpoCustomer={!!selected.customerId && cpoIds.has(selected.customerId)} alreadyPushed={pushedIds.has(selected.id)} onPushed={loadPushed} onDeleted={() => setSelectedId(null)} />
           ) : (
             <div style={{ background: C.white, borderRadius: 14, border: '1px dashed #EBEBEB', padding: '60px 24px', textAlign: 'center', color: C.slate, fontSize: 14 }}>
               Loading report…
@@ -565,10 +566,11 @@ export function PICReviewBoard() {
   );
 }
 
-function PICReportEditor({ workOrder, alreadyPushed = false, onPushed, onDeleted }: { workOrder: WorkOrder; alreadyPushed?: boolean; onPushed?: () => void; onDeleted?: () => void }) {
+function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false, onPushed, onDeleted }: { workOrder: WorkOrder; cpoCustomer?: boolean; alreadyPushed?: boolean; onPushed?: () => void; onDeleted?: () => void }) {
   const store = useWorkOrderStore();
-  const { can } = usePermissions();
+  const { can, user } = usePermissions();
   const canDelete = can('tsd_pic', 'can_delete');
+  const [syncOpen, setSyncOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [forms, setForms] = useState<WorkOrderForm[]>(() => workOrder.forms.map((f) => ({ ...f, values: { ...(f.values ?? {}) } })));
   const [dirty, setDirty] = useState(false);
@@ -625,6 +627,9 @@ function PICReportEditor({ workOrder, alreadyPushed = false, onPushed, onDeleted
   };
   const flash = (msg: string) => { setToast(msg); window.setTimeout(() => setToast(null), 2400); };
   const completed = workOrder.status === 'completed';
+  // Approved Breakdown / Form A / Form D jobs file their forms into the registry.
+  const registrySyncable = completed && can('tsd_pic', 'can_edit') && !cpoCustomer && isRegistrySyncCategory(workOrder);
+  const registrySynced = Object.keys(workOrder.registrySync ?? {}).length;
 
   const handleSave = () => { store.amend(workOrder.id, forms, DEMO_PIC); if (reviewDirty) saveReview(); setDirty(false); flash('Changes saved.'); };
   const handleApprove = () => { if (reviewDirty) saveReview(); if (dirty) store.amend(workOrder.id, forms, DEMO_PIC); store.approve(workOrder.id); setDirty(false); flash('Report approved & marked completed.'); };
@@ -683,6 +688,12 @@ function PICReportEditor({ workOrder, alreadyPushed = false, onPushed, onDeleted
             <button onClick={() => setPdfOpen(true)}
               style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
               <DownloadIcon size={12} strokeWidth={2.25} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }} /> Export PDF
+            </button>
+          )}
+          {registrySyncable && (
+            <button onClick={() => setSyncOpen(true)} title="File each form into the Charger Registry on the charger it covers"
+              style={{ padding: '8px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: registrySynced >= workOrder.forms.length ? '#E4F3E3' : C.white, color: registrySynced >= workOrder.forms.length ? '#1B512D' : C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              {registrySynced >= workOrder.forms.length ? '✓ In Charger Registry' : `→ Charger Registry${registrySynced ? ` · ${registrySynced}/${workOrder.forms.length}` : ''}`}
             </button>
           )}
           {isCpo && (alreadyPushed ? (
@@ -855,6 +866,10 @@ function PICReportEditor({ workOrder, alreadyPushed = false, onPushed, onDeleted
 
       {pdfOpen && (
         <PDFPreviewModal workOrder={workOrder} forms={forms} getTemplate={store.getTemplate} onClose={() => setPdfOpen(false)} />
+      )}
+      {syncOpen && (
+        <RegistrySyncModal workOrder={workOrder} forms={forms} by={user.full_name || user.email}
+          onClose={() => setSyncOpen(false)} onDone={(msg) => { setSyncOpen(false); flash(msg); }} />
       )}
       {pushOpen && (
         <PushToCpoModal workOrder={workOrder} forms={forms} getTemplate={store.getTemplate}

@@ -596,7 +596,7 @@ interface SiteCharger {
   notes: string | null;
 }
 
-const CHARGER_FORMS_BUCKET = 'charger-forms';
+export const CHARGER_FORMS_BUCKET = 'charger-forms';
 
 interface ProjectSite {
   id: string;
@@ -5623,7 +5623,7 @@ export function ltaScheduleBase(c: { lta_letter_date?: string | null; lta_letter
 // The earliest date a real inspection can have — when the charger physically
 // exists. Used to validate new records (not the letter date, which is only a
 // scheduling due date; an inspection may legitimately predate it).
-function ltaExistFloor(c: { turn_on_date: string | null; procurement_date: string | null }): string | null {
+export function ltaExistFloor(c: { turn_on_date: string | null; procurement_date: string | null }): string | null {
   return c.turn_on_date ?? c.procurement_date;
 }
 
@@ -5728,11 +5728,11 @@ function computeForm1Filename(assetTag: string | null | undefined, turnOnDate: s
   return composeChargerFilename('Form 1', assetTag, turnOnDate, siteName);
 }
 
-function computeLtaFilename(formType: 'A' | 'D', assetTag: string | null | undefined, performedAt: string | null | undefined, siteName: string | null | undefined): string {
+export function computeLtaFilename(formType: 'A' | 'D', assetTag: string | null | undefined, performedAt: string | null | undefined, siteName: string | null | undefined): string {
   return composeChargerFilename(`Form ${formType}`, assetTag, performedAt, siteName);
 }
 
-function composeChargerFilename(prefix: string, assetTag: string | null | undefined, date: string | null | undefined, siteName: string | null | undefined): string {
+export function composeChargerFilename(prefix: string, assetTag: string | null | undefined, date: string | null | undefined, siteName: string | null | undefined): string {
   const parts: string[] = [prefix];
   const tag = (assetTag ?? '').trim();
   if (tag) parts.push(tag);
@@ -5743,7 +5743,7 @@ function composeChargerFilename(prefix: string, assetTag: string | null | undefi
   return parts.join(' - ') + '.pdf';
 }
 
-function pathSafe(name: string): string {
+export function pathSafe(name: string): string {
   return name.replace(/[^a-zA-Z0-9 \-_.]/g, '_').replace(/\s+/g, ' ').trim();
 }
 

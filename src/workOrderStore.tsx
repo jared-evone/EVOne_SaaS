@@ -133,6 +133,19 @@ export interface WorkOrder {
   response: FormResponse | null;
   /** Optional — absent on work orders reviewed before the feature existed. */
   picReview?: PicReview | null;
+  /** Forms filed into the Charger Registry after approval, keyed by form id. */
+  registrySync?: Record<string, RegistrySyncEntry> | null;
+}
+
+/** One form filed into a registry charger as a Form A / Form D / breakdown record. */
+export interface RegistrySyncEntry {
+  chargerId: string;
+  assetTag: string;
+  kind: 'A' | 'D' | 'breakdown';
+  recordId: string;
+  date: string;
+  syncedAt: string;
+  syncedBy: string;
 }
 
 /** Assignees as a list — tolerates the legacy single-string shape. */
@@ -202,6 +215,9 @@ interface Store {
   setWorkOrderCategory(workOrderId: string, category: string | null): void;
   setWorkOrderInstructions(workOrderId: string, instructions: string | null): void;
   setWorkOrderPic(workOrderId: string, pic: string | null): void;
+  /** Record which forms went to which registry charger. Awaitable, so a batch
+   *  of syncs writes its tracking in order. */
+  setRegistrySync(workOrderId: string, sync: Record<string, RegistrySyncEntry>): Promise<void>;
   reschedule(workOrderId: string, date: string): void;
   deleteWorkOrder(workOrderId: string): void;
   saveTemplate(template: FormTemplate): void;
@@ -488,6 +504,12 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
           return { ...w, instructions };
         }),
       ),
+
+    setRegistrySync: async (id, registrySync) => {
+      const { error } = await supabase.rpc('tsd_work_order_patch', { p_id: id, p_patch: { registrySync } });
+      if (error) throw new Error(error.message);
+      setWorkOrders((ws) => ws.map((w) => (w.id === id ? { ...w, registrySync } : w)));
+    },
 
     setWorkOrderPic: (id, pic) =>
       setWorkOrders((ws) =>
