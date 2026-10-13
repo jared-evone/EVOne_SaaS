@@ -5,7 +5,7 @@ import { supabase } from '../../lib/supabase';
 import { useIsMobile } from '../../lib/useIsMobile';
 import { usePermissions } from '../../permissions';
 import { Logo } from '../../components/Logo';
-import { Download as DownloadIcon, Power, Trash2, Search, X } from 'lucide-react';
+import { Download as DownloadIcon, Power, Trash2, Search, X, ChevronLeft, ChevronRight } from 'lucide-react';
 import { FilterSelect, selectionCount, type FilterGroup, type FilterSelection } from '../../components/FilterSelect';
 import {
   DEMO_PIC,
@@ -46,6 +46,17 @@ function fmt12h(t: string): string {
 
 // Review cards per page in the list pane.
 const PER_PAGE = 5;
+
+// Weekly view (Mon–Sun) for the review meeting. Dates are local YYYY-MM-DD.
+const isoDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const addDays = (iso: string, n: number) => { const d = new Date(`${iso}T00:00:00`); d.setDate(d.getDate() + n); return isoDay(d); };
+const mondayOf = (d: Date) => { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return isoDay(x); };
+function weekLabel(start: string) {
+  const a = new Date(`${start}T00:00:00`);
+  const b = new Date(`${addDays(start, 6)}T00:00:00`);
+  const left = a.toLocaleDateString('en-GB', a.getMonth() === b.getMonth() ? { day: 'numeric' } : { day: 'numeric', month: 'short' });
+  return `${left} – ${b.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`;
+}
 
 interface PICAppProps {
   onBack: () => void;
@@ -129,8 +140,17 @@ export function PICApp({ onBack, onSignOut }: PICAppProps) {
 export function PICReviewBoard() {
   const store = useWorkOrderStore();
   const all = store.workOrders.filter((w) => (VISIBLE_STATUSES as readonly string[]).includes(w.status));
-  const pending = all.filter((w) => w.status !== 'completed');
-  const done = all.filter((w) => w.status === 'completed');
+  // A chosen week scopes both tabs (and their counts) by the job's submitted date.
+  const thisWeek = mondayOf(new Date());
+  const lastWeek = addDays(thisWeek, -7);
+  const [weekStart, setWeekStart] = useState<string | null>(null);
+  const inWeek = (w: WorkOrder) => {
+    if (!weekStart) return true;
+    const d = (w.response?.submittedAt || w.scheduledDate || '').slice(0, 10);
+    return d >= weekStart && d <= addDays(weekStart, 6);
+  };
+  const pending = all.filter((w) => w.status !== 'completed' && inWeek(w));
+  const done = all.filter((w) => w.status === 'completed' && inWeek(w));
   const [tab, setTab] = useState<'pending' | 'completed'>('pending');
   const [selectedId, setSelectedId] = useState<string | null>(pending[0]?.id ?? null);
   const selected = all.find((w) => w.id === selectedId) ?? null;
@@ -188,7 +208,12 @@ export function PICReviewBoard() {
   const [search, setSearch] = useState('');
   const [filters, setFilters] = useState<FilterSelection>({});
   const [page, setPage] = useState(1);
-  useEffect(() => { setPage(1); }, [tab, search, filters]);
+  useEffect(() => { setPage(1); }, [tab, search, filters, weekStart]);
+  // Keep the open report inside the chosen week.
+  useEffect(() => {
+    const list = tab === 'pending' ? pending : done;
+    if (!list.some((w) => w.id === selectedId)) setSelectedId(list[0]?.id ?? null);
+  }, [weekStart]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const thisMonth = (() => {
     const d = new Date();
@@ -329,6 +354,40 @@ export function PICReviewBoard() {
     >
       {/* List pane */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {/* Week picker for the weekly review meeting — scopes both tabs below. */}
+        <div style={{ background: C.white, border: '1px solid #EBEBEB', borderRadius: 12, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {([[null, 'All time'], [lastWeek, 'Last week'], [thisWeek, 'This week']] as const).map(([start, label]) => {
+              const on = weekStart === start;
+              return (
+                <button key={label} onClick={() => setWeekStart(start)}
+                  style={{ flex: 1, padding: '6px 8px', borderRadius: 99, border: on ? 'none' : '1px solid #EBEBEB', background: on ? C.green : C.white, color: on ? C.white : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          {weekStart ? (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <button onClick={() => setWeekStart(addDays(weekStart, -7))} title="Previous week"
+                  style={{ width: 28, height: 28, borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}>
+                  <ChevronLeft size={15} />
+                </button>
+                <span style={{ flex: 1, textAlign: 'center', fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{weekLabel(weekStart)}</span>
+                <button onClick={() => setWeekStart(addDays(weekStart, 7))} disabled={weekStart >= thisWeek} title="Next week"
+                  style={{ width: 28, height: 28, borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: weekStart >= thisWeek ? '#D5DDE3' : C.slate, cursor: weekStart >= thisWeek ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}>
+                  <ChevronRight size={15} />
+                </button>
+              </div>
+              <div style={{ fontSize: 11, color: C.slate, textAlign: 'center' }}>
+                {pending.length + done.length} job{pending.length + done.length === 1 ? '' : 's'} submitted this week · {done.length} completed · {pending.length} pending
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: 11, color: C.slate, textAlign: 'center' }}>Pick a week to review that week's jobs (Mon–Sun, by submitted date)</div>
+          )}
+        </div>
         <div style={{ display: 'flex', gap: 6 }}>
           {([['pending', 'Pending Review', pending.length], ['completed', 'Completed', done.length]] as const).map(([id, label, n]) => (
             <button key={id} onClick={() => switchTab(id)}
@@ -389,6 +448,8 @@ export function PICReviewBoard() {
           >
             {(search || activeFilters > 0)
               ? 'No reports match your search.'
+              : weekStart
+                ? `No ${tab === 'pending' ? 'pending' : 'completed'} reports for ${weekLabel(weekStart)}.`
               : tab === 'pending'
                 ? 'No reports waiting for review.'
                 : 'No completed reports yet.'}
