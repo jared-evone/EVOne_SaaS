@@ -73,7 +73,7 @@ export function ScreenSalesManager() {
   const filtered = quotes.filter(inPeriod);
 
   // Team KPIs
-  const open = filtered.filter((q) => q.status === 'Draft' || q.status === 'Sent');
+  const open = filtered.filter((q) => (q.status === 'Draft' || q.status === 'Sent') && !q.archived_at);
   const won = filtered.filter((q) => q.status === 'Won');
   const lost = filtered.filter((q) => q.status === 'Lost');
   const pipelineValue = open.reduce((s, q) => s + Number(q.total), 0);
@@ -84,7 +84,7 @@ export function ScreenSalesManager() {
 
   // This calendar month (independent of the period filter above).
   const thisMonth = new Date().toISOString().slice(0, 7);
-  const openAll = quotes.filter((q) => q.status === 'Draft' || q.status === 'Sent');
+  const openAll = quotes.filter((q) => (q.status === 'Draft' || q.status === 'Sent') && !q.archived_at);
   const openThisMonth = openAll.filter((q) => q.quote_date?.startsWith(thisMonth));
   const wonThisMonth = quotes.filter((q) => q.status === 'Won' && (q.outcome_date ?? q.quote_date)?.startsWith(thisMonth));
   const pipelineThisMonth = openThisMonth.reduce((s, q) => s + Number(q.total), 0);
@@ -102,7 +102,7 @@ export function ScreenSalesManager() {
       reps.set(key, r);
     }
     r.quotes += 1;
-    if (q.status === 'Draft' || q.status === 'Sent') r.openValue += Number(q.total);
+    if ((q.status === 'Draft' || q.status === 'Sent') && !q.archived_at) r.openValue += Number(q.total);
     if (q.status === 'Won') { r.wonValue += Number(q.total); r.won += 1; }
     if (q.status === 'Lost') r.lost += 1;
   }

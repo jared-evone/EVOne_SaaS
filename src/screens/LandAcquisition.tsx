@@ -533,7 +533,7 @@ function SiteModal({ site, preset, me, people, locations, canEdit, canDelete, on
           </div>
           <Field label="Address">
             {ro ? <input value={f.address} disabled style={inputStyle(true)} /> : (
-              <OneMapAutocomplete value={f.address} onChange={(t) => set('address', t)}
+              <OneMapAutocomplete value={f.address} onChange={(t) => setF((x) => ({ ...x, address: t, latitude: null, longitude: null }))}
                 onPick={(r) => setF((x) => ({ ...x, address: r.address, latitude: r.latitude, longitude: r.longitude }))}
                 placeholder="Start typing a Singapore address" />
             )}

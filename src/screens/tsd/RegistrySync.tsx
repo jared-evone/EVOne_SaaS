@@ -55,19 +55,31 @@ function guessKind(form: WorkOrderForm, w: WorkOrder, t: FormTemplate | undefine
 }
 
 // Structured forms' charger field holds "TAG — Brand @ Site · Registry" (or · CPO); overlay
-// forms (Form A) have a typed "Charger ID". Match either to a registry tag,
-// ignoring case and spaces.
+// forms (Form A) have a typed "Charger ID". Match the tag (ignoring case and
+// spaces) and, because tags repeat across sites, the site too; anything still
+// ambiguous is left for the reviewer to pick.
 const normTag = (s: string) => s.replace(/\s+/g, '').toLowerCase();
-function guessCharger(form: WorkOrderForm, chargers: RegCharger[]): string {
-  const values = Object.values(form.values ?? {}).filter((v): v is string => typeof v === 'string' && v.length > 0 && v.length < 120);
-  const byTag = (tag: string) => chargers.find((c) => normTag(c.asset_tag) === normTag(tag))?.id ?? '';
+function guessCharger(form: WorkOrderForm, chargers: RegCharger[], woSite: string | null | undefined): string {
+  const values = Object.values(form.values ?? {}).filter((v): v is string => typeof v === 'string' && v.length > 0 && v.length < 160);
+  const pick = (tag: string, site?: string) => {
+    let hits = chargers.filter((c) => normTag(c.asset_tag) === normTag(tag));
+    for (const s of [site, woSite]) {
+      if (hits.length > 1 && s) {
+        const bySite = hits.filter((c) => c.siteName.trim().toLowerCase() === s.trim().toLowerCase());
+        if (bySite.length) hits = bySite;
+      }
+    }
+    return hits.length === 1 ? hits[0].id : '';
+  };
   for (const v of values) {
     if (!/ · (Registry|CPO)$/.test(v)) continue;
-    const hit = byTag(v.replace(/ · (Registry|CPO)$/, '').split(' @ ')[0].split(' — ')[0]);
+    const body = v.replace(/ · (Registry|CPO)$/, '');
+    const [left, site] = body.split(' @ ');
+    const hit = pick(left.split(' — ')[0], site);
     if (hit) return hit;
   }
   for (const v of values) {
-    const hit = byTag(v);
+    const hit = pick(v);
     if (hit) return hit;
   }
   return '';
@@ -93,7 +105,8 @@ const isoDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padSt
 const today = () => isoDay(new Date());
 const addMonths = (iso: string, m: number) => {
   const [y, mo, d] = iso.split('-').map(Number);
-  return isoDay(new Date(y, mo - 1 + m, d));
+  const last = new Date(y, mo - 1 + m + 1, 0).getDate();
+  return isoDay(new Date(y, mo - 1 + m, Math.min(d, last)));
 };
 
 // After approval, each form of a Breakdown / Form A / Form D work order is filed
@@ -114,6 +127,10 @@ export function RegistrySyncModal({ workOrder, forms, by, onClose, onDone }: {
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [rows, setRows] = useState<Record<string, Row>>({});
   const [running, setRunning] = useState(false);
+  // Filed on a charger but not yet noted on the work order (the note failed).
+  // Re-running only records these — it never files them a second time.
+  const [unrecorded, setUnrecorded] = useState<Record<string, RegistrySyncEntry>>({});
+  const [notice, setNotice] = useState<string | null>(null);
   const synced = workOrder.registrySync ?? {};
   const defaultDate = (workOrder.response?.submittedAt || workOrder.scheduledDate || today()).slice(0, 10);
 
@@ -150,7 +167,7 @@ export function RegistrySyncModal({ workOrder, forms, by, onClose, onDone }: {
       for (const f of forms) {
         init[f.id] = {
           kind: guessKind(f, workOrder, store.getTemplate(f.templateId)),
-          chargerId: guessCharger(f, list) || (list.length === 1 ? list[0].id : ''),
+          chargerId: guessCharger(f, list, workOrder.site) || (list.length === 1 ? list[0].id : ''),
           date: defaultDate,
           description: workOrder.instructions?.trim() || workOrder.title,
           status: 'idle',
@@ -175,12 +192,26 @@ export function RegistrySyncModal({ workOrder, forms, by, onClose, onDone }: {
     const floor = ch && target === 'registry' ? ltaExistFloor(ch) : null;
     return floor && r.date <= floor ? `This charger was only registered on ${floor} — the inspection date must be after it.` : null;
   };
-  const todo = forms.filter((f) => isOpen(f) && rows[f.id]?.chargerId && rows[f.id]?.status !== 'done');
+  const todo = forms.filter((f) => isOpen(f) && rows[f.id]?.chargerId && rows[f.id]?.status !== 'done' && !unrecorded[f.id]);
+  const pendingRecord = Object.keys(unrecorded).length;
   const blocked = todo.some((f) => !!problem(f));
 
   const run = async () => {
     setRunning(true);
-    let sync: Record<string, RegistrySyncEntry> = { ...synced };
+    setNotice(null);
+    // Build on the server's copy, so another reviewer's filings aren't dropped.
+    const { data: fresh } = await supabase.from('tsd_work_orders').select('registrySync:data->registrySync').eq('id', workOrder.id).maybeSingle();
+    let sync: Record<string, RegistrySyncEntry> = { ...synced, ...((fresh as { registrySync?: Record<string, RegistrySyncEntry> | null } | null)?.registrySync ?? {}), ...unrecorded };
+    let carried: Record<string, RegistrySyncEntry> = { ...unrecorded };
+    const warnings: string[] = [];
+    const record = async () => {
+      await store.setRegistrySync(workOrder.id, sync);
+      for (const id of Object.keys(carried)) setRow(id, { status: 'done', resync: false, error: undefined });
+      carried = {};
+    };
+    if (pendingRecord > 0) {
+      try { await record(); } catch (e) { setNotice(`Still couldn't note the filed forms on the work order: ${(e as Error).message}`); }
+    }
     let ok = 0;
     for (const f of todo) {
       const r = rows[f.id];
@@ -217,8 +248,9 @@ export function RegistrySyncModal({ workOrder, forms, by, onClose, onDone }: {
             // Only move the due date forward — filing an older report mustn't pull it back.
             const current = r.kind === 'A' ? ch.formANext : ch.formDNext;
             if (!current || nextDue > current) {
-              await supabase.from('cpo_chargers').update(r.kind === 'A' ? { form_a_next_date: nextDue } : { form_d_next_date: nextDue }).eq('id', ch.id);
-              if (r.kind === 'A') ch.formANext = nextDue; else ch.formDNext = nextDue;
+              const { error: dueErr } = await supabase.from('cpo_chargers').update(r.kind === 'A' ? { form_a_next_date: nextDue } : { form_d_next_date: nextDue }).eq('id', ch.id);
+              if (dueErr) warnings.push(`${ch.asset_tag}: filed, but its next Form ${r.kind} date couldn't be moved (${dueErr.message}) — set it in CPO Chargers.`);
+              else if (r.kind === 'A') ch.formANext = nextDue; else ch.formDNext = nextDue;
             }
           }
         } else {
@@ -236,24 +268,24 @@ export function RegistrySyncModal({ workOrder, forms, by, onClose, onDone }: {
           recordId = (ins.data as { id: string }).id;
         }
         path = null;
-        sync = {
-          ...sync,
-          [f.id]: { target, chargerId: ch.id, assetTag: ch.asset_tag, kind: r.kind, recordId, date: r.date, syncedAt: new Date().toISOString(), syncedBy: by },
-        };
+        const entry: RegistrySyncEntry = { target, chargerId: ch.id, assetTag: ch.asset_tag, kind: r.kind, recordId, date: r.date, syncedAt: new Date().toISOString(), syncedBy: by };
+        sync = { ...sync, [f.id]: entry };
+        carried = { ...carried, [f.id]: entry };
         try {
-          await store.setRegistrySync(workOrder.id, sync);
-          setRow(f.id, { status: 'done', resync: false });
+          await record();
+          ok++;
         } catch (e) {
-          setRow(f.id, { status: 'error', error: `Filed on ${ch.asset_tag}, but the work order couldn't note it: ${(e as Error).message}` });
+          setRow(f.id, { status: 'error', error: `Filed on ${ch.asset_tag}, but the work order couldn't note it (${(e as Error).message}). Click "Record filings" — it won't be filed twice.` });
         }
-        ok++;
       } catch (e) {
         if (path) void supabase.storage.from(target === 'cpo' ? CPO_BUCKET : CHARGER_FORMS_BUCKET).remove([path]);
         setRow(f.id, { status: 'error', error: (e as Error).message });
       }
     }
+    setUnrecorded(carried);
     setRunning(false);
-    if (ok === todo.length && ok > 0) onDone(`${ok} form${ok === 1 ? '' : 's'} filed into ${target === 'cpo' ? 'CPO Chargers' : 'the Charger Registry'}.`);
+    if (warnings.length) { setNotice(warnings.join(' ')); return; }
+    if (ok === todo.length && ok > 0 && Object.keys(carried).length === 0) onDone(`${ok} form${ok === 1 ? '' : 's'} filed into ${target === 'cpo' ? 'CPO Chargers' : 'the Charger Registry'}.`);
   };
 
   const label: React.CSSProperties = { fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 };
@@ -282,6 +314,7 @@ export function RegistrySyncModal({ workOrder, forms, by, onClose, onDone }: {
         </div>
 
         {loadErr && <div style={{ background: '#FDEAEA', color: '#C0321A', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{loadErr}</div>}
+        {notice && <div style={{ background: '#FFF8E1', color: '#B07D00', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{notice}</div>}
         {chargers === null ? (
           <div style={{ padding: 24, textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading chargers…</div>
         ) : chargers.length === 0 ? (
@@ -358,10 +391,15 @@ export function RegistrySyncModal({ workOrder, forms, by, onClose, onDone }: {
           </span>
           <button onClick={onClose} disabled={running}
             style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 600, cursor: running ? 'default' : 'pointer' }}>Close</button>
-          <button onClick={() => void run()} disabled={running || todo.length === 0 || blocked}
-            style={{ padding: '9px 22px', borderRadius: 10, border: 'none', background: running || todo.length === 0 || blocked ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: running || todo.length === 0 || blocked ? 'default' : 'pointer' }}>
-            {running ? 'Filing…' : `File ${todo.length} form${todo.length === 1 ? '' : 's'}`}
-          </button>
+          {(() => {
+            const off = running || (todo.length === 0 && pendingRecord === 0) || blocked;
+            return (
+              <button onClick={() => void run()} disabled={off}
+                style={{ padding: '9px 22px', borderRadius: 10, border: 'none', background: off ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: off ? 'default' : 'pointer' }}>
+                {running ? 'Filing…' : todo.length === 0 && pendingRecord > 0 ? 'Record filings' : `File ${todo.length} form${todo.length === 1 ? '' : 's'}`}
+              </button>
+            );
+          })()}
         </div>
       </div>
     </div>

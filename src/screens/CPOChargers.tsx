@@ -98,9 +98,10 @@ const MAINTENANCE_TYPE_LABEL: Record<MaintenanceType, string> = {
 };
 
 function addMonthsISO(iso: string, months: number): string {
-  const d = new Date(iso);
-  d.setMonth(d.getMonth() + months);
-  return d.toISOString().slice(0, 10);
+  const [y, m, d] = iso.split('-').map(Number);
+  const last = new Date(y, m - 1 + months + 1, 0).getDate();
+  const r = new Date(y, m - 1 + months, Math.min(d, last));
+  return `${r.getFullYear()}-${String(r.getMonth() + 1).padStart(2, '0')}-${String(r.getDate()).padStart(2, '0')}`;
 }
 
 // Next occurrence of a fixed day-of-month, today or later.
@@ -1136,8 +1137,9 @@ function DetailModal({ charger, location, canEdit, canDelete, onEdit, onClose, o
 
   const deleteBreakdown = async (rec: CpoBreakdown) => {
     setDeleting(true);
+    const { error } = await supabase.from('cpo_breakdowns').delete().eq('id', rec.id);
+    if (error) { setDeleting(false); alert(`Could not delete the breakdown: ${error.message}`); return; }
     if (rec.pdf_path) await supabase.storage.from(STORAGE_BUCKET).remove([rec.pdf_path]);
-    await supabase.from('cpo_breakdowns').delete().eq('id', rec.id);
     await fetchAll();
     setDeleting(false);
     setConfirmBreakdownId(null);

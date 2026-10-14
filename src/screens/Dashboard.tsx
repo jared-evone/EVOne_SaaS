@@ -213,8 +213,8 @@ export function ScreenDashboard() {
           </div>
           {!loading && (
             <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6 }}>
-              <span style={{ fontSize: 12, fontWeight: 700, padding: '4px 12px', borderRadius: 99, ...CURRENT_TAG.DC }}>{power.dcTotal} DC</span>
-              <span style={{ fontSize: 12, fontWeight: 700, padding: '4px 12px', borderRadius: 99, ...CURRENT_TAG.AC }}>{power.acTotal} AC</span>
+              <span style={{ fontSize: 12, fontWeight: 700, padding: '4px 12px', borderRadius: 99, background: CURRENT_TAG.DC.bg, color: CURRENT_TAG.DC.color }}>{power.dcTotal} DC</span>
+              <span style={{ fontSize: 12, fontWeight: 700, padding: '4px 12px', borderRadius: 99, background: CURRENT_TAG.AC.bg, color: CURRENT_TAG.AC.color }}>{power.acTotal} AC</span>
             </span>
           )}
         </div>
@@ -236,7 +236,7 @@ export function ScreenDashboard() {
                         style={{ textAlign: 'left', padding: '14px 16px', borderRadius: 14, border: on ? `1.5px solid ${C.green}` : '1px solid #EBEBEB', background: on ? C.honeydew : C.white, cursor: 'pointer', fontFamily: 'Figtree' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
                           <span style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{fmtKw(b.kw ?? 0)}</span>
-                          <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 99, ...CURRENT_TAG[cur] }}>{cur}</span>
+                          <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 99, background: CURRENT_TAG[cur].bg, color: CURRENT_TAG[cur].color }}>{cur}</span>
                         </div>
                         <div style={{ fontSize: 28, fontWeight: 700, color: C.green, letterSpacing: '-0.04em', lineHeight: 1, marginTop: 10 }}>{b.count}</div>
                         <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>at {b.sites.size} site{b.sites.size === 1 ? '' : 's'}</div>

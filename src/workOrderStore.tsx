@@ -370,7 +370,9 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
       .then(({ error }) => { if (error) console.error('persist customer failed', error); });
   };
 
-  const today = () => new Date().toISOString().slice(0, 10);
+  // Local date — toISOString() is UTC, which put jobs submitted in Singapore
+  // before 8am on the previous day.
+  const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 
   const value: Store = {
     workOrders,

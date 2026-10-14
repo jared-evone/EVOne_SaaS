@@ -318,6 +318,9 @@ function ShipmentModal({ shipment, state, received, receipts, items, locations, 
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<null | 'receive' | 'delete'>(null);
+  // Fixed for the life of the window, so a retry after a half-failed save
+  // adds to the same shipment instead of starting a second one.
+  const [groupId] = useState(() => shipment?.id ?? crypto.randomUUID());
   // Not every shipment has a PO (warranty swaps, samples). Existing shipments
   // without one open with this already ticked.
   const [noPo, setNoPo] = useState(!!head && !head.po_no);
@@ -357,7 +360,6 @@ function ShipmentModal({ shipment, state, received, receipts, items, locations, 
       const qty = Number(l.qty);
       return { item_id: l.item_id || null, qty, description: l.description.trim() || (item ? `${qty} × ${item.name}` : '') };
     };
-    const groupId = shipment?.id ?? crypto.randomUUID();
     // New lines join a shipment already on its way as in transit.
     const newStatus: ShipStatus = state === 'in_transit' || state === 'partial' ? 'in_transit' : 'ordered';
     const errors: string[] = [];
@@ -367,11 +369,25 @@ function ShipmentModal({ shipment, state, received, receipts, items, locations, 
       const { error } = await supabase.from('inv_shipments').delete().eq('id', old.id);
       if (error) errors.push(error.message);
     }
+    // A line with receipts follows its numbers: fully received closes it (that is
+    // how a short delivery is closed — lower the qty to what came); raising the
+    // qty of a received line reopens it as partly received.
+    const statusFor = (l: LineDraft): { status?: ShipStatus } => {
+      if (!l.id || l.got <= 0) return {};
+      if (l.got >= Number(l.qty)) return { status: 'received' };
+      return l.status === 'received' ? { status: 'partial' } : {};
+    };
     for (const l of lines) {
-      const { error } = l.id
-        ? await supabase.from('inv_shipments').update({ ...header, ...lineFields(l) }).eq('id', l.id)
-        : await supabase.from('inv_shipments').insert({ ...header, ...lineFields(l), group_id: groupId, status: newStatus, employee: employee ?? me, created_by: me });
-      if (error) errors.push(error.message);
+      if (l.id) {
+        const { error } = await supabase.from('inv_shipments').update({ ...header, ...lineFields(l), ...statusFor(l) }).eq('id', l.id);
+        if (error) errors.push(error.message);
+      } else {
+        const { data, error } = await supabase.from('inv_shipments')
+          .insert({ ...header, ...lineFields(l), group_id: groupId, status: newStatus, employee: employee ?? me, created_by: me })
+          .select('id').single();
+        if (error) errors.push(error.message);
+        else setLines((ls) => ls.map((x) => (x.key === l.key ? { ...x, id: (data as { id: string }).id } : x)));
+      }
     }
     setBusy(false);
     if (errors.length) { setErr(errors[0]); return false; }
@@ -399,7 +415,7 @@ function ShipmentModal({ shipment, state, received, receipts, items, locations, 
     onClose();
   };
 
-  const ro = !editable;
+  const ro = !editable || mode === 'receive';
   const meta = state ? STATE_META[state] : null;
   const openLines = (shipment?.lines ?? []).filter(lineOpen);
   const totalQty = lines.reduce((n, l) => n + (Number(l.qty) || 0), 0);
@@ -473,7 +489,7 @@ function ShipmentModal({ shipment, state, received, receipts, items, locations, 
                 <Field label="Item it becomes in stock" hint={!l.item_id ? 'Link an item so receiving can add it to stock' : undefined}>
                   <ItemSelect items={items} value={l.item_id} onChange={(v) => setLine(l.key, { item_id: v })} allowNone noneLabel="Not linked" disabled={ro} />
                 </Field>
-                <Field label="Qty"><input type="number" min={Math.max(1, l.got)} step="1" value={l.qty} disabled={ro} onChange={(e) => setLine(l.key, { qty: e.target.value })} style={inputStyle} /></Field>
+                <Field label="Qty" hint={l.got > 0 && Number(l.qty) > l.got ? `Short? Set to ${l.got} to close` : undefined}><input type="number" min={Math.max(1, l.got)} step="1" value={l.qty} disabled={ro} onChange={(e) => setLine(l.key, { qty: e.target.value })} style={inputStyle} /></Field>
               </div>
               <Field label="Supplier description"><input value={l.description} disabled={ro} onChange={(e) => setLine(l.key, { description: e.target.value })} placeholder="As written on the PO / packing list" style={inputStyle} /></Field>
             </div>

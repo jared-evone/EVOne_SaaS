@@ -233,8 +233,10 @@ async function moveQuote(id: string, from: Pipeline, to: Pipeline): Promise<stri
   if (insErr) return insErr.message.includes('duplicate') ? `${(row as Quote).ref} already exists in the ${PIPELINE[to].label}.` : insErr.message;
   const { error: delErr } = await supabase.from(src).delete().eq('id', id);
   if (delErr) {
-    await supabase.from(dst).delete().eq('id', id);
-    return delErr.message;
+    const { error: undoErr } = await supabase.from(dst).delete().eq('id', id);
+    return undoErr
+      ? `${(row as Quote).ref} was copied to the ${PIPELINE[to].label} but couldn't be removed here (${delErr.message}) — delete the copy there before trying again.`
+      : delErr.message;
   }
   return null;
 }
@@ -272,6 +274,8 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
   const [month, setMonth] = useState<string>(''); // 'YYYY-MM' or '' (all)
   const [monthBasis, setMonthBasis] = useState<'created' | 'status'>('created');
   const [modal, setModal] = useState<{ mode: 'new' } | { mode: 'edit'; quote: Quote } | null>(null);
+  // Ticks are for what's on screen — changing the filters starts a fresh selection.
+  useEffect(() => { setSelected(new Set()); }, [search, statusFilter, month, monthBasis, adminView]);
 
   const fetchAll = async () => {
     setError(null);
@@ -513,10 +517,10 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
         <>
           {canEdit && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, color: C.slate, marginTop: -8 }}>
-              {selected.size > 0 ? (
+              {visible.some((q) => selected.has(q.id)) ? (
                 <>
-                  <span style={{ fontWeight: 700, color: '#1a1a1a' }}>{selected.size} selected</span>
-                  <button onClick={() => void setArchived([...selected], true)}
+                  <span style={{ fontWeight: 700, color: '#1a1a1a' }}>{visible.filter((q) => selected.has(q.id)).length} selected</span>
+                  <button onClick={() => void setArchived(visible.filter((q) => selected.has(q.id)).map((q) => q.id), true)}
                     style={{ padding: '6px 14px', borderRadius: 8, border: `1px solid ${C.green}`, background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                     <Archive size={13} /> Archive selected
                   </button>

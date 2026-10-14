@@ -64,6 +64,9 @@ interface POSettings {
 export const CURRENCIES: Record<string, { symbol: string; label: string }> = {
   SGD: { symbol: 'S$', label: 'SGD · Singapore Dollar' },
   CNY: { symbol: '¥', label: 'CNY · Chinese Yuan' },
+  USD: { symbol: 'US$', label: 'USD · US Dollar' },
+  MYR: { symbol: 'RM', label: 'MYR · Malaysian Ringgit' },
+  EUR: { symbol: '€', label: 'EUR · Euro' },
 };
 const money = (n: number, currency = 'SGD') =>
   (CURRENCIES[currency]?.symbol ?? '$') + (Number.isFinite(n) ? n : 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -385,6 +388,18 @@ function RaiseTab({ products, settings, onSent }: { products: Product[]; setting
   const [notes, setNotes] = useState('');
   const sellCurrency = 'SGD'; // customer is always billed in SGD
   const [lines, setLines] = useState<POLine[]>([]);
+  // What's typed in a price box, kept as text so "12." / "0.5" can be typed;
+  // the line holds the parsed number.
+  const [priceText, setPriceText] = useState<Record<string, string>>({});
+  const priceInput = (l: POLine, field: 'unit_price' | 'sell_price') => ({
+    value: priceText[`${l.key}:${field}`] ?? String(l[field]),
+    onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+      const text = e.target.value.replace(/[^0-9.]/g, '');
+      setPriceText((t) => ({ ...t, [`${l.key}:${field}`]: text }));
+      updateLine(l.key, { [field]: parseFloat(text) || 0 });
+    },
+    onBlur: () => setPriceText((t) => { const n = { ...t }; delete n[`${l.key}:${field}`]; return n; }),
+  });
   const [catFilter, setCatFilter] = useState('');
   const [query, setQuery] = useState('');
   const [sending, setSending] = useState(false);
@@ -543,11 +558,11 @@ function RaiseTab({ products, settings, onSent }: { products: Product[]; setting
                     {l.remark && <div style={{ fontSize: 12, color: C.slate, whiteSpace: 'pre-line', marginTop: 2 }}>{l.remark}</div>}
                   </td>
                   <td style={{ padding: '8px 14px', textAlign: 'right', verticalAlign: 'middle' }}>
-                    <input type="text" inputMode="decimal" value={l.unit_price} onChange={(e) => updateLine(l.key, { unit_price: parseFloat(e.target.value.replace(/[^0-9.]/g, '')) || 0 })}
+                    <input type="text" inputMode="decimal" {...priceInput(l, 'unit_price')}
                       style={{ width: 88, padding: '6px 8px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, textAlign: 'right', outline: 'none', background: C.white }} />
                   </td>
                   <td style={{ padding: '8px 14px', textAlign: 'right', verticalAlign: 'middle' }}>
-                    <input type="text" inputMode="decimal" value={l.sell_price} onChange={(e) => updateLine(l.key, { sell_price: parseFloat(e.target.value.replace(/[^0-9.]/g, '')) || 0 })}
+                    <input type="text" inputMode="decimal" {...priceInput(l, 'sell_price')}
                       style={{ width: 88, padding: '6px 8px', borderRadius: 8, border: `1px solid ${C.green}`, fontFamily: 'Figtree', fontSize: 13, textAlign: 'right', outline: 'none', background: C.white }} />
                   </td>
                   <td style={{ padding: '8px 14px', textAlign: 'right', verticalAlign: 'middle' }}>
