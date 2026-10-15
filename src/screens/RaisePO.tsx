@@ -4,7 +4,8 @@ import { KPICard } from '../components/KPICard';
 import { Logo } from '../components/Logo';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
-import { Plus, Trash2, Send, Package, Mail, RefreshCw } from 'lucide-react';
+import { useScreenNav } from '../App';
+import { Plus, Trash2, Send, Package, Mail, RefreshCw, Truck } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -616,7 +617,8 @@ function RaiseTab({ products, settings, onSent }: { products: Product[]; setting
 // ── Track (My POs) ────────────────────────────────────────────────
 
 function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[]; settings: POSettings; canDelete: boolean; onRefresh: () => Promise<void> }) {
-  const { user, isAdmin } = usePermissions();
+  const { user, isAdmin, can } = usePermissions();
+  const go = useScreenNav();
   const [open, setOpen] = useState<PurchaseOrder | null>(null);
   const [busy, setBusy] = useState(false);
   // In-modal feedback for resend / admin decisions — the old resend gave no
@@ -631,17 +633,37 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
   const manualDecision = async (po: PurchaseOrder, decision: 'approved' | 'rejected') => {
     setBusy(true);
     const decided_at = new Date().toISOString();
-    const { error } = await supabase.from('purchase_orders')
-      .update({ status: decision, decided_at }).eq('id', po.id).eq('status', 'pending');
+    const { data, error } = await supabase.from('purchase_orders')
+      .update({ status: decision, decided_at }).eq('id', po.id).eq('status', 'pending').select('id');
     setBusy(false);
     if (error) { setNotice({ text: `Could not update the PO: ${error.message}`, tone: 'err' }); return; }
+    if (!data?.length) { setNotice({ text: 'This PO was already decided elsewhere — the list has been refreshed.', tone: 'err' }); setOpen(null); await onRefresh(); return; }
     setOpen({ ...po, status: decision, decided_at });
     setNotice({
       text: decision === 'approved'
-        ? `Approved by you (${user.full_name || user.email}) as admin — now forward it to finance below.`
+        ? `Approved by you (${user.full_name || user.email}) as admin — forward it to finance, or mark it completed below to send it straight to Incoming Shipments.`
         : `Rejected by you (${user.full_name || user.email}) as admin.`,
       tone: 'ok',
     });
+    await onRefresh();
+  };
+
+  // Admin stand-in for finance's "Mark completed" email link. Status
+  // 'completed' fires the purchase_orders_to_shipments trigger, which turns
+  // the PO lines into one Ordered shipment in Incoming Shipments.
+  const completeAsAdmin = async (po: PurchaseOrder) => {
+    setBusy(true);
+    const finance_decided_at = new Date().toISOString();
+    const { data, error } = await supabase.from('purchase_orders')
+      .update({ status: 'completed', finance_decided_at }).eq('id', po.id).in('status', ['approved', 'sent_to_finance']).select('id');
+    if (error) { setBusy(false); setNotice({ text: `Could not complete the PO: ${error.message}`, tone: 'err' }); return; }
+    if (!data?.length) { setBusy(false); setNotice({ text: 'This PO changed status elsewhere — the list has been refreshed.', tone: 'err' }); setOpen(null); await onRefresh(); return; }
+    const { count } = await supabase.from('inv_shipments').select('id', { count: 'exact', head: true }).eq('po_id', po.id);
+    setBusy(false);
+    setOpen({ ...po, status: 'completed', finance_decided_at });
+    setNotice(count
+      ? { text: `Marked completed by you (${user.full_name || user.email}) as admin — ${count} item line${count === 1 ? '' : 's'} now in Incoming Shipments as Ordered.`, tone: 'ok' }
+      : { text: 'Marked completed, but no shipment lines were created (no line has a quantity). Add the shipment by hand in Incoming Shipments.', tone: 'err' });
     await onRefresh();
   };
 
@@ -790,6 +812,8 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
           onResend={() => resend(open)} onForward={() => forwardToFinance(open)}
           onResendFinance={() => resendFinance(open)}
           onManualDecision={(d) => manualDecision(open, d)}
+          onComplete={() => completeAsAdmin(open)}
+          onOpenShipments={can('inv_shipments', 'can_view') ? () => { setOpen(null); go('inv_shipments'); } : undefined}
           onDelete={() => deletePO(open)} onClose={() => setOpen(null)} />
       )}
     </>
@@ -824,7 +848,8 @@ function POTimeline({ po, financeEmail, approverEmail }: { po: PurchaseOrder; fi
       label: 'Sent to finance',
       sub: po.forwarded_at
         ? `${fmtDT(po.forwarded_at)}${financeEmail ? ` · to ${financeEmail}` : ''}`
-        : po.status === 'approved' ? `Ready — use the button below${financeEmail ? ` (goes to ${financeEmail})` : ''}` : 'After approval',
+        : po.status === 'approved' ? `Ready — use the button below${financeEmail ? ` (goes to ${financeEmail})` : ''}`
+        : po.status === 'completed' ? 'Skipped — completed in the app by an admin' : 'After approval',
       state: forwarded ? 'done' : po.status === 'approved' ? 'current' : 'pending',
     });
     if (po.status === 'cancelled') {
@@ -869,7 +894,7 @@ function POTimeline({ po, financeEmail, approverEmail }: { po: PurchaseOrder; fi
   );
 }
 
-function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, approverEmail, onResend, onForward, onResendFinance, onManualDecision, onDelete, onClose }: {
+function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, approverEmail, onResend, onForward, onResendFinance, onManualDecision, onComplete, onOpenShipments, onDelete, onClose }: {
   po: PurchaseOrder;
   /** Addresses the sends actually use — current Email Template first, PO snapshot as fallback. */
   financeEmail: string | null;
@@ -882,10 +907,14 @@ function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, app
   onForward: () => void;
   onResendFinance: () => void;
   onManualDecision: (decision: 'approved' | 'rejected') => void;
+  onComplete: () => void;
+  onOpenShipments?: () => void;
   onDelete: () => void;
   onClose: () => void;
 }) {
   const [confirmOverride, setConfirmOverride] = useState<'approved' | 'rejected' | null>(null);
+  const [confirmComplete, setConfirmComplete] = useState(false);
+  const shipLines = po.lines.filter((l) => Number(l.qty) > 0).length;
   const st = STATUS_STYLE[po.status];
   const [confirmDelete, setConfirmDelete] = useState(false);
   return (
@@ -962,7 +991,7 @@ function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, app
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 12.5, fontWeight: 700, color: confirmOverride === 'approved' ? '#1B512D' : '#C0321A', flex: 1, minWidth: 200 }}>
                   {confirmOverride === 'approved'
-                    ? 'Approve this PO in place of the boss? It moves on to finance.'
+                    ? 'Approve this PO in place of the boss? It moves on to the finance step.'
                     : 'Reject this PO in place of the boss?'}
                 </span>
                 <button onClick={() => setConfirmOverride(null)} disabled={busy}
@@ -975,7 +1004,7 @@ function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, app
             ) : (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 12, color: C.slate, flex: 1, minWidth: 200 }}>
-                  Boss can't get to the email? Decide here — recorded with today's date, then forward to finance as usual.
+                  Boss can't get to the email? Decide here — recorded with today's date. Then forward to finance, or mark it completed yourself.
                 </span>
                 <button onClick={() => setConfirmOverride('approved')} disabled={busy}
                   style={{ padding: '7px 16px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
@@ -984,6 +1013,40 @@ function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, app
                 <button onClick={() => setConfirmOverride('rejected')} disabled={busy}
                   style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
                   Reject
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Admin stand-in for finance's email link: completing sends the PO
+            lines to Incoming Shipments (purchase_orders_to_shipments trigger). */}
+        {isAdmin && (po.status === 'approved' || po.status === 'sent_to_finance') && (
+          <div style={{ background: C.seasalt, borderRadius: 12, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Admin — finance step</div>
+            {confirmComplete ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12.5, fontWeight: 700, color: '#1B512D', flex: 1, minWidth: 200 }}>
+                  Mark this PO completed (sent to the supplier)? {shipLines} item line{shipLines === 1 ? '' : 's'} go{shipLines === 1 ? 'es' : ''} to Incoming Shipments as Ordered.
+                  {po.status === 'approved' && ' Finance will not be emailed.'}
+                </span>
+                <button onClick={() => setConfirmComplete(false)} disabled={busy}
+                  style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+                <button onClick={() => { onComplete(); setConfirmComplete(false); }} disabled={busy}
+                  style={{ padding: '7px 16px', borderRadius: 8, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: busy ? 'default' : 'pointer' }}>
+                  {busy ? 'Saving…' : 'Yes, complete'}
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, color: C.slate, flex: 1, minWidth: 200 }}>
+                  {po.status === 'approved'
+                    ? 'Skip the finance email and mark it completed here — it goes straight to Incoming Shipments.'
+                    : 'Finance done but the email link not clicked? Mark it completed here — it goes straight to Incoming Shipments.'}
+                </span>
+                <button onClick={() => setConfirmComplete(true)} disabled={busy}
+                  style={{ padding: '7px 16px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                  Mark completed as admin
                 </button>
               </div>
             )}
@@ -1014,6 +1077,12 @@ function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, app
               <button onClick={onResendFinance} disabled={busy} title={financeEmail ? `Resend to ${financeEmail}` : undefined}
                 style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <RefreshCw size={13} /> {busy ? 'Resending…' : 'Resend to finance'}
+              </button>
+            )}
+            {po.status === 'completed' && onOpenShipments && (
+              <button onClick={onOpenShipments}
+                style={{ padding: '9px 18px', borderRadius: 10, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <Truck size={13} /> Open Incoming Shipments
               </button>
             )}
           </div>
