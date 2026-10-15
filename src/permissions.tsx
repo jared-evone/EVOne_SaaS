@@ -82,7 +82,7 @@ export const DEPARTMENT_SCREENS: Record<Department, ScreenKey[]> = {
   pm:    ['dashboard', 'registry_todo', 'charger_projects', 'customers', 'projects', 'email_designer'],
   // Standalone — stock only changes from the inv_* screens. Raise PO lives here
   // too (moved from Sales, Oct 2026) but never touches stock.
-  inv:   ['inv_stock', 'inv_requests', 'raise_po', 'inv_shipments', 'inv_cannibal', 'inv_ledger'],
+  inv:   ['inv_stock', 'raise_po', 'inv_shipments', 'inv_requests', 'inv_cannibal', 'inv_ledger'],
 };
 
 export interface ScreenCap {

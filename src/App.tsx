@@ -119,9 +119,9 @@ const NAV_ALL: NavEntry[] = [
   { kind: 'leaf', id: 'tsd_pic',           icon: ShieldCheck,     label: 'PIC Review' },
   { kind: 'leaf', id: 'tsd_technicians',   icon: Users,           label: 'Technicians' },
   { kind: 'leaf', id: 'inv_stock',         icon: Boxes,           label: 'Stock Levels' },
-  { kind: 'leaf', id: 'inv_requests',      icon: ClipboardList,   label: 'Requests & Delivery' },
   { kind: 'leaf', id: 'raise_po',          icon: ClipboardCheck,  label: 'Raise PO' },
   { kind: 'leaf', id: 'inv_shipments',     icon: Truck,           label: 'Incoming Shipments' },
+  { kind: 'leaf', id: 'inv_requests',      icon: ClipboardList,   label: 'Requests & Delivery' },
   { kind: 'leaf', id: 'inv_cannibal',      icon: Wrench,          label: 'Cannibalisation' },
   { kind: 'leaf', id: 'inv_ledger',        icon: ScrollText,      label: 'Stock Ledger' },
   { kind: 'group', key: 'settings_group', icon: SettingsIcon,     label: 'Settings', children: [
