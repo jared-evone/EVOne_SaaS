@@ -630,3 +630,24 @@ create policy "inv po pdfs delete" on storage.objects for delete to authenticate
 -- keeps the name either way.
 alter table public.inv_requests
   add column if not exists cpo_location_id uuid references public.cpo_locations(id) on delete set null;
+
+-- 2026-10-21 · migration purchase_orders_ev1po_numbering — Raise PO numbers
+-- follow the company's running EV1PO-NNNNNN series (Incoming Shipments held
+-- EV1PO-000226…000248). The one live PO, PO-2026-0010, became EV1PO-000249
+-- along with its 7 shipment lines (po_no + notes); new POs start at 000250.
+-- Guarded: aborts if EV1PO-000249 is already used.
+do $$ begin
+  if exists (select 1 from purchase_orders where po_number like 'EV1PO-%')
+     or exists (select 1 from inv_shipments where po_no = 'EV1PO-000249') then
+    raise exception 'EV1PO-000249 is already in use — numbering not changed';
+  end if;
+end $$;
+
+alter table public.purchase_orders
+  alter column po_number set default ('EV1PO-' || lpad(nextval('po_number_seq')::text, 6, '0'));
+
+update public.purchase_orders set po_number = 'EV1PO-000249' where po_number = 'PO-2026-0010';
+update public.inv_shipments set po_no = 'EV1PO-000249' where po_no = 'PO-2026-0010';
+update public.inv_shipments set notes = replace(notes, 'PO-2026-0010', 'EV1PO-000249') where notes like '%PO-2026-0010%';
+
+select setval('po_number_seq', 249, true);
