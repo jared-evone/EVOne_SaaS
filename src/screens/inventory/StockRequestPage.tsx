@@ -7,8 +7,8 @@ import type { SignedInUser } from '../../permissions';
 import { Lock, Power, CheckCircle2, FolderClosed } from 'lucide-react';
 import {
   useInvCore, insertRequest, usableTotal, fmtD, todayISO, REQ_DEPARTMENTS, REQ_META, REQUEST_LINKS,
-  Pill, Field, DeliverToField, ContactField, useCustomerDirectory, ErrorBanner, ItemSelect, inputStyle, primaryBtn, ghostBtn,
-  type InvRequest,
+  Pill, Field, DeliverToField, ContactField, CompanyField, useCustomerDirectory, ErrorBanner, ItemSelect, inputStyle, primaryBtn, ghostBtn,
+  type InvRequest, type RequestParty,
 } from './invShared';
 
 interface StockRequestPageProps {
@@ -26,7 +26,7 @@ export function StockRequestPage({ user, preset, onSignOut }: StockRequestPagePr
   const me = user.full_name || user.email;
   const { items, locations, onHand, loading, error: coreErr } = useInvCore();
 
-  const { customers, contactsOf } = useCustomerDirectory();
+  const { customers, cpoLocations, contactsOf } = useCustomerDirectory();
 
   const [mine, setMine] = useState<InvRequest[]>([]);
   const loadMine = async () => {
@@ -35,26 +35,32 @@ export function StockRequestPage({ user, preset, onSignOut }: StockRequestPagePr
   };
   useEffect(() => { void loadMine(); }, [me]);
 
-  const blank = (department: string) => ({ department, customer_id: '', contact_name: '', contact_phone: '', delivery_address: '', item_id: '', item_name: '', qty: '1', required_by: '', remarks: '' });
+  const blank = (department: string) => ({ department, customer_id: '', cpo_location_id: '', contact_name: '', contact_phone: '', delivery_address: '', item_id: '', item_name: '', qty: '1', required_by: '', remarks: '' });
   const [f, setF] = useState(() => blank(link.department));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<Submitted | null>(null);
 
   const customer = customers.find((c) => c.id === f.customer_id);
+  const cpoLoc = cpoLocations.find((l) => l.id === f.cpo_location_id);
+  const party = customer ?? cpoLoc;
   const item = items.find((i) => i.id === f.item_id);
 
-  const pickCustomer = (id: string) => {
-    const c = customers.find((x) => x.id === id);
-    if (!c) return;
+  const pickParty = (p: RequestParty) => {
+    if (p.kind === 'cpo') {
+      const l = p.location;
+      setF((x) => ({ ...x, customer_id: '', cpo_location_id: l.id, delivery_address: l.address ?? '', contact_name: '', contact_phone: '' }));
+      return;
+    }
+    const c = p.customer;
     const first = contactsOf(c.id)[0];
-    setF((x) => ({ ...x, customer_id: c.id, delivery_address: c.address ?? '', contact_name: first?.name ?? '', contact_phone: first?.phone ?? '' }));
+    setF((x) => ({ ...x, customer_id: c.id, cpo_location_id: '', delivery_address: c.address ?? '', contact_name: first?.name ?? '', contact_phone: first?.phone ?? '' }));
   };
 
   const submit = async () => {
     const qty = Number(f.qty);
     if (!f.department) { setErr('Pick your department.'); return; }
-    if (!customer) { setErr('Pick the company from the customer list.'); return; }
+    if (!party) { setErr('Pick the company or CPO location from the list.'); return; }
     if (!item && !f.item_name.trim()) { setErr('Pick an item, or describe what you need.'); return; }
     if (!Number.isInteger(qty) || qty <= 0) { setErr('Quantity must be a whole number above zero.'); return; }
     setBusy(true);
@@ -62,7 +68,7 @@ export function StockRequestPage({ user, preset, onSignOut }: StockRequestPagePr
     const itemName = (item ? item.name : f.item_name).trim();
     const res = await insertRequest({
       submitted_on: todayISO(), employee: me, department: f.department,
-      customer_id: customer.id, company_project: customer.name,
+      customer_id: customer?.id ?? null, cpo_location_id: cpoLoc?.id ?? null, company_project: party.name,
       contact_name: f.contact_name.trim() || null, contact_phone: f.contact_phone.trim() || null,
       delivery_address: f.delivery_address.trim() || null,
       item_id: item?.id ?? null, item_name: itemName,
@@ -71,7 +77,7 @@ export function StockRequestPage({ user, preset, onSignOut }: StockRequestPagePr
     });
     setBusy(false);
     if (res.error || !res.pr_no) { setErr(res.error ?? 'Could not submit the request.'); return; }
-    setDone({ pr_no: res.pr_no, what: `${qty} × ${itemName}`, company: customer.name });
+    setDone({ pr_no: res.pr_no, what: `${qty} × ${itemName}`, company: party.name });
     setF(blank(f.department));
     void loadMine();
   };
@@ -126,14 +132,12 @@ export function StockRequestPage({ user, preset, onSignOut }: StockRequestPagePr
                       onChange={(v) => setF({ ...f, department: v })} />
                   </Field>
                 </div>
-                <Field label="Company">
-                  <SearchSelect value={f.customer_id}
-                    options={customers.map((c) => ({ value: c.id, label: c.name, sub: c.address ?? undefined }))}
-                    onChange={pickCustomer} placeholder="Select customer…" emptyText="No customers match" />
-                </Field>
-                <ContactField value={f.contact_name} phone={f.contact_phone} contacts={customer ? contactsOf(customer.id) : []} hasCustomer={!!customer}
+                <CompanyField customerId={f.customer_id} cpoLocationId={f.cpo_location_id} customers={customers} cpoLocations={cpoLocations} onPick={pickParty} />
+                <ContactField value={f.contact_name} phone={f.contact_phone} contacts={customer ? contactsOf(customer.id) : []} hasCustomer={!!party}
+                  noun={cpoLoc ? 'CPO location' : 'customer'}
                   onChange={(name, phone) => setF({ ...f, contact_name: name, contact_phone: phone })} />
-                <DeliverToField value={f.delivery_address} hasCustomer={!!customer} addressOnFile={customer?.address}
+                <DeliverToField value={f.delivery_address} hasCustomer={!!party} addressOnFile={party?.address}
+                  noun={cpoLoc ? 'CPO location' : 'customer'}
                   onChange={(v) => setF({ ...f, delivery_address: v })} />
                 <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
                   <Field label="Item" hint={item ? `${usableTotal(onHand, item.id, locations)} in stock` : 'Not listed? Choose "Not in the item list" and describe it'}>

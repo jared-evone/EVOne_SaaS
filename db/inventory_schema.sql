@@ -624,3 +624,9 @@ insert into storage.buckets (id, name, public) values ('inv-po-pdfs', 'inv-po-pd
 create policy "inv po pdfs read" on storage.objects for select to authenticated using (bucket_id = 'inv-po-pdfs');
 create policy "inv po pdfs upload" on storage.objects for insert to authenticated with check (bucket_id = 'inv-po-pdfs');
 create policy "inv po pdfs delete" on storage.objects for delete to authenticated using (bucket_id = 'inv-po-pdfs');
+
+-- 2026-10-21 · migration inv_requests_cpo_location — a stock request can be for
+-- a CPO location instead of a customer (as work orders allow). company_project
+-- keeps the name either way.
+alter table public.inv_requests
+  add column if not exists cpo_location_id uuid references public.cpo_locations(id) on delete set null;

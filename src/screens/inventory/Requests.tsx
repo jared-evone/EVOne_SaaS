@@ -8,9 +8,9 @@ import { RequestLinksView } from './RequestLinks';
 import { SearchSelect } from '../../components/SearchSelect';
 import {
   useInvCore, insertRequest, REQ_DEPARTMENTS, REQ_META, qtyAt, usableTotal, itemLabel, fmtD, todayISO,
-  Pill, Field, DeliverToField, ContactField, useCustomerDirectory, ErrorBanner, Modal, ItemSelect, LocationSelect, SearchBox, downloadCsv,
+  Pill, Field, DeliverToField, ContactField, CompanyField, useCustomerDirectory, ErrorBanner, Modal, ItemSelect, LocationSelect, SearchBox, downloadCsv,
   inputStyle, primaryBtn, ghostBtn, pillBtn, thStyle, tdStyle,
-  type InvItem, type InvRequest, type InvLocation, type OnHand, type CustomerOpt, type ContactOpt,
+  type InvItem, type InvRequest, type InvLocation, type OnHand, type CustomerOpt, type ContactOpt, type CpoLocationOpt, type RequestParty,
 } from './invShared';
 
 type ReqStatus = InvRequest['status'];
@@ -29,7 +29,7 @@ export function ScreenInvRequests() {
   const { items, locations, onHand, error: coreErr, reload: reloadCore } = useInvCore();
 
   const [rows, setRows] = useState<InvRequest[]>([]);
-  const { customers, contactsOf } = useCustomerDirectory();
+  const { customers, cpoLocations, contactsOf } = useCustomerDirectory();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const load = async () => {
@@ -108,7 +108,7 @@ export function ScreenInvRequests() {
                     </td>
                     <td style={{ ...tdStyle, color: C.slate, whiteSpace: 'nowrap' }}>{fmtD(r.submitted_on)}</td>
                     <td style={tdStyle}>{r.employee || '—'}<div style={{ fontSize: 11, color: C.slate }}>{r.department}</div></td>
-                    <td style={tdStyle}>{r.company_project || '—'}<div style={{ fontSize: 11, color: C.slate, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{[r.contact_name, r.delivery_address].filter(Boolean).join(' · ')}</div></td>
+                    <td style={tdStyle}>{r.company_project || '—'}{r.cpo_location_id && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', color: C.opal }}>CPO</span>}<div style={{ fontSize: 11, color: C.slate, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{[r.contact_name, r.delivery_address].filter(Boolean).join(' · ')}</div></td>
                     <td style={tdStyle}>
                       {r.item_name}
                       {!r.item_id && <div style={{ fontSize: 10, fontWeight: 700, color: '#B07D00', marginTop: 2 }}>NOT IN ITEM LIST</div>}
@@ -126,11 +126,11 @@ export function ScreenInvRequests() {
       </div>
 
       {open && (
-        <RequestModal key={open.id} req={open} items={items} customers={customers} contactsOf={contactsOf} locations={locations} onHand={onHand} me={me}
+        <RequestModal key={open.id} req={open} items={items} customers={customers} cpoLocations={cpoLocations} contactsOf={contactsOf} locations={locations} onHand={onHand} me={me}
           canEdit={canEdit} canDelete={canDelete} onClose={() => setOpenId(null)} onChanged={refresh} />
       )}
       {creating && (
-        <RequestModal req={null} items={items} customers={customers} contactsOf={contactsOf} locations={locations} onHand={onHand} me={me}
+        <RequestModal req={null} items={items} customers={customers} cpoLocations={cpoLocations} contactsOf={contactsOf} locations={locations} onHand={onHand} me={me}
           canEdit={canEdit} canDelete={false} onClose={() => setCreating(false)}
           onChanged={async () => { setCreating(false); await refresh(); }} />
       )}
@@ -138,8 +138,8 @@ export function ScreenInvRequests() {
   );
 }
 
-function RequestModal({ req, items, customers, contactsOf, locations, onHand, me, canEdit, canDelete, onClose, onChanged }: {
-  req: InvRequest | null; items: InvItem[]; customers: CustomerOpt[]; contactsOf: (customerId: string) => ContactOpt[];
+function RequestModal({ req, items, customers, cpoLocations, contactsOf, locations, onHand, me, canEdit, canDelete, onClose, onChanged }: {
+  req: InvRequest | null; items: InvItem[]; customers: CustomerOpt[]; cpoLocations: CpoLocationOpt[]; contactsOf: (customerId: string) => ContactOpt[];
   locations: InvLocation[]; onHand: OnHand; me: string;
   canEdit: boolean; canDelete: boolean; onClose: () => void; onChanged: () => Promise<void>;
 }) {
@@ -149,6 +149,7 @@ function RequestModal({ req, items, customers, contactsOf, locations, onHand, me
     submitted_on: req?.submitted_on ?? todayISO(),
     department: req?.department ?? '',
     customer_id: req?.customer_id ?? '',
+    cpo_location_id: req?.cpo_location_id ?? '',
     company_project: req?.company_project ?? '',
     contact_name: req?.contact_name ?? '',
     contact_phone: req?.contact_phone ?? '',
@@ -166,18 +167,23 @@ function RequestModal({ req, items, customers, contactsOf, locations, onHand, me
   const item = items.find((i) => i.id === f.item_id) ?? null;
   const requester = req ? (req.employee ?? '—') : me;
   const customer = customers.find((c) => c.id === f.customer_id) ?? null;
+  const cpoLoc = cpoLocations.find((l) => l.id === f.cpo_location_id) ?? null;
 
-  const pickCustomer = (id: string) => {
-    const c = customers.find((x) => x.id === id);
-    if (!c) return;
+  const pickParty = (p: RequestParty) => {
+    if (p.kind === 'cpo') {
+      const l = p.location;
+      setF((x) => ({ ...x, customer_id: '', cpo_location_id: l.id, company_project: l.name, delivery_address: l.address ?? '', contact_name: '', contact_phone: '' }));
+      return;
+    }
+    const c = p.customer;
     const first = contactsOf(c.id)[0];
-    setF((x) => ({ ...x, customer_id: c.id, company_project: c.name, delivery_address: c.address ?? '', contact_name: first?.name ?? '', contact_phone: first?.phone ?? '' }));
+    setF((x) => ({ ...x, customer_id: c.id, cpo_location_id: '', company_project: c.name, delivery_address: c.address ?? '', contact_name: first?.name ?? '', contact_phone: first?.phone ?? '' }));
   };
 
   const save = async (extra?: Partial<InvRequest>) => {
     const qty = Number(f.qty);
     if (!f.department) { setErr('Pick the department.'); return false; }
-    if (!f.customer_id && (isNew || !f.company_project.trim())) { setErr('Pick the company from the customer list.'); return false; }
+    if (!f.customer_id && !f.cpo_location_id && (isNew || !f.company_project.trim())) { setErr('Pick the company or CPO location from the list.'); return false; }
     if (!f.item_id && !f.item_name.trim()) { setErr('Pick an item, or type what is needed.'); return false; }
     if (!Number.isInteger(qty) || qty <= 0) { setErr('Quantity must be a whole number above zero.'); return false; }
     setBusy(true);
@@ -186,7 +192,8 @@ function RequestModal({ req, items, customers, contactsOf, locations, onHand, me
       submitted_on: f.submitted_on || todayISO(),
       employee: requester === '—' ? null : requester, department: f.department || null,
       customer_id: f.customer_id || null,
-      company_project: (customer ? customer.name : f.company_project).trim() || null,
+      cpo_location_id: f.cpo_location_id || null,
+      company_project: (customer ? customer.name : cpoLoc ? cpoLoc.name : f.company_project).trim() || null,
       contact_name: f.contact_name.trim() || null, contact_phone: f.contact_phone.trim() || null,
       delivery_address: f.delivery_address.trim() || null,
       item_id: f.item_id || null,
@@ -259,15 +266,15 @@ function RequestModal({ req, items, customers, contactsOf, locations, onHand, me
         <Field label="Submitted"><input type="date" value={f.submitted_on} disabled={ro} onChange={(e) => setF({ ...f, submitted_on: e.target.value })} style={inputStyle} /></Field>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <Field label="Company" hint={!f.customer_id && f.company_project ? `From Excel: "${f.company_project}" — pick the matching customer to link it` : undefined}>
-          <SearchSelect value={f.customer_id} disabled={ro}
-            options={customers.map((c) => ({ value: c.id, label: c.name, sub: c.address ?? undefined }))}
-            onChange={pickCustomer} placeholder="Select customer…" emptyText="No customers match" />
-        </Field>
-        <ContactField value={f.contact_name} phone={f.contact_phone} contacts={customer ? contactsOf(customer.id) : []} hasCustomer={!!customer} disabled={ro}
+        <CompanyField customerId={f.customer_id} cpoLocationId={f.cpo_location_id} customers={customers} cpoLocations={cpoLocations}
+          onPick={pickParty} disabled={ro}
+          hint={!f.customer_id && !f.cpo_location_id && f.company_project ? `From Excel: "${f.company_project}" — pick the matching customer to link it` : undefined} />
+        <ContactField value={f.contact_name} phone={f.contact_phone} contacts={customer ? contactsOf(customer.id) : []} hasCustomer={!!customer || !!cpoLoc} disabled={ro}
+          noun={cpoLoc ? 'CPO location' : 'customer'}
           onChange={(name, phone) => setF({ ...f, contact_name: name, contact_phone: phone })} />
       </div>
-      <DeliverToField value={f.delivery_address} disabled={ro} hasCustomer={!!customer} addressOnFile={customer?.address}
+      <DeliverToField value={f.delivery_address} disabled={ro} hasCustomer={!!customer || !!cpoLoc} addressOnFile={customer ? customer.address : cpoLoc?.address}
+        noun={cpoLoc ? 'CPO location' : 'customer'}
         onChange={(v) => setF({ ...f, delivery_address: v })} />
       <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px 160px', gap: 12 }}>

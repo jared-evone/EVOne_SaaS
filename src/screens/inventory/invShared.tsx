@@ -74,6 +74,7 @@ export interface InvRequest {
   delivery_note: string | null;
   contact_name?: string | null;
   contact_phone?: string | null;
+  cpo_location_id?: string | null;
   void_do_nos?: string[] | null;
   created_by: string | null;
   created_at: string;
@@ -297,32 +298,67 @@ export function Field({ label, children, hint }: { label: string; children: Reac
 export interface CustomerOpt { id: string; name: string; address: string | null; }
 export interface ContactOpt { customer_id: string; name: string; phone: string | null; position: number; }
 
+export interface CpoLocationOpt { id: string; name: string; address: string | null; }
+
 export function useCustomerDirectory() {
   const [customers, setCustomers] = useState<CustomerOpt[]>([]);
   const [contacts, setContacts] = useState<ContactOpt[]>([]);
+  const [cpoLocations, setCpoLocations] = useState<CpoLocationOpt[]>([]);
   useEffect(() => {
     void Promise.all([
       supabase.from('customers').select('id, name, address').order('name'),
       supabase.from('customer_contacts').select('customer_id, name, phone, position').order('position').order('created_at'),
-    ]).then(([c, k]) => {
+      supabase.from('cpo_locations').select('id, name, address').order('name'),
+    ]).then(([c, k, l]) => {
       setCustomers((c.data as CustomerOpt[]) ?? []);
       setContacts((k.data as ContactOpt[]) ?? []);
+      setCpoLocations((l.data as CpoLocationOpt[]) ?? []);
     });
   }, []);
   const contactsOf = useCallback((customerId: string) => contacts.filter((k) => k.customer_id === customerId), [contacts]);
-  return { customers, contactsOf };
+  return { customers, cpoLocations, contactsOf };
+}
+
+// A request is for a customer or, as in work orders, a CPO location. One
+// searchable list; CPO locations are tagged "· CPO" (search "CPO" to see them).
+export type RequestParty = { kind: 'customer'; customer: CustomerOpt } | { kind: 'cpo'; location: CpoLocationOpt };
+const CPO_VALUE = 'cpo:';
+
+export function CompanyField({ customerId, cpoLocationId, customers, cpoLocations, onPick, hint, disabled }: {
+  customerId: string; cpoLocationId: string; customers: CustomerOpt[]; cpoLocations: CpoLocationOpt[];
+  onPick: (p: RequestParty) => void; hint?: string; disabled?: boolean;
+}) {
+  const options: SelectOption[] = [
+    ...customers.map((c) => ({ value: c.id, label: c.name, sub: c.address ?? undefined })),
+    ...cpoLocations.map((l) => ({ value: CPO_VALUE + l.id, label: `${l.name} · CPO`, sub: l.address ?? 'CPO location' })),
+  ];
+  const pick = (v: string) => {
+    if (v.startsWith(CPO_VALUE)) {
+      const l = cpoLocations.find((x) => x.id === v.slice(CPO_VALUE.length));
+      if (l) onPick({ kind: 'cpo', location: l });
+      return;
+    }
+    const c = customers.find((x) => x.id === v);
+    if (c) onPick({ kind: 'customer', customer: c });
+  };
+  return (
+    <Field label="Company / CPO location" hint={hint}>
+      <SearchSelect value={cpoLocationId ? CPO_VALUE + cpoLocationId : customerId} options={options} disabled={disabled}
+        onChange={pick} placeholder="Select customer or CPO location…" emptyText="No customers or CPO locations match" />
+    </Field>
+  );
 }
 
 // Searchable pick of the customer's contacts (phone underneath), defaulting to
 // the first one. A name not on file can be typed in for this request only.
-export function ContactField({ value, phone, contacts, hasCustomer, onChange, disabled }: {
+export function ContactField({ value, phone, contacts, hasCustomer, onChange, disabled, noun = 'customer' }: {
   value: string; phone: string; contacts: ContactOpt[]; hasCustomer: boolean;
-  onChange: (name: string, phone: string) => void; disabled?: boolean;
+  onChange: (name: string, phone: string) => void; disabled?: boolean; noun?: string;
 }) {
   const options: SelectOption[] = contacts.map((k) => ({ value: k.name, label: k.name, sub: k.phone ?? undefined }));
   if (value && !contacts.some((k) => k.name === value)) options.push({ value, label: value, sub: 'Not on the customer record' });
   return (
-    <Field label="Contact person" hint={phone ? `Tel ${phone}` : hasCustomer && contacts.length === 0 ? 'No contact on file for this customer — type a name' : undefined}>
+    <Field label="Contact person" hint={phone ? `Tel ${phone}` : hasCustomer && contacts.length === 0 ? `No contact on file for this ${noun} — type a name` : undefined}>
       <SearchSelect value={value} options={options} disabled={disabled || !hasCustomer}
         placeholder={hasCustomer ? 'Select contact…' : 'Pick the company first'} emptyText="No contacts match"
         onChange={(v) => onChange(v, contacts.find((k) => k.name === v)?.phone ?? '')}
@@ -334,8 +370,8 @@ export function ContactField({ value, phone, contacts, hasCustomer, onChange, di
 // Delivery address defaults to the customer's address on file (Customers).
 // It can be changed for one request (a site, self collect) and put back in
 // one click; the customer record itself is never edited from here.
-export function DeliverToField({ value, onChange, addressOnFile, hasCustomer, disabled }: {
-  value: string; onChange: (v: string) => void; addressOnFile: string | null | undefined; hasCustomer: boolean; disabled?: boolean;
+export function DeliverToField({ value, onChange, addressOnFile, hasCustomer, disabled, noun = 'customer' }: {
+  value: string; onChange: (v: string) => void; addressOnFile: string | null | undefined; hasCustomer: boolean; disabled?: boolean; noun?: string;
 }) {
   const onFile = (addressOnFile ?? '').trim();
   const changed = hasCustomer && value.trim() !== onFile;
@@ -343,11 +379,11 @@ export function DeliverToField({ value, onChange, addressOnFile, hasCustomer, di
     <div style={{ minWidth: 0 }}>
       <label style={labelStyle}>Deliver to</label>
       <input value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}
-        placeholder={hasCustomer && !onFile ? 'No address on file — type one' : "Filled from the customer's address"} style={inputStyle} />
+        placeholder={hasCustomer && !onFile ? 'No address on file — type one' : `Filled from the ${noun}'s address`} style={inputStyle} />
       {hasCustomer && (
         <div style={{ fontSize: 11, color: C.slate, marginTop: 4, lineHeight: 1.5 }}>
-          {!onFile ? 'This customer has no address on file.'
-            : !changed ? 'Address on file for this customer — change it for a site or self collect'
+          {!onFile ? `This ${noun} has no address on file.`
+            : !changed ? `Address on file for this ${noun} — change it for a site or self collect`
             : (
               <>
                 Changed for this request. On file: {onFile}
