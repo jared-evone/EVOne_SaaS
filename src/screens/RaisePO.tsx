@@ -5,6 +5,8 @@ import { Logo } from '../components/Logo';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
 import { useScreenNav } from '../App';
+import { readDraft, clearDraft, useDraftSync } from '../lib/draft';
+import { DraftBar } from '../components/DraftBar';
 import { Plus, Trash2, Send, Package, Mail, RefreshCw, Truck } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -392,13 +394,20 @@ export function ScreenRaisePO() {
 
 // ── Raise PO ──────────────────────────────────────────────────────
 
+interface RaiseDraft { title: string; notes: string; lines: POLine[] }
+
 function RaiseTab({ products, settings, onSent }: { products: Product[]; settings: POSettings; onSent: () => Promise<void> }) {
   const { user } = usePermissions();
-  const [title, setTitle] = useState('');
+  const draftKey = `evone.draft.raise_po.${user.id}`;
+  const [draft] = useState(() => readDraft<RaiseDraft>(draftKey));
+  const [title, setTitle] = useState(draft?.title ?? '');
   const approver = settings.approver_email ?? ''; // fixed by the admin in the Email Template
-  const [notes, setNotes] = useState('');
+  const [notes, setNotes] = useState(draft?.notes ?? '');
   const sellCurrency = 'SGD'; // customer is always billed in SGD
-  const [lines, setLines] = useState<POLine[]>([]);
+  const [lines, setLines] = useState<POLine[]>(() => (Array.isArray(draft?.lines) ? draft!.lines : []));
+  const hasDraft = lines.length > 0 || !!title.trim() || !!notes.trim();
+  useDraftSync(draftKey, { title, notes, lines }, hasDraft);
+  const clearAll = () => { clearDraft(draftKey); setTitle(''); setNotes(''); setLines([]); setPriceText({}); setError(null); };
   // What's typed in a price box, kept as text so "12." / "0.5" can be typed;
   // the line holds the parsed number.
   const [priceText, setPriceText] = useState<Record<string, string>>({});
@@ -489,6 +498,7 @@ function RaiseTab({ products, settings, onSent }: { products: Product[]; setting
     await supabase.from('purchase_orders').update({ email_status: emailErr ? 'failed' : 'sent', email_error: emailErr }).eq('id', po.id);
 
     setSending(false);
+    clearAll();
     if (emailErr) { setError(`PO ${po.po_number} saved, but the email failed: ${emailErr}. You can resend it from My POs.`); }
     await onSent();
   };
@@ -551,6 +561,10 @@ function RaiseTab({ products, settings, onSent }: { products: Product[]; setting
           </div>
         </div>
 
+        {hasDraft && (
+          <DraftBar onClear={clearAll}
+            summary={[title.trim() && 'the title', lines.length && `${lines.length} item${lines.length === 1 ? '' : 's'}`, notes.trim() && 'notes'].filter(Boolean).join(', ').replace(/, ([^,]*)$/, ' and $1')} />
+        )}
         <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
           <table style={{ width: '100%', minWidth: 720, borderCollapse: 'collapse' }}>
             <thead>

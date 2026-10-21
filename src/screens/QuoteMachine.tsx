@@ -4,6 +4,8 @@ import { KPICard } from '../components/KPICard';
 import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
 import { Search, Plus, Package, FileText, Save, Trash2, Pencil } from 'lucide-react';
+import { readDraft, clearDraft, useDraftSync } from '../lib/draft';
+import { DraftBar } from '../components/DraftBar';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -108,14 +110,15 @@ export function ScreenQuoteMachine() {
       </div>
 
       {tab === 'build' && (
-        <BuildQuote key={loadQuote?.id ?? 'fresh'} items={items} loadQuote={loadQuote} onSaved={async () => { await fetchAll(); }} />
+        <BuildQuote key={loadQuote?.id ?? 'fresh'} items={items} loadQuote={loadQuote} onSaved={async () => { await fetchAll(); }}
+          onCleared={() => setLoadQuote(null)} />
       )}
       {tab === 'catalog' && (
         <CatalogTab items={items} categories={categories} canEdit={canEdit} canDelete={canDelete} onRefresh={fetchAll} />
       )}
       {tab === 'saved' && (
         <SavedTab saved={saved} canDelete={canDelete} onRefresh={fetchAll}
-          onLoad={(q) => { setLoadQuote(q); setTab('build'); }} />
+          onLoad={(q) => { clearDraft(quoteDraftKey(user.id)); setLoadQuote(q); setTab('build'); }} />
       )}
     </div>
   );
@@ -123,12 +126,22 @@ export function ScreenQuoteMachine() {
 
 // ── Build Quote ───────────────────────────────────────────────────
 
-function BuildQuote({ items, loadQuote, onSaved }: { items: CatalogItem[]; loadQuote: SavedQuote | null; onSaved: () => Promise<void> }) {
+interface QuoteDraft { title: string; notes: string; profit: number; lines: QuoteLine[] }
+const quoteDraftKey = (userId: string) => `evone.draft.quote.${userId}`;
+
+function BuildQuote({ items, loadQuote, onSaved, onCleared }: { items: CatalogItem[]; loadQuote: SavedQuote | null; onSaved: () => Promise<void>; onCleared: () => void }) {
   const { user } = usePermissions();
-  const [title, setTitle] = useState(loadQuote?.title ?? '');
-  const [notes, setNotes] = useState(loadQuote?.notes ?? '');
-  const [profit, setProfit] = useState<number>(loadQuote?.profit_pct ?? 0);
-  const [lines, setLines] = useState<QuoteLine[]>(() => (loadQuote?.lines ?? []).map((l) => ({ ...l, key: newKey() })));
+  const draftKey = quoteDraftKey(user.id);
+  // An unsent draft wins over the loaded quote: loading a saved quote clears
+  // the draft first, so a draft here is that quote with the user's edits.
+  const [draft] = useState(() => readDraft<QuoteDraft>(draftKey));
+  const [title, setTitle] = useState(draft?.title ?? loadQuote?.title ?? '');
+  const [notes, setNotes] = useState(draft?.notes ?? loadQuote?.notes ?? '');
+  const [profit, setProfit] = useState<number>(draft?.profit ?? loadQuote?.profit_pct ?? 0);
+  const [lines, setLines] = useState<QuoteLine[]>(() => (Array.isArray(draft?.lines) ? draft!.lines : (loadQuote?.lines ?? []).map((l) => ({ ...l, key: newKey() }))));
+  const hasDraft = lines.length > 0 || !!title.trim() || !!notes.trim() || profit > 0;
+  useDraftSync(draftKey, { title, notes, profit, lines }, hasDraft);
+  const clearAll = () => { clearDraft(draftKey); setTitle(''); setNotes(''); setProfit(0); setLines([]); setSavedMsg(false); onCleared(); };
   const [catFilter, setCatFilter] = useState('');
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState(false);
@@ -235,6 +248,11 @@ function BuildQuote({ items, loadQuote, onSaved }: { items: CatalogItem[]; loadQ
           <label style={labelStyle}>Quote Title</label>
           <input value={title} onChange={(e) => { setTitle(e.target.value); dirty(); }} placeholder="e.g. Charger installation — Blk 123" style={inputStyle} />
         </div>
+
+        {hasDraft && (
+          <DraftBar onClear={clearAll}
+            summary={[title.trim() && 'the title', lines.length && `${lines.length} line${lines.length === 1 ? '' : 's'}`, profit > 0 && 'the markup', notes.trim() && 'notes'].filter(Boolean).join(', ').replace(/, ([^,]*)$/, ' and $1')} />
+        )}
 
         {/* Lines */}
         <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>

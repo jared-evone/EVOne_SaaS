@@ -318,10 +318,13 @@ src/
                             formMedia.ts (TSD photo/PDF → Storage),
                             compressImage.ts, navLinks.ts (Google Maps directions),
                             ltaEmail.ts, useIsMobile.ts, zip.ts, version.ts,
-                            qr.ts (CDN-loaded QR generator → PNG data URL)
+                            qr.ts (CDN-loaded QR generator → PNG data URL),
+                            draft.ts (per-user 24 h localStorage drafts for
+                            the Raise PO / Quote Machine builders)
   components/               KPICard, Badge, NavItem, Logo, BrandLogo,
                             charts, ChargerLocationMap, OneMapAutocomplete,
                             SearchSelect (brand searchable dropdown),
+                            DraftBar (draft note + Clear all with confirm),
                             TechAvatar, AvatarCropper
   screens/
     Overview.tsx, Invoices.tsx, Customers.tsx, Projects.tsx, …
