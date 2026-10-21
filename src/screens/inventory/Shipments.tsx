@@ -227,10 +227,8 @@ export function ScreenInvShipments() {
                         const linked = items.find((i) => i.id === l.item_id);
                         return (
                           <div key={l.id} style={{ marginBottom: 4, textDecoration: l.status === 'cancelled' ? 'line-through' : 'none' }}>
-                            {l.description}
-                            <div style={{ fontSize: 11, color: linked ? C.slate : '#B07D00', fontWeight: linked ? 400 : 700 }}>
-                              {linked ? `→ ${itemLabel(linked, items)}` : 'NOT LINKED TO AN ITEM'}
-                            </div>
+                            {linked ? <>{itemLabel(linked, items)} <span style={{ color: C.slate }}>× {l.qty}</span></> : l.description}
+                            {!linked && <div style={{ fontSize: 11, color: '#B07D00', fontWeight: 700 }}>NOT LINKED TO AN ITEM</div>}
                           </div>
                         );
                       })}
@@ -341,7 +339,7 @@ function ShipmentModal({ shipment, state, received, receipts, items, locations, 
     if (lines.length === 0) { setErr('Add at least one item.'); return false; }
     for (const [i, l] of lines.entries()) {
       const n = Number(l.qty);
-      if (!l.description.trim() && !l.item_id) { setErr(`Item ${i + 1}: describe it or pick an item.`); return false; }
+      if (!l.description.trim() && !l.item_id) { setErr(`Item ${i + 1}: pick the stock item it becomes.`); return false; }
       if (!Number.isInteger(n) || n <= 0) { setErr(`Item ${i + 1}: quantity must be a whole number above zero.`); return false; }
       if (n < l.got) { setErr(`Item ${i + 1}: ${l.got} already received — the quantity can't go below that.`); return false; }
     }
@@ -491,7 +489,9 @@ function ShipmentModal({ shipment, state, received, receipts, items, locations, 
                 </Field>
                 <Field label="Qty" hint={l.got > 0 && Number(l.qty) > l.got ? `Short? Set to ${l.got} to close` : undefined}><input type="number" min={Math.max(1, l.got)} step="1" value={l.qty} disabled={ro} onChange={(e) => setLine(l.key, { qty: e.target.value })} style={inputStyle} /></Field>
               </div>
-              <Field label="Supplier description"><input value={l.description} disabled={ro} onChange={(e) => setLine(l.key, { description: e.target.value })} placeholder="As written on the PO / packing list" style={inputStyle} /></Field>
+              {!l.item_id && l.description && (
+                <div style={{ fontSize: 12, color: C.slate }}>Supplier wording: <span style={{ color: '#1a1a1a', fontWeight: 600 }}>{l.description}</span></div>
+              )}
             </div>
           );
         })}
