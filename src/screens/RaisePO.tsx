@@ -330,18 +330,28 @@ export function ScreenRaisePO() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>('raise');
 
+  const [seeAll, setSeeAll] = useState(false);
+
   const fetchAll = async () => {
-    const [{ data: p }, { data: o }, { data: s }] = await Promise.all([
+    const [{ data: p }, { data: s }] = await Promise.all([
       supabase.from('inv_items').select('id, name, category, brand, unit, unit_price, currency, supplier, description, active').order('category').order('name'),
-      // Admins see the whole team's POs; everyone else sees their own.
-      (isAdmin
-        ? supabase.from('purchase_orders').select('*').order('created_at', { ascending: false })
-        : supabase.from('purchase_orders').select('*').eq('created_by_id', user.id).order('created_at', { ascending: false })),
       supabase.from('po_settings').select('*').eq('id', 'default').maybeSingle(),
     ]);
+    const st = (s as POSettings) ?? { id: 'default', subject: '', body: '', approver_email: null, finance_email: null, cc_email: null, from_address: null, reply_to: null };
+    // The whole team's POs: department admins, anyone with every Raise PO
+    // right, and finance (the shared inbox or the Email Template's finance address).
+    const email = user.email.trim().toLowerCase();
+    const all = isAdmin
+      || (canEdit && canDelete && can('raise_po', 'can_view'))
+      || email === 'finance@evone.com.sg'
+      || (!!st.finance_email && st.finance_email.split(/[,;\s]+/).some((e) => e.trim().toLowerCase() === email));
+    const { data: o } = await (all
+      ? supabase.from('purchase_orders').select('*').order('created_at', { ascending: false })
+      : supabase.from('purchase_orders').select('*').eq('created_by_id', user.id).order('created_at', { ascending: false }));
     setProducts(((p as InvItemRow[]) ?? []).map(toProduct));
     setPos((o as unknown as PurchaseOrder[]) ?? []);
-    setSettings((s as POSettings) ?? { id: 'default', subject: '', body: '', approver_email: null, finance_email: null, cc_email: null, from_address: null, reply_to: null });
+    setSettings(st);
+    setSeeAll(all);
     setLoading(false);
   };
   useEffect(() => { void fetchAll(); }, []);
@@ -351,14 +361,14 @@ export function ScreenRaisePO() {
   }
 
   const pending = pos.filter((p) => p.status === 'pending').length;
-  const tabs: [Tab, string][] = [['raise', 'Raise PO'], ['track', `${isAdmin ? 'All POs' : 'My POs'}${pos.length ? ` · ${pos.length}` : ''}`]];
+  const tabs: [Tab, string][] = [['raise', 'Raise PO'], ['track', `${seeAll ? 'All POs' : 'My POs'}${pos.length ? ` · ${pos.length}` : ''}`]];
   if (canEdit) { tabs.push(['template', 'Email Template']); }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14 }}>
-        <KPICard label={isAdmin ? 'Purchase Orders' : 'My Purchase Orders'} value={String(pos.length)}
-          sub={isAdmin ? 'across the whole team' : 'raised by me'} accent />
+        <KPICard label={seeAll ? 'Purchase Orders' : 'My Purchase Orders'} value={String(pos.length)}
+          sub={seeAll ? 'across the whole team' : 'raised by me'} accent />
         <KPICard label="Pending Approval" value={String(pending)} sub="awaiting the boss" />
         <KPICard label="Items" value={String(products.filter((p) => p.is_active).length)} sub="from Inventory · Stock Levels" />
       </div>
@@ -628,23 +638,33 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
   const openPo = (po: PurchaseOrder) => { setNotice(null); setOpen(po); };
 
   // Admin override: approve/reject in place of the boss (e.g. boss unavailable).
-  // Same status transition the email link performs; the flow then continues
-  // normally (approved -> Forward to finance).
+  // Approving hands the PO to finance straight away — the po-decision function
+  // does the same when the boss approves from the email link.
   const manualDecision = async (po: PurchaseOrder, decision: 'approved' | 'rejected') => {
     setBusy(true);
     const decided_at = new Date().toISOString();
     const { data, error } = await supabase.from('purchase_orders')
       .update({ status: decision, decided_at }).eq('id', po.id).eq('status', 'pending').select('id');
+    if (error) { setBusy(false); setNotice({ text: `Could not update the PO: ${error.message}`, tone: 'err' }); return; }
+    if (!data?.length) { setBusy(false); setNotice({ text: 'This PO was already decided elsewhere — the list has been refreshed.', tone: 'err' }); setOpen(null); await onRefresh(); return; }
+    const by = user.full_name || user.email;
+    if (decision === 'rejected') {
+      setBusy(false);
+      setOpen({ ...po, status: decision, decided_at });
+      setNotice({ text: `Rejected by you (${by}) as admin.`, tone: 'ok' });
+      await onRefresh();
+      return;
+    }
+    const approved = { ...po, status: 'approved' as const, decided_at };
+    const r = await sendToFinance(approved);
     setBusy(false);
-    if (error) { setNotice({ text: `Could not update the PO: ${error.message}`, tone: 'err' }); return; }
-    if (!data?.length) { setNotice({ text: 'This PO was already decided elsewhere — the list has been refreshed.', tone: 'err' }); setOpen(null); await onRefresh(); return; }
-    setOpen({ ...po, status: decision, decided_at });
-    setNotice({
-      text: decision === 'approved'
-        ? `Approved by you (${user.full_name || user.email}) as admin — forward it to finance, or mark it completed below to send it straight to Incoming Shipments.`
-        : `Rejected by you (${user.full_name || user.email}) as admin.`,
-      tone: 'ok',
-    });
+    if ('error' in r) {
+      setOpen(approved);
+      setNotice({ text: `Approved by you (${by}) as admin, but finance was not emailed — ${r.error} Use Forward to finance below to retry.`, tone: 'err' });
+    } else {
+      setOpen({ ...approved, status: 'sent_to_finance', forwarded_at: r.forwarded_at, finance_email: r.finance });
+      setNotice({ text: `Approved by you (${by}) as admin and emailed to finance (${r.finance}).`, tone: 'ok' });
+    }
     await onRefresh();
   };
 
@@ -704,10 +724,10 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
     await onRefresh();
   };
 
-  const forwardToFinance = async (po: PurchaseOrder) => {
+  // Email finance the approved PO, then move it to 'sent_to_finance'.
+  const sendToFinance = async (po: PurchaseOrder): Promise<{ error: string } | { finance: string; forwarded_at: string }> => {
     const finance = financeFor(po);
-    if (!finance) { window.alert('No finance email is set. Add one in the Email Template tab.'); return; }
-    setBusy(true);
+    if (!finance) return { error: 'No finance email is set. Add one in the Email Template tab.' };
     const html = buildFinanceEmail(po, po.created_by || user.full_name, settings);
     const subject = `Approved PO - ${po.supplier || 'No supplier'} - ${po.title}`;
     let emailErr: string | null = null;
@@ -718,10 +738,21 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
       emailErr = (r as { error?: string } | null)?.error ?? error?.message ?? null;
       if (!emailErr) void sendFyiCopies(po, settings, po.created_by || user.full_name, subject, 'finance');
     } catch (e) { emailErr = (e as Error).message; }
-    if (emailErr) { setBusy(false); window.alert(`Could not email finance: ${emailErr}`); return; }
-    await supabase.from('purchase_orders').update({ status: 'sent_to_finance', forwarded_at: new Date().toISOString(), finance_email: finance }).eq('id', po.id);
+    if (emailErr) return { error: `Could not email finance: ${emailErr}.` };
+    const forwarded_at = new Date().toISOString();
+    const { error } = await supabase.from('purchase_orders')
+      .update({ status: 'sent_to_finance', forwarded_at, finance_email: finance }).eq('id', po.id);
+    if (error) return { error: `Finance was emailed, but the PO status did not save: ${error.message}.` };
+    return { finance, forwarded_at };
+  };
+
+  const forwardToFinance = async (po: PurchaseOrder) => {
+    setBusy(true);
+    const r = await sendToFinance(po);
     setBusy(false);
-    setOpen(null);
+    if ('error' in r) { setNotice({ text: r.error, tone: 'err' }); return; }
+    setOpen({ ...po, status: 'sent_to_finance', forwarded_at: r.forwarded_at, finance_email: r.finance });
+    setNotice({ text: `Emailed to finance (${r.finance}).`, tone: 'ok' });
     await onRefresh();
   };
 
@@ -991,7 +1022,7 @@ function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, app
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 12.5, fontWeight: 700, color: confirmOverride === 'approved' ? '#1B512D' : '#C0321A', flex: 1, minWidth: 200 }}>
                   {confirmOverride === 'approved'
-                    ? 'Approve this PO in place of the boss? It moves on to the finance step.'
+                    ? 'Approve this PO in place of the boss? Finance is emailed straight away, as when the boss approves.'
                     : 'Reject this PO in place of the boss?'}
                 </span>
                 <button onClick={() => setConfirmOverride(null)} disabled={busy}
@@ -1004,7 +1035,7 @@ function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, app
             ) : (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 12, color: C.slate, flex: 1, minWidth: 200 }}>
-                  Boss can't get to the email? Decide here — recorded with today's date. Then forward to finance, or mark it completed yourself.
+                  Boss can't get to the email? Decide here — recorded with today's date. Approving emails finance straight away.
                 </span>
                 <button onClick={() => setConfirmOverride('approved')} disabled={busy}
                   style={{ padding: '7px 16px', borderRadius: 8, border: `1px solid ${C.green}`, background: 'transparent', color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
