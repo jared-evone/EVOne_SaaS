@@ -3,7 +3,7 @@ import { C } from '../../theme';
 import { KPICard } from '../../components/KPICard';
 import { supabase } from '../../lib/supabase';
 import { usePermissions } from '../../permissions';
-import { Plus, PackageCheck, Download, Lock, Building2, Square, SquareCheck, X } from 'lucide-react';
+import { Plus, PackageCheck, Download, Lock, Building2, Square, SquareCheck, X, Paperclip, FileText } from 'lucide-react';
 import { SearchSelect } from '../../components/SearchSelect';
 import { ScreenInvGrn, CompleteModal } from './GoodsReceived';
 import {
@@ -42,6 +42,10 @@ interface CustomerOpt { id: string; name: string; }
 /** One shipment = the item lines (inv_shipments rows) sharing a group_id. Header
  *  fields (supplier, PO, dates…) are identical across lines, so read them off `head`. */
 interface Shipment { id: string; head: InvShipment; lines: InvShipment[] }
+
+const PO_BUCKET = 'inv-po-pdfs';
+const pdfChip: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 5, maxWidth: '100%', minWidth: 0, padding: '4px 10px', borderRadius: 99, border: '1px solid #EBEBEB', background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' };
+const pdfIconBtn: React.CSSProperties = { width: 24, height: 24, borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, fontFamily: 'Figtree' };
 
 const MODES = ['Air', 'Sea', 'Local'];
 const lineOpen = (s: InvShipment) => s.status === 'ordered' || s.status === 'in_transit' || s.status === 'partial';
@@ -218,6 +222,7 @@ export function ScreenInvShipments() {
                     onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}>
                     <td style={{ ...tdStyle, fontWeight: 700, color: C.green, whiteSpace: 'nowrap' }}>
                       {h.po_no || <span style={{ color: C.slate }}>No PO</span>}
+                      {h.po_pdf_path && <Paperclip size={12} strokeWidth={2.25} style={{ display: 'inline', verticalAlign: '-1px', marginLeft: 5, color: C.slate }} aria-label="PO PDF attached" />}
                       {h.po_id && <div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>From Raise PO</div>}
                       {excel.length > 0 && <div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>Excel #{excel.join(', ')}</div>}
                     </td>
@@ -322,9 +327,13 @@ function ShipmentModal({ shipment, state, received, receipts, items, locations, 
   // Not every shipment has a PO (warranty swaps, samples). Existing shipments
   // without one open with this already ticked.
   const [noPo, setNoPo] = useState(!!head && !head.po_no);
+  // The official PO as a PDF: a picked file uploads on save; clearing applies on save.
+  const [poFile, setPoFile] = useState<File | null>(null);
+  const [poCleared, setPoCleared] = useState(false);
+  const curPdf = !poCleared && head?.po_pdf_path ? { path: head.po_pdf_path, name: head.po_pdf_name || 'PO.pdf' } : null;
   // Set from the signed-in account when the shipment is created; never typed.
   const employee = head ? head.employee : me;
-  const dirty = JSON.stringify(f) !== JSON.stringify(initHeader) || noPo !== (!!head && !head.po_no)
+  const dirty = JSON.stringify(f) !== JSON.stringify(initHeader) || noPo !== (!!head && !head.po_no) || !!poFile || poCleared
     || JSON.stringify(lines.map(({ id, item_id, description, qty }) => ({ id, item_id, description, qty })))
        !== JSON.stringify(initLines.map(({ id, item_id, description, qty }) => ({ id, item_id, description, qty })));
 
@@ -346,6 +355,15 @@ function ShipmentModal({ shipment, state, received, receipts, items, locations, 
     if (!noPo && !f.po_no.trim()) { setErr('Enter the PO number, or tick "No PO".'); return false; }
     setBusy(true);
     setErr(null);
+    let pdf: { po_pdf_path: string | null; po_pdf_name: string | null } | null = null;
+    if (poFile) {
+      const path = `${groupId}/${Date.now()}-${poFile.name.replace(/[^\w.\-]+/g, '_')}`;
+      const { error } = await supabase.storage.from(PO_BUCKET).upload(path, poFile, { contentType: 'application/pdf' });
+      if (error) { setBusy(false); setErr(`Could not upload the PO PDF: ${error.message}`); return false; }
+      pdf = { po_pdf_path: path, po_pdf_name: poFile.name };
+    } else if (poCleared) {
+      pdf = { po_pdf_path: null, po_pdf_name: null };
+    }
     const header = {
       supplier: f.supplier.trim() || null, po_no: noPo ? null : f.po_no.trim() || null,
       customer_id: f.customer_id || null, customer: f.customer.trim() || null,
@@ -377,11 +395,11 @@ function ShipmentModal({ shipment, state, received, receipts, items, locations, 
     };
     for (const l of lines) {
       if (l.id) {
-        const { error } = await supabase.from('inv_shipments').update({ ...header, ...lineFields(l), ...statusFor(l) }).eq('id', l.id);
+        const { error } = await supabase.from('inv_shipments').update({ ...header, ...pdf, ...lineFields(l), ...statusFor(l) }).eq('id', l.id);
         if (error) errors.push(error.message);
       } else {
         const { data, error } = await supabase.from('inv_shipments')
-          .insert({ ...header, ...lineFields(l), group_id: groupId, status: newStatus, employee: employee ?? me, created_by: me })
+          .insert({ ...header, po_pdf_path: head?.po_pdf_path ?? null, po_pdf_name: head?.po_pdf_name ?? null, ...pdf, ...lineFields(l), group_id: groupId, status: newStatus, employee: employee ?? me, created_by: me })
           .select('id').single();
         if (error) errors.push(error.message);
         else setLines((ls) => ls.map((x) => (x.key === l.key ? { ...x, id: (data as { id: string }).id } : x)));
@@ -389,7 +407,24 @@ function ShipmentModal({ shipment, state, received, receipts, items, locations, 
     }
     setBusy(false);
     if (errors.length) { setErr(errors[0]); return false; }
+    if (pdf && head?.po_pdf_path && head.po_pdf_path !== pdf.po_pdf_path) await supabase.storage.from(PO_BUCKET).remove([head.po_pdf_path]);
+    setPoFile(null);
+    setPoCleared(false);
     return true;
+  };
+
+  const pickPdf = (file: File | undefined) => {
+    if (!file) return;
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) { setErr('The PO must be a PDF file.'); return; }
+    if (file.size > 25 * 1024 * 1024) { setErr('That PDF is over 25 MB.'); return; }
+    setErr(null);
+    setPoFile(file);
+  };
+
+  const openPdf = async (path: string) => {
+    const { data, error } = await supabase.storage.from(PO_BUCKET).createSignedUrl(path, 60);
+    if (error || !data) { setErr(`Could not open the PO PDF: ${error?.message ?? 'unknown error'}`); return; }
+    window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
   };
 
   // Status changes apply to every item line still in that state.
@@ -409,6 +444,7 @@ function ShipmentModal({ shipment, state, received, receipts, items, locations, 
     const { error } = await supabase.from('inv_shipments').delete().in('id', (shipment?.lines ?? []).map((l) => l.id));
     setBusy(false);
     if (error) { setErr(error.message); return; }
+    if (head?.po_pdf_path) await supabase.storage.from(PO_BUCKET).remove([head.po_pdf_path]);
     await onChanged();
     onClose();
   };
@@ -452,6 +488,38 @@ function ShipmentModal({ shipment, state, received, receipts, items, locations, 
               style={{ marginTop: 6, padding: 0, border: 'none', background: 'transparent', display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, color: noPo ? C.green : C.slate, cursor: 'pointer' }}>
               {noPo ? <SquareCheck size={14} /> : <Square size={14} />} No PO
             </button>
+          )}
+          {(poFile || curPdf || (!ro && !noPo)) && (
+            <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', minWidth: 0 }}>
+              {poFile ? (
+                <>
+                  <span title={poFile.name} style={{ ...pdfChip, cursor: 'default' }}>
+                    <FileText size={13} style={{ flexShrink: 0 }} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{poFile.name}</span>
+                  </span>
+                  <span style={{ fontSize: 11, color: C.slate }}>uploads on save</span>
+                  <button type="button" onClick={() => setPoFile(null)} title="Don't attach" style={pdfIconBtn}><X size={12} strokeWidth={2.5} /></button>
+                </>
+              ) : curPdf ? (
+                <>
+                  <button type="button" onClick={() => void openPdf(curPdf.path)} title={`Open ${curPdf.name}`} style={pdfChip}>
+                    <FileText size={13} style={{ flexShrink: 0 }} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{curPdf.name}</span>
+                  </button>
+                  {!ro && (
+                    <>
+                      <label title="Replace the PO PDF" style={{ ...pdfIconBtn, width: 'auto', padding: '0 8px', fontSize: 11, fontWeight: 700, color: C.slate }}>
+                        Replace<input type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} onChange={(e) => { pickPdf(e.target.files?.[0]); e.target.value = ''; }} />
+                      </label>
+                      <button type="button" onClick={() => setPoCleared(true)} title="Remove the PO PDF (on save)" style={pdfIconBtn}><X size={12} strokeWidth={2.5} /></button>
+                    </>
+                  )}
+                </>
+              ) : (
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, color: C.green, cursor: 'pointer' }}>
+                  <Paperclip size={13} /> {poCleared ? 'PO PDF removes on save — attach another' : 'Attach PO (PDF)'}
+                  <input type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} onChange={(e) => { pickPdf(e.target.files?.[0]); e.target.value = ''; }} />
+                </label>
+              )}
+            </div>
           )}
         </Field>
         <Field label="Mode">

@@ -610,3 +610,17 @@ alter table inv_items
 -- items at zero stock, keeping the catalog ids so existing PO lines still
 -- resolve. Stock untouched: inv_on_hand fingerprint identical before/after
 -- (536 units over 83 item×location rows).
+
+-- 2026-10-21 · migration inv_shipments_po_pdf — the official PO as a PDF on a
+-- shipment. Header fields, so every line of a group carries the same path.
+-- Private bucket, login-only (no anonymous flow), like cpo-land-docs.
+alter table public.inv_shipments
+  add column if not exists po_pdf_path text,
+  add column if not exists po_pdf_name text;
+
+insert into storage.buckets (id, name, public) values ('inv-po-pdfs', 'inv-po-pdfs', false)
+  on conflict (id) do nothing;
+
+create policy "inv po pdfs read" on storage.objects for select to authenticated using (bucket_id = 'inv-po-pdfs');
+create policy "inv po pdfs upload" on storage.objects for insert to authenticated with check (bucket_id = 'inv-po-pdfs');
+create policy "inv po pdfs delete" on storage.objects for delete to authenticated using (bucket_id = 'inv-po-pdfs');
