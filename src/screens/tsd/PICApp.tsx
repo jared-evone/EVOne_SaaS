@@ -22,7 +22,7 @@ import {
 import { FieldList, FormHeader, FormPaper, openBase64Pdf } from './TechApp';
 import { OverlayFormRenderer, isOverlay } from './OverlayForm';
 import { PDFPreviewModal, generateWorkOrderPdf } from './PDFExport';
-import { RegistrySyncModal, isRegistrySyncCategory } from './RegistrySync';
+import { RegistrySyncModal, isRegistrySyncCategory, filedFormCount } from './RegistrySync';
 
 const CPO_BUCKET = 'cpo-maintenance-pdfs';
 
@@ -631,7 +631,7 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
   // Charger Registry for registry customers, CPO Chargers for CPO locations.
   const registrySyncable = completed && can('tsd_pic', 'can_edit') && isRegistrySyncCategory(workOrder);
   const syncDest = cpoCustomer ? 'CPO Chargers' : 'Charger Registry';
-  const registrySynced = Object.keys(workOrder.registrySync ?? {}).length;
+  const registrySynced = filedFormCount(workOrder.registrySync);
 
   const handleSave = () => { store.amend(workOrder.id, forms, DEMO_PIC); if (reviewDirty) saveReview(); setDirty(false); flash('Changes saved.'); };
   const handleApprove = () => { if (reviewDirty) saveReview(); if (dirty) store.amend(workOrder.id, forms, DEMO_PIC); store.approve(workOrder.id); setDirty(false); flash('Report approved & marked completed.'); };
