@@ -7,6 +7,7 @@ import { usePermissions } from '../permissions';
 import { useScreenNav } from '../App';
 import { readDraft, clearDraft, useDraftSync } from '../lib/draft';
 import { DraftBar } from '../components/DraftBar';
+import { SearchSelect } from '../components/SearchSelect';
 import { Plus, Trash2, Send, Package, Mail, RefreshCw, Truck } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -50,6 +51,20 @@ interface PurchaseOrder {
   created_by: string | null;
   created_by_id: string | null;
   created_at: string;
+  customer_id?: string | null;
+  customer_name?: string | null;
+}
+
+interface CustomerRef { id: string; name: string }
+
+// Optional on a PO — stock replenishment has no customer. The Order Book shows
+// it beside the PO title when a won quote's chargers are linked to a PO.
+function CustomerSelect({ customers, value, onChange, disabled }: { customers: CustomerRef[]; value: string; onChange: (c: CustomerRef | null) => void; disabled?: boolean }) {
+  return (
+    <SearchSelect value={value} disabled={disabled} placeholder="No customer — stock / internal" emptyText="No customers match"
+      options={[{ value: '', label: 'No customer — stock / internal' }, ...customers.map((c) => ({ value: c.id, label: c.name }))]}
+      onChange={(v) => onChange(customers.find((c) => c.id === v) ?? null)} />
+  );
 }
 
 interface POSettings {
@@ -333,12 +348,15 @@ export function ScreenRaisePO() {
   const [tab, setTab] = useState<Tab>('raise');
 
   const [seeAll, setSeeAll] = useState(false);
+  const [customers, setCustomers] = useState<CustomerRef[]>([]);
 
   const fetchAll = async () => {
-    const [{ data: p }, { data: s }] = await Promise.all([
+    const [{ data: p }, { data: s }, { data: cu }] = await Promise.all([
       supabase.from('inv_items').select('id, name, category, brand, unit, unit_price, currency, supplier, description, active').order('category').order('name'),
       supabase.from('po_settings').select('*').eq('id', 'default').maybeSingle(),
+      supabase.from('customers').select('id, name').order('name'),
     ]);
+    setCustomers((cu as CustomerRef[]) ?? []);
     const st = (s as POSettings) ?? { id: 'default', subject: '', body: '', approver_email: null, finance_email: null, cc_email: null, from_address: null, reply_to: null };
     // The whole team's POs: department admins, anyone with every Raise PO
     // right, and finance (the shared inbox or the Email Template's finance address).
@@ -385,8 +403,8 @@ export function ScreenRaisePO() {
         ))}
       </div>
 
-      {tab === 'raise' && <RaiseTab products={products} settings={settings!} onSent={async () => { await fetchAll(); setTab('track'); }} />}
-      {tab === 'track' && <TrackTab pos={pos} settings={settings!} canDelete={canDelete} onRefresh={fetchAll} />}
+      {tab === 'raise' && <RaiseTab products={products} customers={customers} settings={settings!} onSent={async () => { await fetchAll(); setTab('track'); }} />}
+      {tab === 'track' && <TrackTab pos={pos} customers={customers} settings={settings!} canEdit={canEdit} canDelete={canDelete} onRefresh={fetchAll} />}
       {tab === 'template' && canEdit && <TemplateTab settings={settings!} onRefresh={fetchAll} />}
     </div>
   );
@@ -394,20 +412,21 @@ export function ScreenRaisePO() {
 
 // ── Raise PO ──────────────────────────────────────────────────────
 
-interface RaiseDraft { title: string; notes: string; lines: POLine[] }
+interface RaiseDraft { title: string; notes: string; lines: POLine[]; customer?: CustomerRef | null }
 
-function RaiseTab({ products, settings, onSent }: { products: Product[]; settings: POSettings; onSent: () => Promise<void> }) {
+function RaiseTab({ products, customers, settings, onSent }: { products: Product[]; customers: CustomerRef[]; settings: POSettings; onSent: () => Promise<void> }) {
   const { user } = usePermissions();
   const draftKey = `evone.draft.raise_po.${user.id}`;
   const [draft] = useState(() => readDraft<RaiseDraft>(draftKey));
   const [title, setTitle] = useState(draft?.title ?? '');
+  const [customer, setCustomer] = useState<CustomerRef | null>(draft?.customer ?? null);
   const approver = settings.approver_email ?? ''; // fixed by the admin in the Email Template
   const [notes, setNotes] = useState(draft?.notes ?? '');
   const sellCurrency = 'SGD'; // customer is always billed in SGD
   const [lines, setLines] = useState<POLine[]>(() => (Array.isArray(draft?.lines) ? draft!.lines : []));
-  const hasDraft = lines.length > 0 || !!title.trim() || !!notes.trim();
-  useDraftSync(draftKey, { title, notes, lines }, hasDraft);
-  const clearAll = () => { clearDraft(draftKey); setTitle(''); setNotes(''); setLines([]); setPriceText({}); setError(null); };
+  const hasDraft = lines.length > 0 || !!title.trim() || !!notes.trim() || !!customer;
+  useDraftSync(draftKey, { title, notes, lines, customer }, hasDraft);
+  const clearAll = () => { clearDraft(draftKey); setTitle(''); setNotes(''); setLines([]); setCustomer(null); setPriceText({}); setError(null); };
   // What's typed in a price box, kept as text so "12." / "0.5" can be typed;
   // the line holds the parsed number.
   const [priceText, setPriceText] = useState<Record<string, string>>({});
@@ -464,6 +483,8 @@ function RaiseTab({ products, settings, onSent }: { products: Product[]; setting
     setError(null);
     const { data: created, error: insErr } = await supabase.from('purchase_orders').insert({
       title: title.trim() || 'Untitled PO',
+      customer_id: customer?.id ?? null,
+      customer_name: customer?.name ?? null,
       supplier: poSupplier || null,
       approver_email: approver.trim(),
       finance_email: settings.finance_email,
@@ -552,6 +573,10 @@ function RaiseTab({ products, settings, onSent }: { products: Product[]; setting
             <label style={labelStyle}>PO Title</label>
             <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Chargers for Blk 123 project" style={inputStyle} />
           </div>
+          <div>
+            <label style={labelStyle}>Customer</label>
+            <CustomerSelect customers={customers} value={customer?.id ?? ''} onChange={setCustomer} />
+          </div>
           <div style={{ fontSize: 12, color: C.slate }}>
             Supplier: <strong style={{ color: '#1a1a1a' }}>{poSupplier || '— add an item to set the supplier —'}</strong>
           </div>
@@ -563,7 +588,7 @@ function RaiseTab({ products, settings, onSent }: { products: Product[]; setting
 
         {hasDraft && (
           <DraftBar onClear={clearAll}
-            summary={[title.trim() && 'the title', lines.length && `${lines.length} item${lines.length === 1 ? '' : 's'}`, notes.trim() && 'notes'].filter(Boolean).join(', ').replace(/, ([^,]*)$/, ' and $1')} />
+            summary={[title.trim() && 'the title', customer && 'the customer', lines.length && `${lines.length} item${lines.length === 1 ? '' : 's'}`, notes.trim() && 'notes'].filter(Boolean).join(', ').replace(/, ([^,]*)$/, ' and $1')} />
         )}
         <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
           <table style={{ width: '100%', minWidth: 720, borderCollapse: 'collapse' }}>
@@ -640,8 +665,9 @@ function RaiseTab({ products, settings, onSent }: { products: Product[]; setting
 
 // ── Track (My POs) ────────────────────────────────────────────────
 
-function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[]; settings: POSettings; canDelete: boolean; onRefresh: () => Promise<void> }) {
+function TrackTab({ pos, customers, settings, canEdit, canDelete, onRefresh }: { pos: PurchaseOrder[]; customers: CustomerRef[]; settings: POSettings; canEdit: boolean; canDelete: boolean; onRefresh: () => Promise<void> }) {
   const { user, isAdmin, can } = usePermissions();
+  const customerName = (po: PurchaseOrder) => (po.customer_id && customers.find((c) => c.id === po.customer_id)?.name) || po.customer_name || null;
   const go = useScreenNav();
   const [open, setOpen] = useState<PurchaseOrder | null>(null);
   const [busy, setBusy] = useState(false);
@@ -698,6 +724,17 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
     setNotice(count
       ? { text: `Marked completed by you (${user.full_name || user.email}) as admin — ${count} item line${count === 1 ? '' : 's'} now in Incoming Shipments as Ordered.`, tone: 'ok' }
       : { text: 'Marked completed, but no shipment lines were created (no line has a quantity). Add the shipment by hand in Incoming Shipments.', tone: 'err' });
+    await onRefresh();
+  };
+
+  // Customer only — never rewrites the PO's lines or status.
+  const setPoCustomer = async (po: PurchaseOrder, c: CustomerRef | null) => {
+    setBusy(true);
+    const { error } = await supabase.from('purchase_orders').update({ customer_id: c?.id ?? null, customer_name: c?.name ?? null }).eq('id', po.id);
+    setBusy(false);
+    if (error) { setNotice({ text: `Could not set the customer: ${error.message}`, tone: 'err' }); return; }
+    setOpen({ ...po, customer_id: c?.id ?? null, customer_name: c?.name ?? null });
+    setNotice({ text: c ? `Customer set to ${c.name}.` : 'Customer cleared.', tone: 'ok' });
     await onRefresh();
   };
 
@@ -823,6 +860,7 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
                   <td style={{ padding: '12px 16px' }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>{po.po_number}</div>
                     <div style={{ fontSize: 12, color: C.slate }}>{po.title}</div>
+                    {customerName(po) && <div style={{ fontSize: 11, color: C.slate, marginTop: 1 }}>for <span style={{ fontWeight: 700, color: '#1a1a1a' }}>{customerName(po)}</span></div>}
                     {po.created_by && po.created_by_id !== user.id && (
                       <div style={{ fontSize: 11, color: C.slate, marginTop: 1 }}>by <span style={{ fontWeight: 700, color: '#1a1a1a' }}>{po.created_by}</span></div>
                     )}
@@ -853,6 +891,7 @@ function TrackTab({ pos, settings, canDelete, onRefresh }: { pos: PurchaseOrder[
 
       {open && (
         <PODetailModal po={open} busy={busy} canDelete={canDelete} isAdmin={isAdmin} notice={notice}
+          customers={customers} customerName={customerName(open)} canEditCustomer={canEdit} onSetCustomer={(c) => setPoCustomer(open, c)}
           financeEmail={financeFor(open)} approverEmail={approverFor(open)}
           onResend={() => resend(open)} onForward={() => forwardToFinance(open)}
           onResendFinance={() => resendFinance(open)}
@@ -939,8 +978,12 @@ function POTimeline({ po, financeEmail, approverEmail }: { po: PurchaseOrder; fi
   );
 }
 
-function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, approverEmail, onResend, onForward, onResendFinance, onManualDecision, onComplete, onOpenShipments, onDelete, onClose }: {
+function PODetailModal({ po, busy, canDelete, isAdmin, notice, customers, customerName, canEditCustomer, onSetCustomer, financeEmail, approverEmail, onResend, onForward, onResendFinance, onManualDecision, onComplete, onOpenShipments, onDelete, onClose }: {
   po: PurchaseOrder;
+  customers: CustomerRef[];
+  customerName: string | null;
+  canEditCustomer: boolean;
+  onSetCustomer: (c: CustomerRef | null) => void;
   /** Addresses the sends actually use — current Email Template first, PO snapshot as fallback. */
   financeEmail: string | null;
   approverEmail: string | null;
@@ -976,6 +1019,13 @@ function PODetailModal({ po, busy, canDelete, isAdmin, notice, financeEmail, app
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <span style={{ fontSize: 12, fontWeight: 700, padding: '4px 12px', borderRadius: 99, background: st.bg, color: st.color }}>{st.label}</span>
           {po.decided_at && <span style={{ fontSize: 12, color: C.slate }}>on {new Date(po.decided_at).toLocaleString('en-GB')}</span>}
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Customer</span>
+          {canEditCustomer
+            ? <CustomerSelect customers={customers} value={po.customer_id ?? ''} disabled={busy} onChange={onSetCustomer} />
+            : <span style={{ fontSize: 13, color: customerName ? '#1a1a1a' : C.slate }}>{customerName ?? 'No customer — stock / internal'}</span>}
         </div>
 
         <POTimeline po={po} financeEmail={financeEmail} approverEmail={approverEmail} />

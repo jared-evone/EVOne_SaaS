@@ -46,6 +46,8 @@ interface PORef {
   supplier: string | null;
   status: 'pending' | 'approved' | 'rejected' | 'sent_to_finance' | 'completed' | 'cancelled';
   lines: { product_id: string | null }[] | null;
+  customer_id: string | null;
+  customer_name: string | null;
 }
 
 interface ShipRef { po_id: string | null; po_no: string | null; item_id: string | null; status: string }
@@ -129,7 +131,7 @@ export function ScreenOrderBook() {
     const [q, l, p, s, it, sp, cu] = await Promise.all([
       supabase.from('sales_quotations').select('id, ref, customer_id, customer_name, salesperson_id, salesperson_name, total, quote_date, won_at, outcome_date, won_stage, archived_at').eq('status', 'Won'),
       supabase.from('sales_order_lines').select('*').order('position').order('created_at'),
-      supabase.from('purchase_orders').select('id, po_number, title, supplier, status, lines').order('created_at', { ascending: false }),
+      supabase.from('purchase_orders').select('id, po_number, title, supplier, status, lines, customer_id, customer_name').order('created_at', { ascending: false }),
       supabase.from('inv_shipments').select('po_id, po_no, item_id, status'),
       supabase.from('inv_items').select('id, name, brand, category, active').order('name'),
       supabase.from('sales_people').select('id, name, user_id').order('name'),
@@ -472,7 +474,7 @@ export function ScreenOrderBook() {
 
       {open && (
         <OrderModal key={open.id} quote={open} lines={linesByQuote.get(open.id) ?? []} items={items} pos={pos}
-          lineState={lineState} canEdit={canEdit} me={user.full_name || user.email}
+          lineState={lineState} canEdit={canEdit} me={user.full_name || user.email} customerNames={customerNames}
           onClose={() => setOpenId(null)} onSaved={async () => { setOpenId(null); await load(); }} />
       )}
     </div>
@@ -499,11 +501,12 @@ interface OrderModalProps {
   lineState: (l: Pick<OrderLine, 'from_stock' | 'po_id' | 'po_no' | 'item_id'>) => LineState;
   canEdit: boolean;
   me: string;
+  customerNames: Map<string, string>;
   onClose: () => void;
   onSaved: () => Promise<void>;
 }
 
-function OrderModal({ quote, lines, items, pos, lineState, canEdit, me, onClose, onSaved }: OrderModalProps) {
+function OrderModal({ quote, lines, items, pos, lineState, canEdit, me, customerNames, onClose, onSaved }: OrderModalProps) {
   const toDraft = (l: OrderLine): DraftLine => ({
     key: l.id, id: l.id, item_id: l.item_id ?? '', item_name: l.item_name, qty: String(l.qty), from_stock: l.from_stock,
     po_id: l.po_id ?? '', po_no: l.po_id ? '' : (l.po_no ?? ''), notes: l.notes ?? '',
@@ -523,12 +526,19 @@ function OrderModal({ quote, lines, items, pos, lineState, canEdit, me, onClose,
     if (!cur.item_id && cur.item_name) opts.unshift({ value: `name:${cur.item_name}`, label: cur.item_name, sub: 'Not in Stock Levels' });
     return opts;
   };
+  // POs for this order's customer first, then ones carrying this charger.
+  const poCustomer = (p: PORef) => (p.customer_id && customerNames.get(p.customer_id)) || p.customer_name || null;
   const poOptions = (cur: DraftLine): SelectOption[] => {
     const has = (p: PORef) => !!cur.item_id && (p.lines ?? []).some((x) => x.product_id === cur.item_id);
-    const sorted = [...pos].sort((a, b) => Number(has(b)) - Number(has(a)));
+    const mine = (p: PORef) => !!quote.customer_id && p.customer_id === quote.customer_id;
+    const sorted = [...pos].sort((a, b) => Number(mine(b)) - Number(mine(a)) || Number(has(b)) - Number(has(a)));
     const opts: SelectOption[] = [
       { value: '', label: 'PO not raised yet' },
-      ...sorted.map((p) => ({ value: p.id, label: p.po_number, sub: [has(p) ? 'Has this charger' : '', p.supplier, PO_STATUS_LABEL[p.status], p.title].filter(Boolean).join(' · ') })),
+      ...sorted.map((p) => ({
+        value: p.id,
+        label: `${p.po_number} · ${p.title || 'Untitled PO'}`,
+        sub: [poCustomer(p) ? `For ${poCustomer(p)}${mine(p) ? ' (this customer)' : ''}` : 'No customer', has(p) ? 'Has this charger' : '', p.supplier, PO_STATUS_LABEL[p.status]].filter(Boolean).join(' · '),
+      })),
     ];
     if (cur.po_no) opts.splice(1, 0, { value: `no:${cur.po_no}`, label: cur.po_no, sub: 'PO number not in Raise PO' });
     return opts;

@@ -651,3 +651,10 @@ update public.inv_shipments set po_no = 'EV1PO-000249' where po_no = 'PO-2026-00
 update public.inv_shipments set notes = replace(notes, 'PO-2026-0010', 'EV1PO-000249') where notes like '%PO-2026-0010%';
 
 select setval('po_number_seq', 249, true);
+
+-- 2026-11-12 · migration purchase_orders_customer — the customer a PO is for,
+-- picked on Raise PO (customer_name is a snapshot, like quotes). The Order Book
+-- shows it beside the PO title when linking a won quote's chargers to a PO.
+alter table public.purchase_orders
+  add column if not exists customer_id uuid references public.customers(id) on delete set null,
+  add column if not exists customer_name text;
