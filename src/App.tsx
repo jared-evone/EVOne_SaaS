@@ -7,7 +7,7 @@ import {
   Handshake, LandPlot, ClipboardList, Boxes, Truck, Building2, Plug, Zap, FileText,
   Settings as SettingsIcon, ShieldCheck, Database, ChevronRight, ChevronDown,
   Power, Menu, TrendingUp, UserCog, Mail, Calculator, ClipboardCheck, GanttChartSquare, ListTodo, BookOpen,
-  ScrollText,
+  ScrollText, BookCheck,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -30,6 +30,7 @@ import { ScreenCustomers } from './screens/Customers';
 import { ScreenProjects } from './screens/Projects';
 import { ScreenSocial } from './screens/Social';
 import { ScreenSales } from './screens/Sales';
+import { ScreenOrderBook } from './screens/OrderBook';
 import { ScreenSalesManager } from './screens/SalesManager';
 import { ScreenSalesTeam } from './screens/SalesTeam';
 import { ScreenPurchaseOrders } from './screens/PurchaseOrders';
@@ -102,6 +103,7 @@ const NAV_ALL: NavEntry[] = [
   { kind: 'leaf', id: 'email_designer',    icon: Mail,            label: 'Email' },
   { kind: 'leaf', id: 'social',            icon: CalendarDays,    label: 'Social Media Planner' },
   { kind: 'leaf', id: 'sales',             icon: Handshake,       label: 'Sales Pipeline' },
+  { kind: 'leaf', id: 'sales_orderbook',   icon: BookCheck,       label: 'Order Book' },
   { kind: 'leaf', id: 'sales_manager',     icon: TrendingUp,      label: 'Sales Dashboard' },
   { kind: 'leaf', id: 'sales_team',        icon: UserCog,         label: 'Sales Manager' },
   { kind: 'leaf', id: 'purchaseorders',    icon: ClipboardList,   label: 'Purchase Orders' },
@@ -141,6 +143,7 @@ const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
   projects:       'Charger Registry',
   social:         'Social Media Planner',
   sales:          'Sales Pipeline',
+  sales_orderbook: 'Order Book',
   sales_manager:  'Sales Dashboard',
   sales_team:     'Sales Manager',
   purchaseorders: 'Purchase Orders',
@@ -182,6 +185,7 @@ const screens: Partial<Record<ScreenId, JSX.Element>> = {
   projects:       <ScreenProjects />,
   social:         <ScreenSocial />,
   sales:          <ScreenSales />,
+  sales_orderbook: <ScreenOrderBook />,
   sales_manager:  <ScreenSalesManager />,
   sales_team:     <ScreenSalesTeam />,
   purchaseorders: <ScreenPurchaseOrders />,

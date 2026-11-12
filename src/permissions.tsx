@@ -13,7 +13,7 @@ export const DEPARTMENT_LABELS: Record<Department, string> = {
 
 export type ScreenKey =
   | 'dashboard'
-  | 'overview' | 'orders' | 'installations' | 'customers' | 'projects' | 'social' | 'sales' | 'sales_manager' | 'sales_team'
+  | 'overview' | 'orders' | 'installations' | 'customers' | 'projects' | 'social' | 'sales' | 'sales_orderbook' | 'sales_manager' | 'sales_team'
   | 'purchaseorders' | 'inventory' | 'suppliers'
   | 'corporatecrm' | 'corporatecrm_invoicing'
   | 'cpochargers' | 'charging' | 'corporateinvoicing' | 'charging_dashboard' | 'cpo_land' | 'cpo_sales'
@@ -33,6 +33,7 @@ export const SCREEN_LABELS: Record<ScreenKey, string> = {
   projects:              'Charger Registry',
   social:                'Social Media Planner',
   sales:                 'Sales Pipeline',
+  sales_orderbook:       'Order Book',
   sales_manager:         'Sales Dashboard',
   sales_team:            'Sales Manager',
   purchaseorders:        'Purchase Orders',
@@ -77,7 +78,7 @@ export const DEPARTMENT_SCREENS: Record<Department, ScreenKey[]> = {
   cpo:   ['charging_dashboard', 'cpo_land', 'cpo_sales', 'corporatecrm', 'corporatecrm_invoicing', 'cpochargers', 'charging',
           'charging_cpo_carparks', 'charging_sp_price',
           'corporateinvoicing'],
-  sales: ['customers', 'sales', 'sales_manager', 'sales_team', 'quote_machine'],
+  sales: ['customers', 'sales', 'sales_orderbook', 'sales_manager', 'sales_team', 'quote_machine'],
   tech:  ['tsd_technician', 'tsd_sop', 'tsd_workorders', 'tsd_forms', 'tsd_pic', 'tsd_technicians', 'customers', 'projects'],
   pm:    ['dashboard', 'registry_todo', 'charger_projects', 'customers', 'projects', 'email_designer'],
   // Standalone — stock only changes from the inv_* screens. Raise PO lives here

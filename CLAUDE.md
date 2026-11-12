@@ -334,6 +334,12 @@ src/
     Sales.tsx               Sales Pipeline; with pipeline="cpo" it is the CPO
                             Sales Pipeline (cpo_sales_quotations, CQ- refs)
     LandAcquisition.tsx     CPO Land Acquisition pipeline (cpo_land_sites)
+    OrderBook.tsx           Sales Order Book — chargers each WON sales quote
+                            must supply (sales_order_lines), each linked to a
+                            Raise PO / outside PO number / stock; "Pending
+                            purchases" sums the rest per charger model. A quote
+                            with order lines can't be deleted or moved (FK, no
+                            ON DELETE) — see db/sales_order_book.sql
     Login.tsx               email/password sign-in (departments derive from grants)
     Settings.tsx, DBHealth.tsx
                             in-app admin (Users & Permissions matrix + DB health)

@@ -224,6 +224,11 @@ const PIPELINE: Record<Pipeline, { table: string; screen: 'sales' | 'cpo_sales';
 // Move a quote to the other pipeline exactly as it is — same id, same SQ-/CQ-
 // number, files and history. Copy first, then remove the original; if the
 // removal fails the copy is taken back out, so it never sits in both.
+// sales_order_lines.quote_id has no ON DELETE action, so a quote with chargers
+// on the Order Book can't be deleted or moved until they're removed there.
+const ORDER_BOOK_BLOCK = 'This quote has chargers on the Order Book — remove them there first (Sales → Order Book).';
+const deleteErrorText = (e: { code?: string; message: string }) => (e.code === '23503' ? ORDER_BOOK_BLOCK : e.message);
+
 async function moveQuote(id: string, from: Pipeline, to: Pipeline): Promise<string | null> {
   const src = PIPELINE[from].table;
   const dst = PIPELINE[to].table;
@@ -236,7 +241,7 @@ async function moveQuote(id: string, from: Pipeline, to: Pipeline): Promise<stri
     const { error: undoErr } = await supabase.from(dst).delete().eq('id', id);
     return undoErr
       ? `${(row as Quote).ref} was copied to the ${PIPELINE[to].label} but couldn't be removed here (${delErr.message}) — delete the copy there before trying again.`
-      : delErr.message;
+      : deleteErrorText(delErr);
   }
   return null;
 }
@@ -1129,7 +1134,7 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
     setSaving(true);
     const { error: err } = await supabase.from(table).delete().eq('id', quote.id);
     setSaving(false);
-    if (err) { setError(err.message); return; }
+    if (err) { setError(deleteErrorText(err)); return; }
     onSaved();
   };
 
