@@ -49,7 +49,21 @@ interface PORef {
 }
 
 interface ShipRef { po_id: string | null; po_no: string | null; item_id: string | null; status: string }
-interface ItemRef { id: string; name: string; category: string | null; active: boolean }
+interface ItemRef { id: string; name: string; brand: string | null; category: string | null; active: boolean }
+
+/** Units of one charger model on the book, split by where the purchase stands. */
+interface ModelRow {
+  key: string;
+  brand: string;
+  model: string;
+  sold: number;
+  awaiting: number;
+  inPo: number;
+  onOrder: number;
+  inHand: number;
+  refs: { id: string; ref: string }[];
+  oldest: string;
+}
 
 type LineState = 'awaiting' | 'po_dead' | 'po_pending' | 'po_finance' | 'po_raised' | 'ordered' | 'in_transit' | 'received' | 'stock';
 
@@ -103,7 +117,7 @@ export function ScreenOrderBook() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [view, setView] = useState<'orders' | 'pending'>('orders');
+  const [view, setView] = useState<'orders' | 'models' | 'pending'>('orders');
   const [search, setSearch] = useState('');
   const [stateFilter, setStateFilter] = useState<'all' | OrderState>('all');
   const [stageFilter, setStageFilter] = useState<string>('open');
@@ -117,7 +131,7 @@ export function ScreenOrderBook() {
       supabase.from('sales_order_lines').select('*').order('position').order('created_at'),
       supabase.from('purchase_orders').select('id, po_number, title, supplier, status, lines').order('created_at', { ascending: false }),
       supabase.from('inv_shipments').select('po_id, po_no, item_id, status'),
-      supabase.from('inv_items').select('id, name, category, active').order('name'),
+      supabase.from('inv_items').select('id, name, brand, category, active').order('name'),
       supabase.from('sales_people').select('id, name, user_id').order('name'),
       supabase.from('customers').select('id, name'),
     ]);
@@ -179,27 +193,37 @@ export function ScreenOrderBook() {
     .sort((a, b) => wonDate(b).localeCompare(wonDate(a)));
 
   const ql = search.trim().toLowerCase();
+  const stageOk = (q: OrderQuote) => (stageFilter === 'all' ? true
+    : stageFilter === 'open' ? q.won_stage !== 'completed_invoiced'
+    : stageFilter === 'none' ? !q.won_stage
+    : q.won_stage === stageFilter);
   const shown = visible.filter((q) => {
     const ls = linesByQuote.get(q.id) ?? [];
     if (stateFilter !== 'all' && orderState(ls) !== stateFilter) return false;
-    if (stageFilter === 'open' && q.won_stage === 'completed_invoiced') return false;
-    if (stageFilter === 'none' && q.won_stage) return false;
-    if (stageFilter !== 'all' && stageFilter !== 'open' && stageFilter !== 'none' && q.won_stage !== stageFilter) return false;
+    if (!stageOk(q)) return false;
     if (!ql) return true;
     return [q.ref, q.customer_name, q.salesperson_name, ...ls.flatMap((l) => [l.item_name, l.po_no, l.po_id ? poById.get(l.po_id)?.po_number : ''])]
       .join(' ').toLowerCase().includes(ql);
   });
 
-  // Pending purchases: charger lines not yet in hand, per model.
-  const pending = (() => {
-    const m = new Map<string, { name: string; awaiting: number; inPo: number; onOrder: number; refs: { id: string; ref: string }[]; oldest: string }>();
-    for (const q of visible) {
+  // Charger units per brand and model, across the orders the Stage and
+  // Salesperson filters leave in view. A line typed in without a Stock Levels
+  // item takes its brand from its first word when that matches a known brand.
+  const knownBrands = new Map(items.filter((i) => i.brand?.trim()).map((i) => [i.brand!.trim().toLowerCase(), i.brand!.trim()]));
+  const modelRows: ModelRow[] = (() => {
+    const m = new Map<string, ModelRow>();
+    for (const q of visible.filter(stageOk)) {
       for (const l of linesByQuote.get(q.id) ?? []) {
-        const st = lineState(l);
-        if (st === 'received' || st === 'stock') continue;
+        const item = l.item_id ? items.find((i) => i.id === l.item_id) : undefined;
         const key = l.item_id ?? `name:${l.item_name.trim().toLowerCase()}`;
-        const row = m.get(key) ?? { name: items.find((i) => i.id === l.item_id)?.name ?? l.item_name, awaiting: 0, inPo: 0, onOrder: 0, refs: [], oldest: wonDate(q) };
-        if (st === 'awaiting' || st === 'po_dead') row.awaiting += l.qty;
+        const brand = item?.brand?.trim()
+          || (!item ? knownBrands.get(l.item_name.trim().split(/\s+/)[0]?.toLowerCase() ?? '') : undefined)
+          || 'Others';
+        const row = m.get(key) ?? { key, brand, model: item?.name ?? l.item_name, sold: 0, awaiting: 0, inPo: 0, onOrder: 0, inHand: 0, refs: [], oldest: wonDate(q) };
+        const st = lineState(l);
+        row.sold += l.qty;
+        if (st === 'received' || st === 'stock') row.inHand += l.qty;
+        else if (st === 'awaiting' || st === 'po_dead') row.awaiting += l.qty;
         else if (st === 'po_pending' || st === 'po_finance') row.inPo += l.qty;
         else row.onOrder += l.qty;
         if (!row.refs.some((r) => r.id === q.id)) row.refs.push({ id: q.id, ref: q.ref });
@@ -207,7 +231,25 @@ export function ScreenOrderBook() {
         m.set(key, row);
       }
     }
-    return [...m.values()].sort((a, b) => b.awaiting - a.awaiting || (b.inPo + b.onOrder) - (a.inPo + a.onOrder) || a.name.localeCompare(b.name));
+    return [...m.values()];
+  })();
+  const toCome = (r: ModelRow) => r.awaiting + r.inPo + r.onOrder;
+  const pendingRows = modelRows.filter((r) => toCome(r) > 0);
+  const chargerRows = (view === 'pending' ? pendingRows : modelRows)
+    .filter((r) => !ql || [r.brand, r.model, ...r.refs.map((x) => x.ref)].join(' ').toLowerCase().includes(ql));
+  // Brand groups, biggest first; models inside by units.
+  const brandGroups = (() => {
+    const g = new Map<string, { brand: string; rows: ModelRow[] }>();
+    for (const r of chargerRows) {
+      const k = r.brand.toLowerCase();
+      g.set(k, { brand: g.get(k)?.brand ?? r.brand, rows: [...(g.get(k)?.rows ?? []), r] });
+    }
+    const weight = (r: ModelRow) => (view === 'pending' ? r.awaiting * 1e6 + toCome(r) : r.sold);
+    return [...g.values()]
+      .map((x) => ({ ...x, rows: x.rows.sort((a, b) => weight(b) - weight(a) || a.model.localeCompare(b.model)) }))
+      .sort((a, b) => (a.brand.toLowerCase() === 'others' ? 1 : 0) - (b.brand.toLowerCase() === 'others' ? 1 : 0)
+        || b.rows.reduce((n, r) => n + weight(r), 0) - a.rows.reduce((n, r) => n + weight(r), 0)
+        || a.brand.localeCompare(b.brand));
   })();
 
   const visibleLines = visible.flatMap((q) => linesByQuote.get(q.id) ?? []);
@@ -216,8 +258,13 @@ export function ScreenOrderBook() {
   const unlisted = visible.filter((q) => !(linesByQuote.get(q.id)?.length)).length;
 
   const exportCsv = () => {
-    const rows: (string | number | null)[][] = [['Quotation', 'Customer', 'Salesperson', 'Won', 'Value', 'Stage', 'Charger', 'Qty', 'Purchase', 'PO', 'Notes']];
-    for (const q of shown) {
+    const rows: (string | number | null)[][] = view === 'orders'
+      ? [['Quotation', 'Customer', 'Salesperson', 'Won', 'Value', 'Stage', 'Charger', 'Qty', 'Purchase', 'PO', 'Notes']]
+      : [['Brand', 'Model', 'Sold', 'Awaiting PO', 'PO in progress', 'Ordered / in transit', 'In hand', 'Quotations', 'Oldest win']];
+    if (view !== 'orders') {
+      for (const g of brandGroups) for (const r of g.rows) rows.push([g.brand, r.model, r.sold, r.awaiting, r.inPo, r.onOrder, r.inHand, r.refs.map((x) => x.ref).join(' '), r.oldest]);
+    }
+    for (const q of view === 'orders' ? shown : []) {
       const ls = linesByQuote.get(q.id) ?? [];
       const base = [q.ref, q.customer_name, q.salesperson_name, wonDate(q), q.total, q.won_stage ? WON_STAGE_LABELS[q.won_stage] : ''];
       if (!ls.length) rows.push([...base, '', '', ORDER_META.unlisted.label, '', '']);
@@ -226,7 +273,7 @@ export function ScreenOrderBook() {
     const csv = rows.map((r) => r.map((v) => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; }).join(',')).join('\n');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-    a.download = `order-book-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `order-book-${view === 'orders' ? 'orders' : view === 'pending' ? 'pending-purchases' : 'chargers'}-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
   };
@@ -250,10 +297,10 @@ export function ScreenOrderBook() {
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', gap: 4, background: C.white, borderRadius: 12, padding: 4, border: '1px solid #EBEBEB' }}>
-          {([['orders', 'Orders'], ['pending', 'Pending purchases']] as const).map(([id, label]) => (
+          {([['orders', 'Orders'], ['models', 'By brand & model'], ['pending', 'Pending purchases']] as const).map(([id, label]) => (
             <button key={id} onClick={() => setView(id)}
-              style={{ padding: '8px 18px', borderRadius: 10, border: 'none', fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', background: view === id ? C.green : 'transparent', color: view === id ? C.white : C.slate }}>
-              {label}{id === 'pending' && pending.length ? ` · ${pending.length}` : ''}
+              style={{ padding: '8px 18px', borderRadius: 10, border: 'none', fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', background: view === id ? C.green : 'transparent', color: view === id ? C.white : C.slate, whiteSpace: 'nowrap' }}>
+              {label}{id === 'pending' && pendingRows.length ? ` · ${pendingRows.length}` : ''}
             </button>
           ))}
         </div>
@@ -277,8 +324,8 @@ export function ScreenOrderBook() {
               options={[{ value: 'all', label: 'All salespeople' }, ...people.map((p) => ({ value: p.id, label: p.name }))]} />
           </div>
         )}
-        <button onClick={exportCsv} disabled={!shown.length}
-          style={{ marginLeft: 'auto', padding: '8px 14px', borderRadius: 10, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: shown.length ? 'pointer' : 'default', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <button onClick={exportCsv} disabled={view === 'orders' ? !shown.length : !chargerRows.length}
+          style={{ marginLeft: 'auto', padding: '8px 14px', borderRadius: 10, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: (view === 'orders' ? shown.length : chargerRows.length) ? 'pointer' : 'default', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <Download size={13} /> CSV
         </button>
       </div>
@@ -347,44 +394,81 @@ export function ScreenOrderBook() {
             </table>
           </div>
         </>
-      ) : (
-        <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
-          <table style={{ width: '100%', minWidth: 760, borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: C.seasalt }}>
-                {['Charger', 'Awaiting PO', 'PO in progress', 'Ordered / in transit', 'Orders', 'Oldest win'].map((h, i) => (
-                  <th key={h} style={{ ...th, textAlign: i >= 1 && i <= 3 ? 'right' : 'left' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {pending.map((r) => (
-                <tr key={r.name} style={{ borderBottom: '1px solid #F3F3F3' }}>
-                  <td style={{ ...td, fontWeight: 600 }}>{r.name}</td>
-                  <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: r.awaiting ? '#B45309' : C.slate }}>{r.awaiting || '—'}</td>
-                  <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: r.inPo ? '#1A62C0' : C.slate }}>{r.inPo || '—'}</td>
-                  <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: r.onOrder ? '#6B21A8' : C.slate }}>{r.onOrder || '—'}</td>
-                  <td style={td}>
-                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                      {r.refs.map((x) => (
-                        <button key={x.id} onClick={() => setOpenId(x.id)}
-                          style={{ padding: '2px 8px', borderRadius: 99, border: '1px solid #EBEBEB', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>{x.ref}</button>
-                      ))}
-                    </div>
-                  </td>
-                  <td style={{ ...td, color: C.slate, whiteSpace: 'nowrap' }}>{fmtDate(r.oldest)}</td>
+      ) : (() => {
+        const pendingView = view === 'pending';
+        const cols: { h: string; num?: boolean }[] = [
+          { h: 'Brand / model' },
+          { h: pendingView ? 'Still to come' : 'Sold', num: true },
+          { h: 'Awaiting PO', num: true },
+          { h: 'PO in progress', num: true },
+          { h: 'Ordered / in transit', num: true },
+          ...(pendingView ? [] : [{ h: 'In hand', num: true }]),
+          { h: 'Quotations' },
+          { h: 'Oldest win' },
+        ];
+        const nums = (r: Pick<ModelRow, 'sold' | 'awaiting' | 'inPo' | 'onOrder' | 'inHand'>) => [
+          { v: pendingView ? r.awaiting + r.inPo + r.onOrder : r.sold, color: '#1a1a1a' },
+          { v: r.awaiting, color: '#B45309' },
+          { v: r.inPo, color: '#1A62C0' },
+          { v: r.onOrder, color: '#6B21A8' },
+          ...(pendingView ? [] : [{ v: r.inHand, color: '#1B512D' }]),
+        ];
+        return (
+          <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
+            <table style={{ width: '100%', minWidth: pendingView ? 820 : 900, borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: C.seasalt }}>
+                  {cols.map((c) => <th key={c.h} style={{ ...th, textAlign: c.num ? 'right' : 'left' }}>{c.h}</th>)}
                 </tr>
-              ))}
-              {pending.length === 0 && (
-                <tr><td colSpan={6} style={{ padding: '48px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
-                  <BookCheck size={32} strokeWidth={1.5} color={C.slate} style={{ display: 'block', margin: '0 auto 10px' }} />
-                  Nothing pending — every listed charger is received or coming from stock.
-                </td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
+              </thead>
+              <tbody>
+                {brandGroups.map((g) => {
+                  const sum = (k: 'sold' | 'awaiting' | 'inPo' | 'onOrder' | 'inHand') => g.rows.reduce((n, r) => n + r[k], 0);
+                  const totals = { sold: sum('sold'), awaiting: sum('awaiting'), inPo: sum('inPo'), onOrder: sum('onOrder'), inHand: sum('inHand') };
+                  return [
+                    <tr key={`b:${g.brand}`} style={{ background: C.honeydew, borderBottom: '1px solid #F3F3F3' }}>
+                      <td style={{ ...td, fontWeight: 700, color: C.green }}>
+                        {g.brand}
+                        <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, color: C.slate }}>{g.rows.length} model{g.rows.length === 1 ? '' : 's'}</span>
+                      </td>
+                      {nums(totals).map((n, i) => (
+                        <td key={i} style={{ ...td, textAlign: 'right', fontWeight: 700, color: n.v ? (i === 0 ? C.green : n.color) : C.slate }}>{n.v || '—'}</td>
+                      ))}
+                      <td style={td} />
+                      <td style={td} />
+                    </tr>,
+                    ...g.rows.map((r) => (
+                      <tr key={r.key} style={{ borderBottom: '1px solid #F3F3F3' }}>
+                        <td style={{ ...td, paddingLeft: 32, fontWeight: 600 }}>{r.model}</td>
+                        {nums(r).map((n, i) => (
+                          <td key={i} style={{ ...td, textAlign: 'right', fontWeight: 700, color: n.v ? n.color : C.slate }}>{n.v || '—'}</td>
+                        ))}
+                        <td style={td}>
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                            {r.refs.map((x) => (
+                              <button key={x.id} onClick={() => setOpenId(x.id)}
+                                style={{ padding: '2px 8px', borderRadius: 99, border: '1px solid #EBEBEB', background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>{x.ref}</button>
+                            ))}
+                          </div>
+                        </td>
+                        <td style={{ ...td, color: C.slate, whiteSpace: 'nowrap' }}>{fmtDate(r.oldest)}</td>
+                      </tr>
+                    )),
+                  ];
+                })}
+                {brandGroups.length === 0 && (
+                  <tr><td colSpan={cols.length} style={{ padding: '48px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
+                    <BookCheck size={32} strokeWidth={1.5} color={C.slate} style={{ display: 'block', margin: '0 auto 10px' }} />
+                    {ql ? 'No chargers match this search.'
+                      : pendingView ? 'Nothing pending — every listed charger is received or coming from stock.'
+                      : 'No chargers listed on these orders yet. Open an order and add its chargers.'}
+                  </td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        );
+      })()}
 
       {open && (
         <OrderModal key={open.id} quote={open} lines={linesByQuote.get(open.id) ?? []} items={items} pos={pos}
