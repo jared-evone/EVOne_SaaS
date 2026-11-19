@@ -8,7 +8,6 @@ import { Logo } from '../../components/Logo';
 import { Download as DownloadIcon, Power, Trash2, Search, X, ChevronLeft, ChevronRight } from 'lucide-react';
 import { FilterSelect, selectionCount, type FilterGroup, type FilterSelection } from '../../components/FilterSelect';
 import {
-  DEMO_PIC,
   STATUS_COLORS,
   assigneesLabel,
   assigneesOf,
@@ -68,6 +67,7 @@ interface PICAppProps {
 const VISIBLE_STATUSES = ['submitted', 'reviewed', 'warranty', 'invoice', 'completed'] as const;
 
 export function PICApp({ onBack, onSignOut }: PICAppProps) {
+  const { user } = usePermissions();
   return (
     <div style={{ height: '100%', overflowY: 'auto', background: C.seasalt }}>
       <header
@@ -96,7 +96,7 @@ export function PICApp({ onBack, onSignOut }: PICAppProps) {
         >
           TSD · Person in Charge
         </span>
-        <span style={{ fontSize: 12, color: C.slate, marginLeft: 4 }}>{DEMO_PIC}</span>
+        <span style={{ fontSize: 12, color: C.slate, marginLeft: 4 }}>{user.full_name || user.email}</span>
         <button
           onClick={onBack}
           style={{
@@ -570,6 +570,8 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
   const store = useWorkOrderStore();
   const { can, user } = usePermissions();
   const canDelete = can('tsd_pic', 'can_delete');
+  // Recorded on every save / approval: the signed-in person and their account.
+  const actor = user.full_name && user.full_name !== user.email ? `${user.full_name} (${user.email})` : user.email;
   const [syncOpen, setSyncOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [forms, setForms] = useState<WorkOrderForm[]>(() => workOrder.forms.map((f) => ({ ...f, values: { ...(f.values ?? {}) } })));
@@ -594,7 +596,7 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
   const [reviewDirty, setReviewDirty] = useState(false);
   const setRev = (p: Partial<PicReview>) => { setReview((r) => ({ ...r, ...p })); setReviewDirty(true); };
   const saveReview = () => {
-    store.setPicReview(workOrder.id, { ...review, reviewedAt: new Date().toISOString().slice(0, 10), reviewedBy: DEMO_PIC });
+    store.setPicReview(workOrder.id, { ...review, reviewedAt: new Date().toISOString().slice(0, 10), reviewedBy: actor });
     setReviewDirty(false);
   };
 
@@ -647,18 +649,18 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
     : review.jobType === 'warranty'
       ? [!review.startTime && 'start time', !review.endTime && 'end time', reviewTechs.length === 0 && 'technician(s)'].filter((x): x is string => !!x)
       : [review.quotedPrice == null && 'invoice amount'].filter((x): x is string => !!x);
-  const saveForms = () => { if (dirty) { store.amend(workOrder.id, forms, DEMO_PIC); setDirty(false); } };
+  const saveForms = () => { if (dirty) { store.amend(workOrder.id, forms, actor); setDirty(false); } };
   const handleSave = () => { saveForms(); if (reviewDirty) saveReview(); flash('Changes saved.'); };
-  const handleApprove = () => { saveForms(); store.setReviewStage(workOrder.id, 'reviewed'); flash('Report approved — now choose Warranty or Invoice.'); };
+  const handleApprove = () => { saveForms(); store.setReviewStage(workOrder.id, 'reviewed', actor); flash('Report approved — now choose Warranty or Invoice.'); };
   const handleConfirmType = () => {
     if (missing.length || !review.jobType) return;
     saveForms();
     saveReview();
-    store.setReviewStage(workOrder.id, review.jobType);
+    store.setReviewStage(workOrder.id, review.jobType, actor);
     flash(`${review.jobType === 'warranty' ? 'Warranty' : 'Invoice'} details approved — ready to complete.`);
   };
-  const handleComplete = () => { saveForms(); if (reviewDirty) saveReview(); store.setReviewStage(workOrder.id, 'completed'); flash('Marked completed.'); };
-  const handleReopenType = () => { store.setReviewStage(workOrder.id, 'reviewed'); flash('Back to Reviewed — change the job type or its details.'); };
+  const handleComplete = () => { saveForms(); if (reviewDirty) saveReview(); store.setReviewStage(workOrder.id, 'completed', actor); flash('Marked completed.'); };
+  const handleReopenType = () => { store.setReviewStage(workOrder.id, 'reviewed', actor); flash('Back to Reviewed — change the job type or its details.'); };
   const handleDelete = () => { setConfirmDelete(false); store.deleteWorkOrder(workOrder.id); onDeleted?.(); };
 
   const hasTemplated = forms.some((f) => !!store.getTemplate(f.templateId));
@@ -958,7 +960,10 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
           <div><strong style={{ color: '#1a1a1a' }}>Audit:</strong></div>
           {workOrder.response.submittedBy && <div>Submitted by {workOrder.response.submittedBy} on {workOrder.response.submittedAt}</div>}
           {workOrder.response.editedBy && <div>Edited by {workOrder.response.editedBy} on {workOrder.response.editedAt}</div>}
-          {reviewStarted && <div>Report approved{workOrder.picReview?.jobType ? ` · ${workOrder.picReview.jobType === 'warranty' ? 'Warranty' : 'Invoice'}` : ''}{completed ? ' · completed' : ''}.</div>}
+          {(workOrder.reviewLog ?? []).map((e, i) => (
+            <div key={i}>{STATUS_COLORS[e.status]?.label ?? e.status} by {e.by} on {new Date(e.at).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+          ))}
+          {reviewStarted && !(workOrder.reviewLog?.length) && <div>Report approved{workOrder.picReview?.jobType ? ` · ${workOrder.picReview.jobType === 'warranty' ? 'Warranty' : 'Invoice'}` : ''}{completed ? ' · completed' : ''}.</div>}
         </div>
       )}
 

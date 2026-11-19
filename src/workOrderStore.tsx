@@ -118,6 +118,8 @@ export interface PicReview {
   reviewedBy?: string;
 }
 
+export interface ReviewLogEntry { status: WorkOrderStatus; by: string; at: string }
+
 export interface WorkOrder {
   id: string;
   title: string;
@@ -141,6 +143,8 @@ export interface WorkOrder {
   response: FormResponse | null;
   /** Optional — absent on work orders reviewed before the feature existed. */
   picReview?: PicReview | null;
+  /** Who moved the job through each review step, oldest first. */
+  reviewLog?: ReviewLogEntry[] | null;
   /** Forms filed into the Charger Registry after approval, keyed by form id. */
   registrySync?: Record<string, RegistrySyncEntry> | null;
 }
@@ -212,7 +216,7 @@ interface Store {
   // pic actions
   amend(workOrderId: string, forms: WorkOrderForm[], picName: string): void;
   /** Move a submitted job along Reviewed → Warranty / Invoice → Completed (metadata patch). */
-  setReviewStage(workOrderId: string, status: 'reviewed' | 'warranty' | 'invoice' | 'completed'): void;
+  setReviewStage(workOrderId: string, status: 'reviewed' | 'warranty' | 'invoice' | 'completed', by: string): void;
   /** Save the internal admin review — a metadata patch, never touches forms. */
   setPicReview(workOrderId: string, review: PicReview): void;
 
@@ -434,12 +438,13 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
         }),
       ),
 
-    setReviewStage: (id, status) =>
+    setReviewStage: (id, status, by) =>
       setWorkOrders((ws) =>
         ws.map((w) => {
           if (w.id !== id) return w;
-          patchWorkOrder(id, { status });
-          return { ...w, status };
+          const reviewLog = [...(w.reviewLog ?? []), { status, by, at: new Date().toISOString() }];
+          patchWorkOrder(id, { status, reviewLog });
+          return { ...w, status, reviewLog };
         }),
       ),
 
@@ -644,4 +649,3 @@ export const TECHNICIANS = [
 ];
 
 export const DEMO_TECHNICIAN = 'Zulkifli A.';
-export const DEMO_PIC = 'Aishah PIC';
