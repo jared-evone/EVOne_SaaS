@@ -337,9 +337,12 @@ src/
     OrderBook.tsx           Sales Order Book — chargers each WON sales quote
                             must supply (sales_order_lines), each linked to a
                             Raise PO / outside PO number / stock; "Pending
-                            purchases" sums the rest per charger model. A quote
-                            with order lines can't be deleted or moved (FK, no
-                            ON DELETE) — see db/sales_order_book.sql
+                            purchases" sums the rest per charger model. The
+                            same lines are picked on the quote in Sales.tsx
+                            (required for new Sales quotes). Deleting a quote
+                            cascades its plain lines but is blocked once a line
+                            has a purchase; a quote with lines can't move to
+                            CPO Sales — see db/sales_order_book.sql
     Login.tsx               email/password sign-in (departments derive from grants)
     Settings.tsx, DBHealth.tsx
                             in-app admin (Users & Permissions matrix + DB health)

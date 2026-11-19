@@ -5,6 +5,8 @@ import { supabase } from '../lib/supabase';
 import { usePermissions } from '../permissions';
 import { useIsMobile } from '../lib/useIsMobile';
 import { CustomerCreateModal, type CreatedCustomer } from '../components/CustomerCreateModal';
+import { SearchSelect as ItemSearchSelect } from '../components/SearchSelect';
+import { parseChargerPower, fmtKw } from '../lib/chargerPower';
 import { Search, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Handshake, FileUp, FileText, X, Plus, Archive, ArchiveRestore, ArrowRightLeft } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -86,6 +88,10 @@ export interface CostItem {
   label: string;
   amount: number;
 }
+
+export interface ChargerItem { id: string; name: string; brand: string | null; active: boolean }
+interface CardCharger { name: string; qty: number }
+interface ChargerDraft { key: string; id: string | null; item_id: string; item_name: string; qty: string; locked: boolean }
 
 export interface CostOption {
   id: string;
@@ -226,12 +232,18 @@ const PIPELINE: Record<Pipeline, { table: string; screen: 'sales' | 'cpo_sales';
 // removal fails the copy is taken back out, so it never sits in both.
 // sales_order_lines.quote_id has no ON DELETE action, so a quote with chargers
 // on the Order Book can't be deleted or moved until they're removed there.
-const ORDER_BOOK_BLOCK = 'This quote has chargers on the Order Book — remove them there first (Sales → Order Book).';
+const ORDER_BOOK_BLOCK = 'This quote\'s chargers already have purchases on the Order Book (a PO or stock) — clear those there first (Sales → Order Book).';
 const deleteErrorText = (e: { code?: string; message: string }) => (e.code === '23503' ? ORDER_BOOK_BLOCK : e.message);
 
 async function moveQuote(id: string, from: Pipeline, to: Pipeline): Promise<string | null> {
   const src = PIPELINE[from].table;
   const dst = PIPELINE[to].table;
+  // CPO quotes carry no chargers: deleting the original would drop its list.
+  if (from === 'sales') {
+    const { count, error } = await supabase.from('sales_order_lines').select('id', { count: 'exact', head: true }).eq('quote_id', id);
+    if (error) return error.message;
+    if (count) return 'This quote has chargers listed — remove them from the quote before moving it to the CPO Sales Pipeline.';
+  }
   const { data: row, error: readErr } = await supabase.from(src).select('*').eq('id', id).single();
   if (readErr || !row) return readErr?.message ?? 'Quote not found.';
   const { error: insErr } = await supabase.from(dst).insert(row);
@@ -264,6 +276,8 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
   const [customers, setCustomers] = useState<CustomerOpt[]>([]);
   const [salesUsers, setSalesUsers] = useState<SalesUser[]>([]);
   const [costOptions, setCostOptions] = useState<CostOption[]>([]);
+  const [chargerItems, setChargerItems] = useState<ChargerItem[]>([]);
+  const [quoteChargers, setQuoteChargers] = useState<Map<string, CardCharger[]>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -293,6 +307,12 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
     const err = q.error ?? c.error ?? cc.error ?? u.error;
     if (err) { setError(err.message); setLoading(false); return; }
     setQuotes((q.data ?? []) as Quote[]);
+    if (pipeline === 'sales') {
+      const { data: ol } = await supabase.from('sales_order_lines').select('quote_id, item_name, qty').order('position').order('created_at');
+      const m = new Map<string, CardCharger[]>();
+      for (const r of (ol ?? []) as { quote_id: string; item_name: string; qty: number }[]) m.set(r.quote_id, [...(m.get(r.quote_id) ?? []), { name: r.item_name, qty: r.qty }]);
+      setQuoteChargers(m);
+    }
     const firstContact = new Map<string, { name: string | null; email: string | null }>();
     for (const row of (cc.data ?? []) as Array<{ customer_id: string; name: string | null; email: string | null }>) {
       if (!firstContact.has(row.customer_id)) firstContact.set(row.customer_id, { name: row.name, email: row.email });
@@ -306,7 +326,14 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
     setLoading(false);
   };
 
-  useEffect(() => { void fetchAll(); void fetchCostOptions(); }, []);
+  useEffect(() => {
+    void fetchAll();
+    void fetchCostOptions();
+    if (pipeline === 'sales') {
+      void supabase.from('inv_items').select('id, name, brand, active').eq('category', 'Charger').order('name')
+        .then(({ data }) => setChargerItems((data ?? []) as ChargerItem[]));
+    }
+  }, []);
 
   // `stage` comes from the Won column's active stage chip (undefined = "All").
   const setStatus = async (quote: Quote, status: QuoteStatus, stage?: WonStage) => {
@@ -514,10 +541,11 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
           <div style={{ fontSize: 12, color: C.slate }}>Create a quote for a customer from the Customers tab.</div>
         </div>
       ) : shelf === 'archived' ? (
-        <QuoteTable quotes={visible} onOpen={(q) => setModal({ mode: 'edit', quote: q })}
+        <QuoteTable quotes={visible} onOpen={(q) => setModal({ mode: 'edit', quote: q })} chargers={pipeline === 'sales' ? quoteChargers : undefined}
           onRestore={canEdit ? (q) => void setArchived([q.id], false) : undefined} emptyText="No archived quotes match." />
       ) : view === 'pipeline' ? (
-        <PipelineBoard quotes={visible} canEdit={canEdit} onOpen={(q) => setModal({ mode: 'edit', quote: q })} onDropStatus={setStatus} />
+        <PipelineBoard quotes={visible} canEdit={canEdit} onOpen={(q) => setModal({ mode: 'edit', quote: q })} onDropStatus={setStatus}
+          chargers={pipeline === 'sales' ? quoteChargers : undefined} />
       ) : (
         <>
           {canEdit && (
@@ -536,7 +564,7 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
               )}
             </div>
           )}
-          <QuoteTable quotes={visible} onOpen={(q) => setModal({ mode: 'edit', quote: q })}
+          <QuoteTable quotes={visible} onOpen={(q) => setModal({ mode: 'edit', quote: q })} chargers={pipeline === 'sales' ? quoteChargers : undefined}
             selectable={canEdit} selected={selected}
             onToggle={(id) => setSelected((cur) => { const n = new Set(cur); if (n.has(id)) n.delete(id); else n.add(id); return n; })}
             onToggleAll={(ids) => setSelected((cur) => (ids.every((id) => cur.has(id)) ? new Set() : new Set(ids)))} />
@@ -560,6 +588,7 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
           isAdmin={isAdmin}
           costOptions={costOptions}
           onCostOptionsChanged={fetchCostOptions}
+          chargerItems={pipeline === 'sales' ? chargerItems : undefined}
           onClose={() => setModal(null)}
           onSaved={() => { setModal(null); void fetchAll(); }}
         />
@@ -581,11 +610,13 @@ function QuoteBadge({ status }: { status: QuoteStatus }) {
 
 // ── Kanban pipeline ──────────────────────────────────────────────
 
-function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
+function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus, chargers }: {
   quotes: Quote[];
   canEdit: boolean;
   onOpen: (q: Quote) => void;
   onDropStatus: (q: Quote, s: QuoteStatus, stage?: WonStage) => void;
+  /** Sales Pipeline: each quote's chargers, shown at the foot of its card (CPO cards show notes). */
+  chargers?: Map<string, CardCharger[]>;
 }) {
   const [dragOver, setDragOver] = useState<QuoteStatus | null>(null);
   const [pages, setPages] = useState<Record<string, number>>({});
@@ -650,20 +681,20 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                     return (
                       <button key={ps} onClick={() => setParked(ps)} title={`Show ${ps} quotes`}
                         style={{
-                          display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px', borderRadius: 99,
+                          display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px', borderRadius: 99, minWidth: 0, whiteSpace: 'nowrap',
                           border: `1px solid ${on ? pc.color : '#E0E5E9'}`,
                           background: on ? pc.bg : 'transparent',
                           color: on ? pc.color : C.slate,
                           fontFamily: 'Figtree', fontSize: 11.5, fontWeight: 700, cursor: 'pointer',
                         }}>
-                        {ps}<span style={{ opacity: on ? 0.75 : 0.6 }}>{n}</span>
+                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{ps}</span><span style={{ opacity: on ? 0.75 : 0.6, flexShrink: 0 }}>{n}</span>
                       </button>
                     );
                   })
                 ) : (
                   <>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: sc.color, background: sc.bg, padding: '3px 10px', borderRadius: 99 }}>{status}</span>
-                    <span style={{ fontSize: 11, color: C.slate, fontWeight: 700 }}>{col.length}</span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: sc.color, background: sc.bg, padding: '3px 10px', borderRadius: 99, whiteSpace: 'nowrap', flexShrink: 0 }}>{status}</span>
+                    <span style={{ fontSize: 11, color: C.slate, fontWeight: 700, whiteSpace: 'nowrap', flexShrink: 0 }}>{col.length}</span>
                     {isWonSlot && (() => {
                       // Delivery-stage switch, inline on the header row so the Won
                       // column stays the same height as the others. Dropping a card
@@ -710,17 +741,17 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                     cursor: canEdit ? 'grab' : 'pointer', fontFamily: 'Figtree', display: 'flex', flexDirection: 'column', gap: 6,
                     height: CARD_H, boxSizing: 'border-box', flexShrink: 0, overflow: 'hidden',
                   }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: C.slate }}>{q.ref}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: C.slate, whiteSpace: 'nowrap', flexShrink: 0 }}>{q.ref}</span>
                     {q.status === 'Won' && q.won_stage && (
-                      <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 6, background: WON_STAGE_COLORS[q.won_stage].bg, color: WON_STAGE_COLORS[q.won_stage].color, textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>
-                        {WON_STAGE_LABELS[q.won_stage]}
+                      <span title={WON_STAGE_LABELS[q.won_stage]} style={{ fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 6, background: WON_STAGE_COLORS[q.won_stage].bg, color: WON_STAGE_COLORS[q.won_stage].color, textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {q.won_stage === 'completed_invoiced' ? 'Completed' : WON_STAGE_LABELS[q.won_stage]}
                       </span>
                     )}
                     {(q.ehvcg || q.high_potential) && (
-                      <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
                         {q.ehvcg && (
-                          <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 6, background: '#FDEAEA', color: '#C0321A', textTransform: 'uppercase', letterSpacing: '0.04em' }}>EHVCG</span>
+                          <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 6, background: '#FDEAEA', color: '#C0321A', textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>EHVCG</span>
                         )}
                         {q.high_potential && (
                           <span title="High potential" style={{ width: 12, height: 12, borderRadius: '50%', background: '#E11D2E', flexShrink: 0 }} />
@@ -730,19 +761,34 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
                   </div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.customer_name}</div>
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                    <span style={{ fontSize: 14, fontWeight: 700, color: C.green }}>{fmtMoney(Number(q.total))}</span>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: C.green, flexShrink: 0 }}>{fmtMoney(Number(q.total))}</span>
                     {(q.cost_items?.length ?? 0) > 0 && (() => {
                       const cost = (q.cost_items ?? []).reduce((s, c) => s + (Number(c.amount) || 0), 0);
                       const gp = Number(q.total) - cost;
                       const pct = Number(q.total) > 0 ? (gp / Number(q.total)) * 100 : 0;
-                      return <span style={{ fontSize: 11, fontWeight: 600, color: gp >= 0 ? C.slate : '#C0321A' }}>GP {fmtMoney(gp)} ({pct.toFixed(0)}%)</span>;
+                      return <span title={`GP ${fmtMoney(gp)} (${pct.toFixed(0)}%)`} style={{ fontSize: 11, fontWeight: 600, color: gp >= 0 ? C.slate : '#C0321A', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>GP {fmtMoney(gp)} ({pct.toFixed(0)}%)</span>;
                     })()}
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: C.slate, overflow: 'hidden' }}>
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.salesperson_name}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: C.slate, overflow: 'hidden', minWidth: 0 }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{q.salesperson_name}</span>
                     <span style={{ marginLeft: 'auto', whiteSpace: 'nowrap', flexShrink: 0 }}>{q.quote_date}</span>
                   </div>
-                  {q.notes && q.notes.trim() && (
+                  {chargers ? (() => {
+                    const cs = chargers.get(q.id) ?? [];
+                    if (!cs.length) return <div style={{ fontSize: 11, color: C.slate, background: C.seasalt, borderRadius: 8, padding: '6px 8px', whiteSpace: 'nowrap', lineHeight: 1.4, flexShrink: 0, fontStyle: 'italic' }}>No chargers listed</div>;
+                    const first = cs[0];
+                    const pw = parseChargerPower(first.name);
+                    const tc = pw?.current === 'DC' ? { bg: '#E3F0FF', color: '#1A62C0' } : { bg: '#E4F3E3', color: '#1B512D' };
+                    return (
+                      <div title={cs.map((c) => `${c.qty} × ${c.name}`).join('\n')}
+                        style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#1a1a1a', background: C.seasalt, borderRadius: 8, padding: '5px 8px', lineHeight: 1.4, flexShrink: 0, minWidth: 0, overflow: 'hidden' }}>
+                        {pw && <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 6, background: tc.bg, color: tc.color, whiteSpace: 'nowrap', flexShrink: 0 }}>{pw.current} {fmtKw(pw.kw)}</span>}
+                        <span style={{ fontWeight: 700, whiteSpace: 'nowrap', flexShrink: 0 }}>{first.qty} ×</span>
+                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{first.name}</span>
+                        {cs.length > 1 && <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 700, color: C.slate, whiteSpace: 'nowrap', flexShrink: 0 }}>+{cs.length - 1}</span>}
+                      </div>
+                    );
+                  })() : q.notes && q.notes.trim() && (
                     <div title={q.notes} style={{ fontSize: 11, color: C.slate, background: C.seasalt, borderRadius: 8, padding: '6px 8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.4, flexShrink: 0 }}>
                       {q.notes}
                     </div>
@@ -778,8 +824,10 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus }: {
 
 // ── List view ────────────────────────────────────────────────────
 
-function QuoteTable({ quotes, onOpen, selectable, selected, onToggle, onToggleAll, onRestore, emptyText }: {
+function QuoteTable({ quotes, onOpen, selectable, selected, onToggle, onToggleAll, onRestore, emptyText, chargers }: {
   quotes: Quote[];
+  /** Sales Pipeline: adds a Chargers column. */
+  chargers?: Map<string, CardCharger[]>;
   onOpen: (q: Quote) => void;
   selectable?: boolean;
   selected?: Set<string>;
@@ -791,15 +839,18 @@ function QuoteTable({ quotes, onOpen, selectable, selected, onToggle, onToggleAl
 }) {
   const th: React.CSSProperties = {
     padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate,
-    letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB',
+    letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap',
   };
+  // One line per row at any width: long names end in "…" (full text on hover), never wrap.
+  const one: React.CSSProperties = { padding: '13px 16px', whiteSpace: 'nowrap' };
+  const clip: React.CSSProperties = { ...one, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' };
   const archived = !!onRestore || quotes.some((q) => q.archived_at);
   const allOn = quotes.length > 0 && quotes.every((q) => selected?.has(q.id));
   const box: React.CSSProperties = { width: 15, height: 15, accentColor: C.green, cursor: 'pointer', margin: 0 };
-  const headers = ['Ref', 'Customer', 'Salesperson', 'Value', 'Status', 'Date', archived ? 'Archived' : 'PDF'];
+  const headers = ['Ref', 'Customer', ...(chargers ? ['Chargers'] : []), 'Salesperson', 'Value', 'Status', 'Date', archived ? 'Archived' : 'PDF'];
   return (
     <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
-      <table style={{ width: '100%', minWidth: 820, borderCollapse: 'collapse', fontSize: 13 }}>
+      <table style={{ width: '100%', minWidth: chargers ? 1000 : 820, borderCollapse: 'collapse', fontSize: 13 }}>
         <thead>
           <tr style={{ background: C.seasalt }}>
             {selectable && (
@@ -823,12 +874,17 @@ function QuoteTable({ quotes, onOpen, selectable, selected, onToggle, onToggleAl
                     <input type="checkbox" checked={on} onChange={() => onToggle?.(q.id)} style={box} />
                   </td>
                 )}
-                <td style={{ padding: '13px 16px', fontWeight: 700, color: C.green }}>{q.ref}</td>
-                <td style={{ padding: '13px 16px', fontWeight: 600 }}>{q.customer_name}</td>
-                <td style={{ padding: '13px 16px', color: C.slate }}>{q.salesperson_name}</td>
-                <td style={{ padding: '13px 16px', fontWeight: 700, color: C.green }}>{fmtMoney(Number(q.total))}</td>
-                <td style={{ padding: '13px 16px' }}><QuoteBadge status={q.status} /></td>
-                <td style={{ padding: '13px 16px', color: C.slate }}>{q.quote_date}</td>
+                <td style={{ ...one, fontWeight: 700, color: C.green }}>{q.ref}</td>
+                <td title={q.customer_name} style={{ ...clip, fontWeight: 600 }}>{q.customer_name}</td>
+                {chargers && (() => {
+                  const cs = chargers.get(q.id) ?? [];
+                  const text = cs.map((c) => `${c.qty} × ${c.name}`).join(', ');
+                  return <td title={cs.map((c) => `${c.qty} × ${c.name}`).join('\n')} style={{ ...clip, maxWidth: 240, color: cs.length ? '#1a1a1a' : C.slate }}>{text || '—'}</td>;
+                })()}
+                <td title={q.salesperson_name} style={{ ...clip, maxWidth: 160, color: C.slate }}>{q.salesperson_name}</td>
+                <td style={{ ...one, fontWeight: 700, color: C.green }}>{fmtMoney(Number(q.total))}</td>
+                <td style={one}><QuoteBadge status={q.status} /></td>
+                <td style={{ ...one, color: C.slate }}>{q.quote_date}</td>
                 <td style={{ padding: '13px 16px', color: C.slate, whiteSpace: 'nowrap' }}>
                   {archived
                     ? <>{q.archived_at ? q.archived_at.slice(0, 10) : '—'}{q.archived_by && <div style={{ fontSize: 11 }}>by {q.archived_by}</div>}</>
@@ -856,7 +912,7 @@ function QuoteTable({ quotes, onOpen, selectable, selected, onToggle, onToggleAl
 
 // ── Create / edit modal ──────────────────────────────────────────
 
-function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, salespersonId, salespersonName, salespeople, lockSalesperson, canEdit, canDelete, isAdmin, costOptions, onCostOptionsChanged, onClose, onSaved }: {
+function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, salespersonId, salespersonName, salespeople, lockSalesperson, canEdit, canDelete, isAdmin, costOptions, onCostOptionsChanged, chargerItems, onClose, onSaved }: {
   onArchive: (q: Quote, archive: boolean) => void;
   /** Present when the user can edit both pipelines: move this quote across. */
   moveTo?: { label: string; run: (q: Quote) => Promise<string | null> };
@@ -873,11 +929,63 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
   isAdmin: boolean;
   costOptions: CostOption[];
   onCostOptionsChanged: () => Promise<void>;
+  /** Sales Pipeline only: the Stock Levels chargers a quote is for. */
+  chargerItems?: ChargerItem[];
   onClose: () => void;
   onSaved: () => void;
 }) {
   const isNew = quote === null;
   const readOnly = !canEdit;
+  const { user } = usePermissions();
+
+  // Chargers + quantities, stored as the quote's Order Book lines
+  // (sales_order_lines) so a won quote arrives there already listed. Required
+  // on a new quote; optional to add or change on an existing one. A line whose
+  // purchase has started (PO / from stock) is managed in the Order Book only.
+  const withChargers = !!chargerItems;
+  const blankCharger = (): ChargerDraft => ({ key: crypto.randomUUID(), id: null, item_id: '', item_name: '', qty: '1', locked: false });
+  const [chargers, setChargers] = useState<ChargerDraft[]>(() => (isNew && withChargers ? [blankCharger()] : []));
+  const [origChargers, setOrigChargers] = useState<ChargerDraft[]>([]);
+  const [chargersLoaded, setChargersLoaded] = useState(isNew || !withChargers);
+  useEffect(() => {
+    if (!withChargers || !quote) return;
+    void supabase.from('sales_order_lines').select('id, item_id, item_name, qty, po_id, po_no, from_stock')
+      .eq('quote_id', quote.id).order('position').order('created_at')
+      .then(({ data, error: e }) => {
+        if (e) { setError(`Could not load the chargers: ${e.message}`); return; }
+        const rows = ((data ?? []) as { id: string; item_id: string | null; item_name: string; qty: number; po_id: string | null; po_no: string | null; from_stock: boolean }[])
+          .map((r) => ({ key: r.id, id: r.id, item_id: r.item_id ?? '', item_name: r.item_name, qty: String(r.qty), locked: !!(r.po_id || r.po_no?.trim() || r.from_stock) }));
+        setChargers(rows);
+        setOrigChargers(rows);
+        setChargersLoaded(true);
+      });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const setCharger = (key: string, patch: Partial<ChargerDraft>) => setChargers((cs) => cs.map((c) => (c.key === key ? { ...c, ...patch } : c)));
+  const listedChargers = chargers.filter((c) => c.item_name.trim());
+  const chargerQtyBad = listedChargers.some((c) => { const n = Number(c.qty); return !Number.isInteger(n) || n <= 0; });
+  const chargersOk = !withChargers || (chargersLoaded && !chargerQtyBad && (!isNew || listedChargers.length > 0));
+
+  const syncChargers = async (quoteId: string): Promise<string | null> => {
+    if (!withChargers || !chargersLoaded) return null;
+    const kept = new Set(listedChargers.map((c) => c.id).filter(Boolean));
+    const gone = origChargers.filter((o) => !o.locked && !kept.has(o.id)).map((o) => o.id as string);
+    if (gone.length) {
+      const { error: e } = await supabase.from('sales_order_lines').delete().in('id', gone);
+      if (e) return e.message;
+    }
+    const now = new Date().toISOString();
+    for (const [i, c] of listedChargers.entries()) {
+      if (c.locked) continue;
+      const row = { item_id: c.item_id || null, item_name: c.item_name.trim(), qty: Number(c.qty), position: i };
+      const before = origChargers.find((o) => o.id === c.id);
+      if (before && before.item_id === c.item_id && before.qty === c.qty && origChargers.indexOf(before) === i) continue;
+      const { error: e } = c.id
+        ? await supabase.from('sales_order_lines').update({ ...row, updated_at: now }).eq('id', c.id)
+        : await supabase.from('sales_order_lines').insert({ ...row, quote_id: quoteId, created_by: user.full_name || user.email });
+      if (e) return e.message;
+    }
+    return null;
+  };
 
   const [form, setForm] = useState(() => ({
     customer_id: quote?.customer_id ?? '',
@@ -1059,7 +1167,7 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
   // A quote can be saved once a customer, salesperson and at least one quotation
   // amount are set; PDFs stay optional. A Lost quote additionally needs a reason.
   const lostReasonOk = form.status !== 'Lost' || form.lost_reason.trim().length > 0;
-  const canSave = !!form.customer_id && !!form.salesperson_id && maxAmount > 0 && lostReasonOk && !saving;
+  const canSave = !!form.customer_id && !!form.salesperson_id && maxAmount > 0 && lostReasonOk && chargersOk && !saving;
 
   const handleSave = async () => {
     if (!canSave) return;
@@ -1121,11 +1229,13 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
       won_stage: form.status === 'Won' ? form.won_stage : null,
       updated_at: new Date().toISOString(),
     };
-    const { error: err } = isNew
-      ? await supabase.from(table).insert(payload)
-      : await supabase.from(table).update(payload).eq('id', quote.id);
+    const { data: saved, error: err } = isNew
+      ? await supabase.from(table).insert(payload).select('id').single()
+      : await supabase.from(table).update(payload).eq('id', quote.id).select('id').single();
+    if (err || !saved) { setSaving(false); setError(err?.message ?? 'Could not save the quote.'); return; }
+    const chargerErr = await syncChargers((saved as { id: string }).id);
     setSaving(false);
-    if (err) { setError(err.message); return; }
+    if (chargerErr) window.alert(`The quote was saved, but its chargers weren't: ${chargerErr}. Open the quote again to add them.`);
     onSaved();
   };
 
@@ -1303,6 +1413,57 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
             </span>
           </label>
         </div>
+
+        {withChargers && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+              <label style={{ ...label, marginBottom: 0 }}>Chargers{isNew ? ' *' : ''}</label>
+              <span style={{ fontSize: 11, color: C.slate }}>model + quantity · carried to the Order Book when won</span>
+            </div>
+            {!chargersLoaded ? (
+              <div style={{ fontSize: 12, color: C.slate }}>Loading chargers…</div>
+            ) : (
+              <>
+                {chargers.length === 0 && <div style={{ fontSize: 12, color: C.slate }}>No chargers listed{readOnly ? '.' : ' — add the model and quantity.'}</div>}
+                {chargers.map((c) => {
+                  const opts = (chargerItems ?? []).filter((it) => it.active || it.id === c.item_id)
+                    .map((it) => ({ value: it.id, label: it.name, sub: it.brand ?? undefined }));
+                  if (c.item_name && !opts.some((o) => o.value === c.item_id)) opts.unshift({ value: c.item_id || `name:${c.item_name}`, label: c.item_name, sub: 'Not in Stock Levels' });
+                  return (
+                    <div key={c.key} style={{ display: 'grid', gridTemplateColumns: '1fr 100px 32px', gap: 10, alignItems: 'center' }}>
+                      {c.locked ? (
+                        <div style={{ ...input(true), display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <span style={{ fontWeight: 600 }}>{c.item_name}</span>
+                          <span style={{ fontSize: 11, color: C.slate }}>Purchase started — change it in the Order Book</span>
+                        </div>
+                      ) : (
+                        <ItemSearchSelect value={c.item_id || (c.item_name ? `name:${c.item_name}` : '')} options={opts} disabled={readOnly}
+                          placeholder="Pick the charger" emptyText="No chargers match"
+                          onChange={(v) => { const it = chargerItems?.find((x) => x.id === v); if (it) setCharger(c.key, { item_id: it.id, item_name: it.name }); }} />
+                      )}
+                      <input type="number" min={1} step={1} value={c.qty} disabled={readOnly || c.locked} aria-label="Quantity"
+                        onChange={(e) => setCharger(c.key, { qty: e.target.value })} style={{ ...input(readOnly || c.locked), textAlign: 'right' }} />
+                      {!readOnly && !c.locked ? (
+                        <button type="button" onClick={() => setChargers((cs) => cs.filter((x) => x.key !== c.key))} title="Remove this charger"
+                          style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}>
+                          <X size={14} strokeWidth={2.5} />
+                        </button>
+                      ) : <span />}
+                    </div>
+                  );
+                })}
+                {!readOnly && (
+                  <button type="button" onClick={() => setChargers((cs) => [...cs, blankCharger()])}
+                    style={{ alignSelf: 'flex-start', padding: '8px 14px', borderRadius: 10, border: `1px dashed ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <Plus size={13} strokeWidth={2.5} /> Add a charger
+                  </button>
+                )}
+                {isNew && listedChargers.length === 0 && <div style={{ fontSize: 11, color: '#B45309', fontWeight: 600 }}>Pick at least one charger to create the quote.</div>}
+                {chargerQtyBad && <div style={{ fontSize: 11, color: '#C0321A', fontWeight: 600 }}>Each charger needs a whole-number quantity above zero.</div>}
+              </>
+            )}
+          </div>
+        )}
 
         {/* Quotations — one or more versions, each a PDF + amount */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

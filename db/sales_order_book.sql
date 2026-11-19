@@ -6,10 +6,9 @@
 -- Shipments by number), or supplied from existing stock (from_stock). A line
 -- with none of these is a pending purchase.
 --
--- quote_id deliberately has no ON DELETE action: a quote that still has order
--- lines can't be deleted (or moved to the CPO Sales Pipeline, which deletes the
--- original row) until its chargers are removed here, so they're never lost
--- silently. The app turns that 23503 error into a plain message.
+-- quote_id was first created with no ON DELETE action; see the
+-- sales_order_lines_quote_cascade_guard migration at the bottom for the
+-- current rule (cascade, but blocked once a line has a purchase).
 create table public.sales_order_lines (
   id          uuid primary key default gen_random_uuid(),
   quote_id    uuid not null references public.sales_quotations(id),
@@ -39,3 +38,27 @@ select user_id, department, 'sales_orderbook', can_view, can_edit, can_delete
 from public.app_user_permissions
 where department = 'sales' and screen_key = 'sales' and can_view
 on conflict (user_id, department, screen_key) do nothing;
+
+-- 2026-11-19 · migration sales_order_lines_quote_cascade_guard — chargers are
+-- now picked on the quote itself (Sales Pipeline, required for new quotes), so
+-- a quote's plain charger list goes with it when the quote is deleted
+-- (ON DELETE CASCADE). Once a line has a purchase (PO linked, outside PO
+-- number, or from stock) the quote can't be deleted: the guard raises 23503,
+-- which Sales shows as a plain message. Moving a quote that has chargers to the
+-- CPO Sales Pipeline is refused in the app (moveQuote) so they aren't dropped.
+alter table public.sales_order_lines drop constraint sales_order_lines_quote_id_fkey;
+alter table public.sales_order_lines add constraint sales_order_lines_quote_id_fkey
+  foreign key (quote_id) references public.sales_quotations(id) on delete cascade;
+
+create or replace function public.sales_quote_delete_guard() returns trigger
+language plpgsql set search_path = public as $$
+begin
+  if exists (select 1 from sales_order_lines where quote_id = old.id
+             and (po_id is not null or nullif(btrim(po_no), '') is not null or from_stock)) then
+    raise exception 'Quote % has charger purchases on the Order Book', old.ref using errcode = '23503';
+  end if;
+  return old;
+end $$;
+
+create trigger sales_quotations_delete_guard before delete on public.sales_quotations
+  for each row execute function public.sales_quote_delete_guard();
