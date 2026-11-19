@@ -26,6 +26,7 @@ export type FieldType =
   | 'date'
   | 'time'
   | 'signature'
+  | 'part'       // overlay-only: spare part picked from Stock Levels; fills a part-number box
   | 'select'
   | 'charger';
 
@@ -53,6 +54,9 @@ export interface FormField {
   // Overlay text size, as a percentage of the page height (resolution-independent
   // so the on-screen input and the exported PDF match). Unset = auto-fit the box.
   fontSize?: number;
+  // Part-only: the field that receives the picked part's number. Unset = the
+  // text box to its right on the same row; 'none' = fill nothing.
+  fillsFieldId?: string;
 }
 
 export interface OverlayPage {

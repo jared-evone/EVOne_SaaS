@@ -1914,6 +1914,7 @@ const FIELD_TYPE_LABELS: Record<FieldType, string> = {
   textarea: 'Long Text',
   checkbox: 'Checkbox',
   cross: 'Cross', // overlay-only; not offered in the structured builder
+  part: 'Part',   // overlay-only
   photo: 'Photo',
   group: 'Group',
   date: 'Date',

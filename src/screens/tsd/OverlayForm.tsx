@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { C } from '../../theme';
 import { FileText, Camera } from 'lucide-react';
 import { uploadFormPhoto } from '../../lib/formMedia';
+import { supabase } from '../../lib/supabase';
 import type {
   FieldType,
   FormField,
@@ -72,7 +73,40 @@ const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n
 
 const fieldColor = (type: FieldType) =>
   type === 'cross' ? '#C0321A'
+  : type === 'part' ? '#6B21A8'
   : type === 'checkbox' ? C.opal : type === 'textarea' ? C.yellow : type === 'photo' || type === 'signature' ? C.opal : C.green;
+
+// ── Part fields ───────────────────────────────────────────────────
+// A Part field offers the Charger Spare Parts in Stock Levels (read-only — it
+// never touches stock). Picking one also writes its part number, taken from
+// the item's Model / Specification, into the paired text box.
+export interface SparePart { name: string; partNo: string }
+export const partNumberOf = (spec: string | null | undefined) =>
+  (spec ?? '').split('\n')[0].replace(/^\s*BOM(\s*CODE)?\s*[-:–—#]*\s*/i, '').trim();
+let sparePartsCache: Promise<SparePart[]> | null = null;
+function useSpareParts(enabled: boolean): SparePart[] {
+  const [parts, setParts] = useState<SparePart[]>([]);
+  useEffect(() => {
+    if (!enabled) return;
+    let live = true;
+    sparePartsCache ??= Promise.resolve(supabase.from('inv_items').select('name, description').eq('category', 'Charger Spare Parts').eq('active', true).order('name'))
+      .then(({ data }) => ((data ?? []) as { name: string; description: string | null }[]).map((r) => ({ name: r.name, partNo: partNumberOf(r.description) })));
+    void sparePartsCache.then((p) => { if (live) setParts(p); });
+    return () => { live = false; };
+  }, [enabled]);
+  return parts;
+}
+/** The field a Part field writes the part number into, if any. */
+export function partFillTarget(field: FormField, fields: FormField[]): FormField | null {
+  if (field.fillsFieldId === 'none') return null;
+  const explicit = field.fillsFieldId ? fields.find((f) => f.id === field.fillsFieldId) : undefined;
+  if (explicit) return explicit;
+  const mid = (field.y ?? 0) + (field.height ?? 0) / 2;
+  return fields
+    .filter((f) => f.id !== field.id && (f.page ?? 0) === (field.page ?? 0) && (f.type === 'text' || f.type === 'textarea')
+      && (f.x ?? 0) > (field.x ?? 0) && mid >= (f.y ?? 0) && mid <= (f.y ?? 0) + (f.height ?? 0))
+    .sort((a, b) => (a.x ?? 0) - (b.x ?? 0))[0] ?? null;
+}
 
 const OVERLAY_FIELD_LABELS: Partial<Record<FieldType, string>> = {
   text: 'Text',
@@ -83,6 +117,7 @@ const OVERLAY_FIELD_LABELS: Partial<Record<FieldType, string>> = {
   date: 'Date',
   time: 'Time',
   signature: 'Signature',
+  part: 'Part',
 };
 
 // ══════════════════════════════════════════════════════════════════
@@ -174,6 +209,7 @@ export function OverlayEditor({
         : type === 'signature' ? 'Signature'
         : type === 'date' ? 'Date'
         : type === 'time' ? 'Time'
+        : type === 'part' ? 'Part'
         : 'Field',
       page: currentPage,
       x: 10,
@@ -277,6 +313,8 @@ export function OverlayEditor({
           onRename={(label) => menuField && updateField(menuField.id, { label })}
           onFontSize={(size) => menuField && updateField(menuField.id, { fontSize: size })}
           onToggleRequired={() => menuField && updateField(menuField.id, { required: !menuField.required })}
+          pageFields={pageFields}
+          onFills={(id) => menuField && updateField(menuField.id, { fillsFieldId: id })}
           onDelete={() => menuField && removeField(menuField.id)}
           onClose={() => setMenu(null)}
         />
@@ -371,7 +409,7 @@ function Toolbar({
       >
         Place field:
       </span>
-      {(['text', 'textarea', 'checkbox', 'cross', 'photo', 'date', 'time', 'signature'] as FieldType[]).map((t) => (
+      {(['text', 'textarea', 'part', 'checkbox', 'cross', 'photo', 'date', 'time', 'signature'] as FieldType[]).map((t) => (
         <button
           key={t}
           onClick={() => onAdd(t)}
@@ -654,7 +692,7 @@ function FieldBox({
       }}
     >
       <span style={{ pointerEvents: 'none', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', maxWidth: '100%',
-        ...(['text', 'textarea', 'date'].includes(field.type) && field.fontSize ? { fontSize: `${field.fontSize}cqh`, textTransform: 'none' as const } : {}) }}>
+        ...(['text', 'textarea', 'date', 'part'].includes(field.type) && field.fontSize ? { fontSize: `${field.fontSize}cqh`, textTransform: 'none' as const } : {}) }}>
         {field.type === 'checkbox' ? '☐' : field.type === 'cross' ? '✕' : field.label}
       </span>
       {selected && (
@@ -750,9 +788,10 @@ function FontSizeRow({ value, onChange }: { value: number | undefined; onChange:
 
 function FieldContextMenu({
   x, y, field, hasClipboard,
-  onCopy, onDuplicate, onPaste, onRename, onFontSize, onToggleRequired, onDelete, onClose,
+  onCopy, onDuplicate, onPaste, onRename, onFontSize, onToggleRequired, onDelete, onClose, pageFields, onFills,
 }: {
   x: number; y: number; field: FormField | null; hasClipboard: boolean;
+  pageFields: FormField[]; onFills: (id: string | undefined) => void;
   onCopy: () => void; onDuplicate: () => void; onPaste: () => void;
   onRename: (label: string) => void; onFontSize: (size: number | undefined) => void;
   onToggleRequired: () => void; onDelete: () => void; onClose: () => void;
@@ -783,7 +822,11 @@ function FieldContextMenu({
     );
   }
 
-  const isText = ['text', 'textarea', 'date', 'time'].includes(field.type);
+  const isText = ['text', 'textarea', 'date', 'time', 'part'].includes(field.type);
+  const fillChoices = pageFields.filter((f) => f.id !== field.id && (f.type === 'text' || f.type === 'textarea'))
+    .sort((a, b) => (a.y ?? 0) - (b.y ?? 0) || (a.x ?? 0) - (b.x ?? 0));
+  const autoTarget = field.type === 'part' ? partFillTarget({ ...field, fillsFieldId: undefined }, pageFields) : null;
+  const where = (f: FormField) => `${f.label} — ${Math.round(f.x ?? 0)}% across, ${Math.round(f.y ?? 0)}% down`;
   return (
     <div ref={ref} style={box}>
       <MenuAction label="Copy" onClick={() => { onCopy(); onClose(); }} />
@@ -792,6 +835,17 @@ function FieldContextMenu({
       {divider}
       <RenameRow value={field.label} onChange={onRename} onClose={onClose} />
       {isText && <FontSizeRow value={field.fontSize} onChange={onFontSize} />}
+      {field.type === 'part' && (
+        <div style={{ padding: '6px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Part number goes into</span>
+          <select value={field.fillsFieldId ?? ''} onChange={(e) => onFills(e.target.value || undefined)}
+            style={{ width: '100%', padding: '6px 8px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 12, background: C.white, outline: 'none' }}>
+            <option value="">{autoTarget ? `Auto — box to the right (${Math.round(autoTarget.x ?? 0)}% across)` : 'Auto — no box to the right yet'}</option>
+            {fillChoices.map((f) => <option key={f.id} value={f.id}>{where(f)}</option>)}
+            <option value="none">Nothing — name only</option>
+          </select>
+        </div>
+      )}
       {field.type !== 'checkbox' && field.type !== 'cross' && (
         <MenuAction label={`${field.required ? '✓ ' : ''}Required when filling`} onClick={onToggleRequired} />
       )}
@@ -817,6 +871,7 @@ export function OverlayFormRenderer({
   disabled?: boolean;
 }) {
   const pages = pagesOf(template);
+  const parts = useSpareParts(!disabled && template.fields.some((f) => f.type === 'part'));
   if (!pages.length) {
     return (
       <div
@@ -887,6 +942,11 @@ export function OverlayFormRenderer({
                   value={values[f.id]}
                   onChange={(v) => onChange(f.id, v)}
                   disabled={disabled}
+                  parts={parts}
+                  onPickPart={(part) => {
+                    const target = partFillTarget(f, template.fields);
+                    if (target) onChange(target.id, part.partNo);
+                  }}
                 />
               ))}
           </div>
@@ -901,11 +961,15 @@ function OverlayInput({
   value,
   onChange,
   disabled,
+  parts,
+  onPickPart,
 }: {
   field: FormField;
   value: string | boolean | undefined;
   onChange: (v: string | boolean) => void;
   disabled: boolean;
+  parts: SparePart[];
+  onPickPart: (part: SparePart) => void;
 }) {
   const [uploading, setUploading] = useState(false);
   const base: React.CSSProperties = {
@@ -980,6 +1044,43 @@ function OverlayInput({
   const strVal = typeof value === 'string' ? value : '';
   // Explicit text size (as % of page height via container-query units) or default.
   const textFont = field.fontSize ? `${field.fontSize}cqh` : undefined;
+
+  // Part: type to search the spare parts, or type a part that isn't listed.
+  // Choosing a listed part also fills its part number into the paired box.
+  if (field.type === 'part') {
+    const listId = `parts-${field.id}`;
+    return (
+      <>
+        <input
+          value={strVal}
+          disabled={disabled}
+          list={listId}
+          placeholder={field.label}
+          autoComplete="off"
+          onChange={(e) => {
+            const v = e.target.value;
+            onChange(v);
+            const hit = parts.find((p) => p.name.toLowerCase() === v.trim().toLowerCase());
+            if (hit) onPickPart(hit);
+          }}
+          style={{
+            ...base,
+            background: 'rgba(255,255,255,0.85)',
+            border: `1px solid ${disabled ? 'transparent' : '#DADADA'}`,
+            borderRadius: 4,
+            fontFamily: 'Figtree',
+            fontSize: textFont ?? 12,
+            padding: '2px 6px',
+            outline: 'none',
+            color: '#1a1a1a',
+          }}
+        />
+        <datalist id={listId}>
+          {parts.map((p) => <option key={p.name} value={p.name}>{p.partNo}</option>)}
+        </datalist>
+      </>
+    );
+  }
 
   if (field.type === 'date' || field.type === 'time') {
     return (
