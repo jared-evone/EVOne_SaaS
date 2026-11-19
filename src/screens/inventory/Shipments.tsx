@@ -11,6 +11,7 @@ import {
   Pill, Field, ErrorBanner, Modal, ItemSelect, LocationSelect, SearchBox, downloadCsv, LookupSelect, LookupList, useLookupRows, type LookupRow,
   inputStyle, primaryBtn, ghostBtn, pillBtn, thStyle, tdStyle,
   type InvItem, type InvShipment, type InvLocation, type OnHand, type InvGrn,
+  SHIPMENT_TYPES, type ShipmentType,
 } from './invShared';
 
 type ShipStatus = InvShipment['status'];
@@ -95,6 +96,7 @@ export function ScreenInvShipments() {
   const refresh = async () => { await Promise.all([load(), reloadCore()]); };
 
   const [filter, setFilter] = useState<Filter>('open');
+  const [typeFilter, setTypeFilter] = useState<'all' | ShipmentType>('all');
   const [search, setSearch] = useState('');
   const [openId, setOpenId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -131,23 +133,25 @@ export function ScreenInvShipments() {
   // What to chase the supplier about: part-delivered, or a receipt still outstanding.
   const notCompleted = (s: Shipment) => stateOf(s) === 'partial' || stateOf(s) === 'pending';
 
+  const typeOf = (s: Shipment): ShipmentType => s.head.shipment_type ?? 'purchase';
   const visible = groups.filter((s) => {
     const st = stateOf(s);
+    if (typeFilter !== 'all' && typeOf(s) !== typeFilter) return false;
     if (filter === 'open' && !isOpenShip(s)) return false;
     if (filter === 'not_completed' && !notCompleted(s)) return false;
     if (!['open', 'not_completed', 'all'].includes(filter) && st !== filter) return false;
     const q = search.trim().toLowerCase();
     if (!q) return true;
     const h = s.head;
-    return [h.po_no, h.supplier, h.customer, h.employee, ...s.lines.flatMap((l) => [l.description, itemLabel(items.find((i) => i.id === l.item_id), items)])]
+    return [h.po_no, h.supplier, h.customer, h.employee, SHIPMENT_TYPES.find((t) => t.value === typeOf(s))?.label, ...s.lines.flatMap((l) => [l.description, itemLabel(items.find((i) => i.id === l.item_id), items)])]
       .join(' ').toLowerCase().includes(q);
   });
 
   const exportCsv = () => {
     downloadCsv(`incoming_shipments_${today}.csv`, [
-      ['PO', 'Supplier', 'Employee', 'Customer', 'Excel No', 'Description', 'Item', 'Qty Ordered', 'Qty Received', 'Outstanding', 'Mode', 'Order Date', 'In Transit Date', 'Est. Arrival', 'Shipment Status'],
+      ['PO', 'Type', 'Supplier', 'Employee', 'Customer', 'Excel No', 'Description', 'Item', 'Qty Ordered', 'Qty Received', 'Outstanding', 'Mode', 'Order Date', 'In Transit Date', 'Est. Arrival', 'Shipment Status'],
       ...visible.flatMap((s) => s.lines.map((l) => [
-        s.head.po_no, s.head.supplier, s.head.employee, s.head.customer, l.legacy_no, l.description, itemLabel(items.find((i) => i.id === l.item_id), items),
+        s.head.po_no, SHIPMENT_TYPES.find((t) => t.value === typeOf(s))?.label ?? 'Purchase', s.head.supplier, s.head.employee, s.head.customer, l.legacy_no, l.description, itemLabel(items.find((i) => i.id === l.item_id), items),
         l.qty, gotOf(l) || null, lineOutstanding(l), s.head.mode, s.head.order_date, s.head.in_transit_date, s.head.eta ?? s.head.eta_note, STATE_META[stateOf(s)].label,
       ])),
     ]);
@@ -194,6 +198,10 @@ export function ScreenInvShipments() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <SearchBox value={search} onChange={setSearch} placeholder="Search PO, supplier, item…" />
         {FILTERS.map((f) => <button key={f.id} onClick={() => setFilter(f.id)} style={pillBtn(filter === f.id)}>{f.label}</button>)}
+        <div style={{ width: 170 }}>
+          <SearchSelect value={typeFilter} onChange={(v) => setTypeFilter(v as 'all' | ShipmentType)} placeholder="All types"
+            options={[{ value: 'all', label: 'All types' }, ...SHIPMENT_TYPES]} />
+        </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           {canDelete && <button onClick={() => setManagingSuppliers(true)} style={{ ...ghostBtn, display: 'inline-flex', alignItems: 'center', gap: 6 }}><Building2 size={13} /> Suppliers</button>}
           <button onClick={exportCsv} style={{ ...ghostBtn, display: 'inline-flex', alignItems: 'center', gap: 6 }}><Download size={13} /> Export</button>
@@ -224,6 +232,7 @@ export function ScreenInvShipments() {
                       {h.po_no || <span style={{ color: C.slate }}>No PO</span>}
                       {h.po_pdf_path && <Paperclip size={12} strokeWidth={2.25} style={{ display: 'inline', verticalAlign: '-1px', marginLeft: 5, color: C.slate }} aria-label="PO PDF attached" />}
                       {h.po_id && <div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>From Raise PO</div>}
+                      {typeOf(s) === 'warranty_claim' && <div style={{ marginTop: 4 }}><Pill bg="#FFF0E0" color="#B45309">Warranty claim</Pill></div>}
                       {excel.length > 0 && <div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>Excel #{excel.join(', ')}</div>}
                     </td>
                     <td style={tdStyle}>{h.supplier || '—'}{h.customer && <div style={{ fontSize: 11, color: C.slate }}>For {h.customer}</div>}</td>
@@ -309,6 +318,7 @@ function ShipmentModal({ shipment, state, received, receipts, items, locations, 
     supplier: head?.supplier ?? '', po_no: head?.po_no ?? '', customer: head?.customer ?? '', customer_id: head?.customer_id ?? '',
     mode: head?.mode ?? '', order_date: head?.order_date ?? todayISO(), in_transit_date: head?.in_transit_date ?? '',
     eta: head?.eta ?? '', eta_note: head?.eta_note ?? '', notes: head?.notes ?? '',
+    shipment_type: (head?.shipment_type ?? 'purchase') as ShipmentType,
   };
   const initLines: LineDraft[] = shipment
     ? shipment.lines.map((l) => ({
@@ -369,6 +379,8 @@ function ShipmentModal({ shipment, state, received, receipts, items, locations, 
       customer_id: f.customer_id || null, customer: f.customer.trim() || null,
       mode: f.mode || null, order_date: f.order_date || null, in_transit_date: f.in_transit_date || null,
       eta: f.eta || null, eta_note: f.eta_note.trim() || null, notes: f.notes.trim() || null, updated_at: new Date().toISOString(),
+      // A shipment raised from a PO is a purchase, whatever the form says.
+      shipment_type: head?.po_id ? 'purchase' : f.shipment_type,
       ...headerExtra,
     };
     const lineFields = (l: LineDraft) => {
@@ -476,6 +488,10 @@ function ShipmentModal({ shipment, state, received, receipts, items, locations, 
       {head?.notes && <div style={{ background: '#FFF8E1', color: '#7A5A00', borderRadius: 10, padding: '10px 14px', fontSize: 12, lineHeight: 1.5 }}>{head.notes}</div>}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+        <Field label="Type" hint={head?.po_id ? 'From Raise PO — always a purchase' : undefined}>
+          <SearchSelect value={head?.po_id ? 'purchase' : f.shipment_type} disabled={ro || !!head?.po_id} placeholder="Select type"
+            options={SHIPMENT_TYPES} onChange={(v) => setF({ ...f, shipment_type: v as ShipmentType })} />
+        </Field>
         <Field label="Supplier">
           <LookupSelect kind="supplier" value={f.supplier} options={suppliers} isAdmin={isAdmin} disabled={ro}
             onChange={(v) => setF({ ...f, supplier: v })} onAdded={reloadSuppliers} />

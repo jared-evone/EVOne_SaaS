@@ -92,6 +92,7 @@ export interface InvShipment {
   group_id: string;
   po_pdf_path?: string | null;
   po_pdf_name?: string | null;
+  shipment_type?: ShipmentType;
   warranty: string | null;
   description: string;
   item_id: string | null;
@@ -294,6 +295,12 @@ export function Field({ label, children, hint }: { label: string; children: Reac
 // ── Customers (read-only here) ───────────────────────────────────
 // Requests name the company, the person to contact and the delivery address;
 // all three default from Customers and can be changed per request.
+
+export type ShipmentType = 'purchase' | 'warranty_claim';
+export const SHIPMENT_TYPES: { value: ShipmentType; label: string }[] = [
+  { value: 'purchase', label: 'Purchase' },
+  { value: 'warranty_claim', label: 'Warranty claim' },
+];
 
 export interface CustomerOpt { id: string; name: string; address: string | null; }
 export interface ContactOpt { customer_id: string; name: string; phone: string | null; position: number; }

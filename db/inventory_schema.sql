@@ -658,3 +658,11 @@ select setval('po_number_seq', 249, true);
 alter table public.purchase_orders
   add column if not exists customer_id uuid references public.customers(id) on delete set null,
   add column if not exists customer_name text;
+
+-- 2026-11-19 · migration inv_shipments_type — a shipment is a Purchase or a
+-- Warranty claim (header field: every line of a group carries the same value).
+-- Existing rows took the default, 'purchase'; inv_shipments_from_po doesn't
+-- name the column, so shipments created from Raise PO are always 'purchase'.
+alter table public.inv_shipments
+  add column if not exists shipment_type text not null default 'purchase'
+  check (shipment_type in ('purchase', 'warranty_claim'));
