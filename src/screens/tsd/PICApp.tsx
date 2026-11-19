@@ -862,7 +862,9 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
             <div style={{ display: 'inline-flex', gap: 6 }}>
               {(['warranty', 'invoice'] as const).map((t) => {
                 const on = review.jobType === t;
-                const locked = completed && !on;
+                // Jobs completed before these steps existed can still be corrected in
+                // place (type, times, amount); ones completed through them are final.
+                const locked = completed && !on && !canReopen;
                 return (
                   <button key={t} disabled={locked} onClick={() => pickJobType(t)}
                     style={{ padding: '8px 20px', borderRadius: 99, border: `1px solid ${on ? C.green : '#EBEBEB'}`, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700,

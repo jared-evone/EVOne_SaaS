@@ -364,6 +364,8 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
   // Work-order writes go to the server one at a time, in the order they were
   // made — a whole-blob save followed by a status patch must not land reversed,
   // or the older blob would put the old status back.
+  const workOrdersRef = useRef<WorkOrder[]>([]);
+  workOrdersRef.current = workOrders;
   const writeQueue = useRef<Promise<unknown>>(Promise.resolve());
   const enqueue = (run: () => PromiseLike<unknown>) => { writeQueue.current = writeQueue.current.then(run, run); };
   const persistWorkOrder = (wo: WorkOrder) => {
@@ -466,13 +468,28 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
       ),
 
     createWorkOrder: (input) => {
-      const id = `WO-2026-${String(Date.now()).slice(-4)}`;
+      // The id must be NEW. It used to be the last four digits of the clock,
+      // written with an upsert — so a repeat silently replaced an existing work
+      // order, report and all. Pick a number no loaded work order uses, and
+      // INSERT (never upsert) so the database refuses a duplicate instead.
+      const taken = new Set(workOrdersRef.current.map((w) => w.id));
+      let id = '';
+      for (let i = 0; i < 200 && (!id || taken.has(id)); i++) id = `WO-2026-${String(Math.floor(Math.random() * 10000)).padStart(4, '0')}`;
+      if (taken.has(id)) id = `WO-2026-${Date.now()}`;
       // open = unassigned, assigned = a technician is on it. Derive from the
       // initial assignment so a WO created with a tech opens as "assigned".
       const status: WorkOrderStatus = assigneesOf(input).length ? 'assigned' : 'open';
       const wo: WorkOrder = { id, status, response: null, ...input };
       setWorkOrders((ws) => [wo, ...ws]);
-      persistWorkOrder(wo);
+      enqueue(() => supabase.from('tsd_work_orders').insert({ id: wo.id, data: wo, updated_at: new Date().toISOString() }).then(({ error }) => {
+        if (error) {
+          console.error('create work order failed', error);
+          setWorkOrders((ws) => ws.filter((w) => w !== wo));
+          alert(error.code === '23505'
+            ? `Work order number ${wo.id} is already in use, so nothing was saved (the existing work order is untouched). Please create it again.`
+            : `Creating the work order failed — it is NOT saved.\n\n${error.message}`);
+        }
+      }));
     },
 
     reassign: (id, techs) =>

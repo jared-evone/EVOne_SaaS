@@ -107,6 +107,28 @@ the answers.
    merges with `formsAreFull()` in [workOrderStore](src/workOrderStore.tsx) —
    keep that check when touching the load path.
 
+5. **A new work order is INSERTED, never upserted, under an id nothing else
+   uses.** Ids were once the last four digits of the clock written with an
+   upsert, so a repeated number silently replaced an existing work order —
+   19 reports were overwritten this way between Aug and Nov 2026 (recoverable
+   only because of the history table below). `createWorkOrder` now picks an
+   unused number and inserts; a duplicate is refused by the primary key. Never
+   use `upsert` to create a row whose id you generated on the client.
+
+**Never erase, always flag.** The owner's standing instruction (Nov 2026):
+
+- A change must not remove or blank existing data — form answers above all,
+  but also review details, statuses and records in any module. Prefer additive
+  changes (new optional fields, new rows); when a feature stops showing a
+  value, keep storing it.
+- Before any change or migration that could alter, overwrite, hide or delete
+  existing data — or that makes old and new app versions disagree about the
+  same rows (dev and production share ONE database) — say so plainly and wait
+  for a go-ahead. Take `backup.tsd_snapshot('label')` first when work orders
+  or templates are involved.
+- When you find evidence of lost or overwritten data, report it immediately,
+  with what is recoverable and how, before doing anything else.
+
 **New media goes to Storage, never into the blob.** Use `uploadFormPhoto` /
 `uploadFormPdf` from [lib/formMedia.ts](src/lib/formMedia.ts); the value stored in
 the form is a public URL. Readers accept both that and legacy inline base64, so
