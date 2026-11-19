@@ -574,6 +574,7 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
   const actor = user.full_name && user.full_name !== user.email ? `${user.full_name} (${user.email})` : user.email;
   const [syncOpen, setSyncOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmReopen, setConfirmReopen] = useState(false);
   const [forms, setForms] = useState<WorkOrderForm[]>(() => workOrder.forms.map((f) => ({ ...f, values: { ...(f.values ?? {}) } })));
   const [dirty, setDirty] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -650,7 +651,13 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
   const missing: string[] = !review.jobType ? ['choose Warranty or Invoice']
     : review.jobType === 'warranty'
       ? [!review.startTime && 'start time', !review.endTime && 'end time', reviewTechs.length === 0 && 'technician(s)'].filter((x): x is string => !!x)
-      : [review.quotedPrice == null && 'invoice amount', !review.invoiced && 'tick Invoiced once the invoice is issued'].filter((x): x is string => !!x);
+      : [!review.startTime && 'start time', !review.endTime && 'end time', reviewTechs.length === 0 && 'technician(s)',
+          review.quotedPrice == null && 'invoice amount', !review.invoiced && 'tick Invoiced once the invoice is issued'].filter((x): x is string => !!x);
+  // Jobs completed before the Warranty / Invoice steps existed carry no
+  // "completed" entry in the review log; those can be reopened once to record
+  // the job type. Anything completed through the new steps is final.
+  const canReopen = completed && can('tsd_pic', 'can_edit') && !(workOrder.reviewLog ?? []).some((e) => e.status === 'completed');
+  const handleReopen = () => { setConfirmReopen(false); setReview((r) => ({ ...r, jobType: null })); store.setReviewStage(workOrder.id, 'reviewed', actor); flash('Reopened — choose Warranty or Invoice, then complete it again.'); };
   const saveForms = () => { if (dirty) { store.amend(workOrder.id, forms, actor); setDirty(false); } };
   const handleSave = () => { saveForms(); if (reviewDirty) saveReview(); flash('Changes saved.'); };
   const handleApprove = () => { saveForms(); store.setReviewStage(workOrder.id, 'reviewed', actor); flash('Report approved — now choose Warranty or Invoice.'); };
@@ -729,6 +736,12 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
             </button>
           )}
           {/* Export PDF only after the report is approved & completed. */}
+          {canReopen && (
+            <button onClick={() => setConfirmReopen(true)} title="Completed before the Warranty / Invoice steps — reopen to record the job type"
+              style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              Reopen for Warranty / Invoice
+            </button>
+          )}
           {hasTemplated && completed && (
             <button onClick={() => setPdfOpen(true)}
               style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
@@ -773,6 +786,19 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
           )}
         </div>
       </div>
+
+      {confirmReopen && (
+        <div style={{ background: '#FFF8E1', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#B07D00' }}>Reopen {workOrder.id}?</div>
+          <div style={{ fontSize: 12, color: '#B07D00' }}>It goes back to Reviewed so you can record Warranty or Invoice. The report itself is not changed. Once you complete it again, it can't be reopened.</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => setConfirmReopen(false)}
+              style={{ padding: '8px 16px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+            <button onClick={handleReopen}
+              style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Yes, reopen</button>
+          </div>
+        </div>
+      )}
 
       {confirmDelete && (
         <div style={{ background: '#FDEAEA', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -856,7 +882,7 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
           </div>
         </div>
 
-        {review.jobType === 'warranty' && (
+        {review.jobType && (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Start Time *</label>
