@@ -143,6 +143,8 @@ export interface WorkOrder {
   response: FormResponse | null;
   /** Optional — absent on work orders reviewed before the feature existed. */
   picReview?: PicReview | null;
+  /** Position within its day on the jobs calendar (lower = earlier); unset = after the arranged ones. */
+  calendarOrder?: number | null;
   /** Who moved the job through each review step, oldest first. */
   reviewLog?: ReviewLogEntry[] | null;
   /** Forms filed into the Charger Registry after approval, keyed by form id. */
@@ -234,6 +236,8 @@ interface Store {
    *  of syncs writes its tracking in order. */
   setRegistrySync(workOrderId: string, sync: Record<string, RegistrySyncEntry>): Promise<void>;
   reschedule(workOrderId: string, date: string): void;
+  /** Set a day's job sequence on the calendar: ids top to bottom, all moved to `date` (metadata patches). */
+  arrangeDay(date: string, orderedIds: string[]): void;
   deleteWorkOrder(workOrderId: string): void;
   saveTemplate(template: FormTemplate): void;
   deleteTemplate(templateId: string): void;
@@ -477,6 +481,16 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
             w.status === 'open' || w.status === 'assigned' ? (techs.length ? 'assigned' : 'open') : w.status;
           patchWorkOrder(id, { assignedTo: techs, status });
           return { ...w, assignedTo: techs, status };
+        }),
+      ),
+
+    arrangeDay: (date, orderedIds) =>
+      setWorkOrders((ws) =>
+        ws.map((w) => {
+          const i = orderedIds.indexOf(w.id);
+          if (i < 0 || (w.calendarOrder === i && w.scheduledDate === date)) return w;
+          patchWorkOrder(w.id, { calendarOrder: i, scheduledDate: date });
+          return { ...w, calendarOrder: i, scheduledDate: date };
         }),
       ),
 

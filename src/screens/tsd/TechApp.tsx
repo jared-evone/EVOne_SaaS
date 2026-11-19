@@ -153,7 +153,7 @@ export function TechApp({ onBack, onSignOut }: TechAppProps = {}) {
             ))}
           </div>
 
-          <JobCalendar key={adminFilter} jobs={adminVisible} techPhotos={techPhotos} onOpen={(id) => { setActiveId(id); setActiveFormId(null); }} onReschedule={(id, date) => store.reschedule(id, date)} />
+          <JobCalendar key={adminFilter} jobs={adminVisible} techPhotos={techPhotos} onOpen={(id) => { setActiveId(id); setActiveFormId(null); }} onReschedule={(id, date) => store.reschedule(id, date)} onArrange={(date, ids) => store.arrangeDay(date, ids)} />
         </div>
       </Shell>
       {jobModal}
@@ -457,10 +457,18 @@ const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), 
 // Monday-based, matching the WEEKDAYS header.
 const startOfWeek = (d: Date) => addDays(d, -((d.getDay() + 6) % 7));
 
-function JobCalendar({ jobs, onOpen, onReschedule, techPhotos }: { jobs: WorkOrder[]; onOpen: (id: string) => void; onReschedule?: (id: string, date: string) => void; techPhotos?: Map<string, string | null> }) {
+function JobCalendar({ jobs, onOpen, onReschedule, onArrange, techPhotos }: { jobs: WorkOrder[]; onOpen: (id: string) => void; onReschedule?: (id: string, date: string) => void; onArrange?: (date: string, orderedIds: string[]) => void; techPhotos?: Map<string, string | null> }) {
   const [dragOverIso, setDragOverIso] = useState<string | null>(null);
   useEffect(() => {
     const clear = () => setDragOverIso(null);
+    document.addEventListener('dragend', clear);
+    return () => document.removeEventListener('dragend', clear);
+  }, []);
+
+  // Card being hovered while dragging: the dragged job lands above or below it.
+  const [slot, setSlot] = useState<{ id: string; after: boolean } | null>(null);
+  useEffect(() => {
+    const clear = () => setSlot(null);
     document.addEventListener('dragend', clear);
     return () => document.removeEventListener('dragend', clear);
   }, []);
@@ -487,6 +495,11 @@ function JobCalendar({ jobs, onOpen, onReschedule, techPhotos }: { jobs: WorkOrd
       if (!j.scheduledDate) continue;
       const arr = m.get(j.scheduledDate);
       if (arr) arr.push(j); else m.set(j.scheduledDate, [j]);
+    }
+    // Hand-arranged jobs first, in their set order; the rest keep their usual order below.
+    for (const arr of m.values()) {
+      const pos = new Map(arr.map((j, i) => [j.id, i]));
+      arr.sort((a, b) => (a.calendarOrder ?? 1e9) - (b.calendarOrder ?? 1e9) || pos.get(a.id)! - pos.get(b.id)!);
     }
     return m;
   }, [jobs]);
@@ -554,12 +567,15 @@ function JobCalendar({ jobs, onOpen, onReschedule, techPhotos }: { jobs: WorkOrd
           const isDropTarget = dragOverIso === iso;
           return (
             <div key={i}
-              onDragOver={onReschedule ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dragOverIso !== iso) setDragOverIso(iso); } : undefined}
+              onDragOver={onReschedule ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (slot) setSlot(null); if (dragOverIso !== iso) setDragOverIso(iso); } : undefined}
               onDrop={onReschedule ? (e) => {
                 e.preventDefault();
                 const id = e.dataTransfer.getData('text/plain');
                 setDragOverIso(null);
-                if (id) onReschedule(id, iso);
+                if (!id) return;
+                // Dropped on the day itself (not on a card): goes to the bottom of that day.
+                if (onArrange) onArrange(iso, [...dayJobs.map((x) => x.id).filter((x) => x !== id), id]);
+                else onReschedule(id, iso);
               } : undefined}
               style={{
                 minHeight: mode === 'week' ? 460 : 140,
@@ -588,7 +604,28 @@ function JobCalendar({ jobs, onOpen, onReschedule, techPhotos }: { jobs: WorkOrd
                   used to swallow busy days' cards past the cutoff. */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: mode === 'week' ? 6 : 3, overflowX: 'hidden', minWidth: 0 }}>
                 {(mode === 'month' && !expandedDays.has(iso) ? dayJobs.slice(0, MONTH_ROWS) : dayJobs).map((j) => (
-                  <CalendarJobCard key={j.id} wo={j} onOpen={() => onOpen(j.id)} draggable={!!onReschedule} compact={mode === 'month'} techPhotos={techPhotos} />
+                  <div key={j.id}
+                    onDragOver={onArrange ? (e) => {
+                      e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'move';
+                      const r = e.currentTarget.getBoundingClientRect();
+                      const after = e.clientY > r.top + r.height / 2;
+                      if (dragOverIso !== null) setDragOverIso(null);
+                      if (slot?.id !== j.id || slot.after !== after) setSlot({ id: j.id, after });
+                    } : undefined}
+                    onDrop={onArrange ? (e) => {
+                      e.preventDefault(); e.stopPropagation();
+                      const id = e.dataTransfer.getData('text/plain');
+                      const at = slot?.id === j.id ? slot.after : false;
+                      setSlot(null);
+                      if (!id || id === j.id) return;
+                      const ids = dayJobs.map((x) => x.id).filter((x) => x !== id);
+                      ids.splice(ids.indexOf(j.id) + (at ? 1 : 0), 0, id);
+                      onArrange(iso, ids);
+                    } : undefined}
+                    style={{ minWidth: 0, display: 'flex', flexDirection: 'column',
+                      boxShadow: slot?.id === j.id ? (slot.after ? `0 3px 0 0 ${C.green}` : `0 -3px 0 0 ${C.green}`) : 'none' }}>
+                    <CalendarJobCard wo={j} onOpen={() => onOpen(j.id)} draggable={!!onReschedule} compact={mode === 'month'} techPhotos={techPhotos} />
+                  </div>
                 ))}
                 {mode === 'month' && dayJobs.length > MONTH_ROWS && (
                   <button onClick={() => toggleDay(iso)}
@@ -614,7 +651,7 @@ function CalendarJobCard({ wo, onOpen, draggable, compact, techPhotos }: { wo: W
     onDragStart: draggable ? (e: React.DragEvent) => { e.dataTransfer.setData('text/plain', wo.id); e.dataTransfer.effectAllowed = 'move'; } : undefined,
   };
   const techs = assigneesOf(wo);
-  const hint = `${wo.customer} · ${wo.title}\n${techs.length ? techs.join(', ') : 'Unassigned'} · ${sc.label}${draggable ? '\nDrag to another day to reschedule' : ''}`;
+  const hint = `${wo.customer} · ${wo.title}\n${techs.length ? techs.join(', ') : 'Unassigned'} · ${sc.label}${draggable ? '\nDrag up or down to reorder, or to another day to reschedule' : ''}`;
 
   // Month view: one narrow row per job — the technician's face instead of a
   // status dot, so a month reads as "who is where" at a glance.
@@ -645,7 +682,7 @@ function CalendarJobCard({ wo, onOpen, draggable, compact, techPhotos }: { wo: W
   }
 
   return (
-    <button onClick={onOpen} {...dragProps} title={draggable ? 'Drag to another day to reschedule' : undefined}
+    <button onClick={onOpen} {...dragProps} title={draggable ? 'Drag up or down to reorder, or to another day to reschedule' : undefined}
       style={{
         textAlign: 'left', width: '100%', minWidth: 0, overflow: 'hidden',
         border: '1px solid #EBEBEB', borderLeft: `3px solid ${priorityColor}`, borderRadius: 10,
