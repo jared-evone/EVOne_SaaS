@@ -640,27 +640,35 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
   const syncDest = cpoCustomer ? 'CPO Chargers' : 'Charger Registry';
   const registrySynced = filedFormCount(workOrder.registrySync);
 
-  // Submitted → (Approve) Reviewed → (pick job type, key in its details,
-  // Approve) Warranty / Invoice → (Complete) Completed.
+  // Submitted → (Approve) Reviewed → (pick the job type) Warranty / Invoice →
+  // (its details filled in, Complete) Completed. Picking the type moves the
+  // status straight away, so the list shows which jobs still have details —
+  // an invoice not yet issued, say — outstanding.
   const stage = workOrder.status;
   const typed = stage === 'warranty' || stage === 'invoice';
   const reviewStarted = stage === 'reviewed' || typed || completed;
   const missing: string[] = !review.jobType ? ['choose Warranty or Invoice']
     : review.jobType === 'warranty'
       ? [!review.startTime && 'start time', !review.endTime && 'end time', reviewTechs.length === 0 && 'technician(s)'].filter((x): x is string => !!x)
-      : [review.quotedPrice == null && 'invoice amount'].filter((x): x is string => !!x);
+      : [review.quotedPrice == null && 'invoice amount', !review.invoiced && 'tick Invoiced once the invoice is issued'].filter((x): x is string => !!x);
   const saveForms = () => { if (dirty) { store.amend(workOrder.id, forms, actor); setDirty(false); } };
   const handleSave = () => { saveForms(); if (reviewDirty) saveReview(); flash('Changes saved.'); };
   const handleApprove = () => { saveForms(); store.setReviewStage(workOrder.id, 'reviewed', actor); flash('Report approved — now choose Warranty or Invoice.'); };
-  const handleConfirmType = () => {
-    if (missing.length || !review.jobType) return;
+  const pickJobType = (t: 'warranty' | 'invoice') => {
+    if (review.jobType === t && stage === t) return;
+    const next = { ...review, jobType: t, warranty: t === 'warranty' };
+    setReview(next);
+    store.setPicReview(workOrder.id, { ...next, reviewedAt: new Date().toISOString().slice(0, 10), reviewedBy: actor });
+    setReviewDirty(false);
+    if (!completed) store.setReviewStage(workOrder.id, t, actor);
+  };
+  const handleComplete = () => {
+    if (missing.length) return;
     saveForms();
     saveReview();
-    store.setReviewStage(workOrder.id, review.jobType, actor);
-    flash(`${review.jobType === 'warranty' ? 'Warranty' : 'Invoice'} details approved — ready to complete.`);
+    store.setReviewStage(workOrder.id, 'completed', actor);
+    flash('Marked completed.');
   };
-  const handleComplete = () => { saveForms(); if (reviewDirty) saveReview(); store.setReviewStage(workOrder.id, 'completed', actor); flash('Marked completed.'); };
-  const handleReopenType = () => { store.setReviewStage(workOrder.id, 'reviewed', actor); flash('Back to Reviewed — change the job type or its details.'); };
   const handleDelete = () => { setConfirmDelete(false); store.deleteWorkOrder(workOrder.id); onDeleted?.(); };
 
   const hasTemplated = forms.some((f) => !!store.getTemplate(f.templateId));
@@ -750,23 +758,12 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
                 style={{ padding: '8px 14px', borderRadius: 8, border: `1px solid ${dirty ? C.green : '#EBEBEB'}`, background: dirty ? C.honeydew : C.white, color: dirty ? C.green : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: dirty ? 'pointer' : 'not-allowed' }}>
                 Save changes
               </button>
-              {typed && (
-                <button onClick={handleReopenType} title="Go back to Reviewed to change the job type or its details"
-                  style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-                  Change job type
-                </button>
-              )}
-              {stage === 'reviewed' ? (
-                <button onClick={handleConfirmType} disabled={missing.length > 0} title={missing.length ? `Still needed: ${missing.join(', ')}` : undefined}
-                  style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: missing.length ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: missing.length ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}>
-                  ✓ Approve {review.jobType === 'warranty' ? 'warranty' : review.jobType === 'invoice' ? 'invoice' : 'job type'}
-                </button>
-              ) : typed ? (
-                <button onClick={handleComplete}
-                  style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+              {typed ? (
+                <button onClick={handleComplete} disabled={missing.length > 0} title={missing.length ? `Still needed: ${missing.join(', ')}` : undefined}
+                  style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: missing.length ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: missing.length ? 'not-allowed' : 'pointer' }}>
                   ✓ Complete
                 </button>
-              ) : (
+              ) : stage !== 'reviewed' && (
                 <button onClick={handleApprove}
                   style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
                   ✓ Approve
@@ -839,10 +836,9 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
             <div style={{ display: 'inline-flex', gap: 6 }}>
               {(['warranty', 'invoice'] as const).map((t) => {
                 const on = review.jobType === t;
-                // Once approved as one type, switch via "Change job type" so the status follows.
-                const locked = (typed || completed) && !on;
+                const locked = completed && !on;
                 return (
-                  <button key={t} disabled={locked} onClick={() => setRev({ jobType: t, warranty: t === 'warranty' })}
+                  <button key={t} disabled={locked} onClick={() => pickJobType(t)}
                     style={{ padding: '8px 20px', borderRadius: 99, border: `1px solid ${on ? C.green : '#EBEBEB'}`, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700,
                       cursor: locked ? 'not-allowed' : 'pointer', opacity: locked ? 0.5 : 1,
                       background: on ? C.green : C.white, color: on ? C.white : C.slate }}>
@@ -851,9 +847,10 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
                 );
               })}
             </div>
-            {stage === 'reviewed' && (
+            {(stage === 'reviewed' || typed) && (
               <span style={{ fontSize: 12, fontWeight: 600, color: missing.length ? '#B45309' : C.green }}>
-                {missing.length ? `To approve: ${missing.join(', ')}.` : `Ready — click "Approve ${review.jobType}" at the top.`}
+                {stage === 'reviewed' ? 'Choose Warranty or Invoice to move this job on.'
+                  : missing.length ? `Before completing: ${missing.join(', ')}.` : 'All filled in — click Complete at the top.'}
               </span>
             )}
           </div>
