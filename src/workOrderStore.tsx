@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { supabase } from './lib/supabase';
 import { externalizeTemplatePages, removeTemplatePages } from './lib/formMedia';
 
@@ -9,8 +9,10 @@ export type WorkOrderStatus =
   | 'assigned'    // picked up, not started
   | 'in_progress' // technician on-site / filling form
   | 'submitted'   // technician submitted, awaiting PIC review
-  | 'reviewed'    // PIC amended, ready to approve
-  | 'completed';  // approved, archived
+  | 'reviewed'    // PIC approved the report; job type not confirmed yet
+  | 'warranty'    // job type confirmed: warranty (times + technicians recorded)
+  | 'invoice'     // job type confirmed: invoice (amount recorded)
+  | 'completed';  // closed, archived
 
 export type FieldType =
   | 'section'
@@ -104,8 +106,14 @@ export interface PicReview {
   endTime: string;        // "14:30"
   technicians: string;    // display string, e.g. "Zaw, Weiliang"
   remark: string;
+  /** Kept in step with jobType — the monthly report splits on it. */
   warranty: boolean;
+  /** Chosen at the Reviewed step; absent on reviews saved before it existed. */
+  jobType?: 'warranty' | 'invoice' | null;
+  /** Invoice jobs: the amount. */
   quotedPrice: number | null;
+  /** Invoice jobs: ticked once the invoice has been issued. */
+  invoiced?: boolean;
   reviewedAt?: string;
   reviewedBy?: string;
 }
@@ -203,7 +211,8 @@ interface Store {
 
   // pic actions
   amend(workOrderId: string, forms: WorkOrderForm[], picName: string): void;
-  approve(workOrderId: string): void;
+  /** Move a submitted job along Reviewed → Warranty / Invoice → Completed (metadata patch). */
+  setReviewStage(workOrderId: string, status: 'reviewed' | 'warranty' | 'invoice' | 'completed'): void;
   /** Save the internal admin review — a metadata patch, never touches forms. */
   setPicReview(workOrderId: string, review: PicReview): void;
 
@@ -340,8 +349,13 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
 
   // NOTE: a supabase query only executes when `.then()` is called — never use bare
   // `void supabase…`, that builds the request but never sends it.
+  // Work-order writes go to the server one at a time, in the order they were
+  // made — a whole-blob save followed by a status patch must not land reversed,
+  // or the older blob would put the old status back.
+  const writeQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const enqueue = (run: () => PromiseLike<unknown>) => { writeQueue.current = writeQueue.current.then(run, run); };
   const persistWorkOrder = (wo: WorkOrder) => {
-    supabase
+    enqueue(() => supabase
       .from('tsd_work_orders')
       .upsert({ id: wo.id, data: wo, updated_at: new Date().toISOString() })
       .then(({ error }) => {
@@ -349,19 +363,19 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
           console.error('persist work order failed', error);
           alert(`Saving to the server failed — your changes are NOT synced yet.\n\n${error.message}`);
         }
-      });
+      }));
   };
   // Merge only the changed top-level fields server-side (data || patch), so a
   // metadata edit never overwrites the full row — the in-memory copy is a light
   // projection with photo/PDF blobs stripped, and a whole-blob upsert would wipe
   // them. Use this for every mutation that ISN'T rewriting form contents.
   const patchWorkOrder = (id: string, patch: Record<string, unknown>) => {
-    supabase.rpc('tsd_work_order_patch', { p_id: id, p_patch: patch }).then(({ error }) => {
+    enqueue(() => supabase.rpc('tsd_work_order_patch', { p_id: id, p_patch: patch }).then(({ error }) => {
       if (error) {
         console.error('patch work order failed', error);
         alert(`Saving to the server failed — your changes are NOT synced yet.\n\n${error.message}`);
       }
-    });
+    }));
   };
   const persistCustomer = (c: Customer) => {
     supabase
@@ -413,18 +427,19 @@ export function WorkOrderProvider({ children }: { children: ReactNode }) {
       setWorkOrders((ws) =>
         ws.map((w) => {
           if (w.id !== id) return w;
-          const next: WorkOrder = { ...w, status: 'reviewed', forms, response: { ...(w.response ?? {}), editedAt: today(), editedBy: pic } };
+          // Saving edits no longer moves the job on — only the PIC's Approve does.
+          const next: WorkOrder = { ...w, forms, response: { ...(w.response ?? {}), editedAt: today(), editedBy: pic } };
           persistWorkOrder(next);
           return next;
         }),
       ),
 
-    approve: (id) =>
+    setReviewStage: (id, status) =>
       setWorkOrders((ws) =>
         ws.map((w) => {
           if (w.id !== id) return w;
-          patchWorkOrder(id, { status: 'completed' });
-          return { ...w, status: 'completed' };
+          patchWorkOrder(id, { status });
+          return { ...w, status };
         }),
       ),
 
@@ -615,6 +630,8 @@ export const STATUS_COLORS: Record<WorkOrderStatus, { bg: string; color: string;
   in_progress: { bg: '#FFF8E1', color: '#B07D00', label: 'In Progress' },
   submitted:   { bg: '#FFF0E0', color: '#B45309', label: 'Submitted' },
   reviewed:    { bg: '#E6F4EA', color: '#1B512D', label: 'Reviewed' },
+  warranty:    { bg: '#F0E8FF', color: '#6B21A8', label: 'Warranty' },
+  invoice:     { bg: '#E3F0FF', color: '#1A62C0', label: 'Invoice' },
   completed:   { bg: '#E4F3E3', color: '#1B512D', label: 'Completed' },
 };
 

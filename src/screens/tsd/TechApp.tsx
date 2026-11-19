@@ -798,7 +798,7 @@ function TechJobModal({
   const store = useWorkOrderStore();
   const { user } = usePermissions();
   const me = user.full_name || DEMO_TECHNICIAN;
-  const readOnly = workOrder.status === 'submitted' || workOrder.status === 'reviewed' || workOrder.status === 'completed';
+  const readOnly = ['submitted', 'reviewed', 'warranty', 'invoice', 'completed'].includes(workOrder.status);
 
   const progs = workOrder.forms.map((f) => formProgress(f, store.getTemplate(f.templateId)));
   const allDone = progs.length > 0 && progs.every((p) => p.state === 'done');
@@ -954,7 +954,7 @@ function TechFillFormView({
     setInst((f) => ({ ...f, reportFileName: name || undefined, reportPdfUrl: url || undefined, reportPdfBase64: undefined }));
 
   const tpl = store.getTemplate(inst.templateId);
-  const readOnly = workOrder.status === 'submitted' || workOrder.status === 'reviewed' || workOrder.status === 'completed';
+  const readOnly = ['submitted', 'reviewed', 'warranty', 'invoice', 'completed'].includes(workOrder.status);
   const prog = formProgress(inst, tpl);
 
   const merged = () => workOrder.forms.map((f, i) => (i === formIndex ? inst : f));

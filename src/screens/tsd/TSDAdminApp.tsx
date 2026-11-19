@@ -209,7 +209,7 @@ export function TSDAdminApp({ onBack, onSignOut }: TSDAdminAppProps) {
 // Priority / status rank for sorting (most urgent / earliest-in-workflow first).
 const PRIORITY_RANK: Record<string, number> = { high: 0, normal: 1, low: 2 };
 const STATUS_RANK: Record<WorkOrderStatus, number> = {
-  open: 0, assigned: 1, in_progress: 2, submitted: 3, reviewed: 4, completed: 5,
+  open: 0, assigned: 1, in_progress: 2, submitted: 3, reviewed: 4, warranty: 5, invoice: 6, completed: 7,
 };
 
 type SortKey = 'id' | 'title' | 'category' | 'customer' | 'form' | 'tech' | 'scheduledDate' | 'priority' | 'status';
@@ -276,7 +276,7 @@ export function WorkOrdersAdmin() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       {/* Status summary tiles */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 12 }}>
-        {(['open', 'assigned', 'in_progress', 'submitted', 'reviewed', 'completed'] as WorkOrderStatus[]).map(
+        {(['open', 'assigned', 'in_progress', 'submitted', 'reviewed', 'warranty', 'invoice', 'completed'] as WorkOrderStatus[]).map(
           (s) => {
             const sc = STATUS_COLORS[s];
             return (
@@ -304,7 +304,7 @@ export function WorkOrdersAdmin() {
       {/* Toolbar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {(['all', 'open', 'assigned', 'in_progress', 'submitted', 'reviewed', 'completed'] as const).map((s) => {
+          {(['all', 'open', 'assigned', 'in_progress', 'submitted', 'reviewed', 'warranty', 'invoice', 'completed'] as const).map((s) => {
             const label = s === 'all' ? 'All' : STATUS_COLORS[s].label;
             return (
               <button

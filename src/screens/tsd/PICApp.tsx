@@ -65,7 +65,7 @@ interface PICAppProps {
   onSignOut: () => void;
 }
 
-const VISIBLE_STATUSES = ['submitted', 'reviewed', 'completed'] as const;
+const VISIBLE_STATUSES = ['submitted', 'reviewed', 'warranty', 'invoice', 'completed'] as const;
 
 export function PICApp({ onBack, onSignOut }: PICAppProps) {
   return (
@@ -585,6 +585,11 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
     startTime: '', endTime: '', technicians: assigneesLabel(workOrder, ''),
     remark: '', warranty: false, quotedPrice: null,
     ...(workOrder.picReview ?? {}),
+    // Reviews saved before the job-type step: a ticked warranty or a finished
+    // job tells us the type; otherwise it still has to be chosen.
+    jobType: workOrder.picReview?.jobType
+      ?? (workOrder.picReview?.warranty || workOrder.status === 'warranty' ? 'warranty'
+        : workOrder.status === 'completed' || workOrder.status === 'invoice' ? 'invoice' : null),
   }));
   const [reviewDirty, setReviewDirty] = useState(false);
   const setRev = (p: Partial<PicReview>) => { setReview((r) => ({ ...r, ...p })); setReviewDirty(true); };
@@ -633,8 +638,27 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
   const syncDest = cpoCustomer ? 'CPO Chargers' : 'Charger Registry';
   const registrySynced = filedFormCount(workOrder.registrySync);
 
-  const handleSave = () => { store.amend(workOrder.id, forms, DEMO_PIC); if (reviewDirty) saveReview(); setDirty(false); flash('Changes saved.'); };
-  const handleApprove = () => { if (reviewDirty) saveReview(); if (dirty) store.amend(workOrder.id, forms, DEMO_PIC); store.approve(workOrder.id); setDirty(false); flash('Report approved & marked completed.'); };
+  // Submitted → (Approve) Reviewed → (pick job type, key in its details,
+  // Approve) Warranty / Invoice → (Complete) Completed.
+  const stage = workOrder.status;
+  const typed = stage === 'warranty' || stage === 'invoice';
+  const reviewStarted = stage === 'reviewed' || typed || completed;
+  const missing: string[] = !review.jobType ? ['choose Warranty or Invoice']
+    : review.jobType === 'warranty'
+      ? [!review.startTime && 'start time', !review.endTime && 'end time', reviewTechs.length === 0 && 'technician(s)'].filter((x): x is string => !!x)
+      : [review.quotedPrice == null && 'invoice amount'].filter((x): x is string => !!x);
+  const saveForms = () => { if (dirty) { store.amend(workOrder.id, forms, DEMO_PIC); setDirty(false); } };
+  const handleSave = () => { saveForms(); if (reviewDirty) saveReview(); flash('Changes saved.'); };
+  const handleApprove = () => { saveForms(); store.setReviewStage(workOrder.id, 'reviewed'); flash('Report approved — now choose Warranty or Invoice.'); };
+  const handleConfirmType = () => {
+    if (missing.length || !review.jobType) return;
+    saveForms();
+    saveReview();
+    store.setReviewStage(workOrder.id, review.jobType);
+    flash(`${review.jobType === 'warranty' ? 'Warranty' : 'Invoice'} details approved — ready to complete.`);
+  };
+  const handleComplete = () => { saveForms(); if (reviewDirty) saveReview(); store.setReviewStage(workOrder.id, 'completed'); flash('Marked completed.'); };
+  const handleReopenType = () => { store.setReviewStage(workOrder.id, 'reviewed'); flash('Back to Reviewed — change the job type or its details.'); };
   const handleDelete = () => { setConfirmDelete(false); store.deleteWorkOrder(workOrder.id); onDeleted?.(); };
 
   const hasTemplated = forms.some((f) => !!store.getTemplate(f.templateId));
@@ -724,10 +748,28 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
                 style={{ padding: '8px 14px', borderRadius: 8, border: `1px solid ${dirty ? C.green : '#EBEBEB'}`, background: dirty ? C.honeydew : C.white, color: dirty ? C.green : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: dirty ? 'pointer' : 'not-allowed' }}>
                 Save changes
               </button>
-              <button onClick={handleApprove}
-                style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-                ✓ Approve & complete
-              </button>
+              {typed && (
+                <button onClick={handleReopenType} title="Go back to Reviewed to change the job type or its details"
+                  style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                  Change job type
+                </button>
+              )}
+              {stage === 'reviewed' ? (
+                <button onClick={handleConfirmType} disabled={missing.length > 0} title={missing.length ? `Still needed: ${missing.join(', ')}` : undefined}
+                  style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: missing.length ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: missing.length ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap' }}>
+                  ✓ Approve {review.jobType === 'warranty' ? 'warranty' : review.jobType === 'invoice' ? 'invoice' : 'job type'}
+                </button>
+              ) : typed ? (
+                <button onClick={handleComplete}
+                  style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                  ✓ Complete
+                </button>
+              ) : (
+                <button onClick={handleApprove}
+                  style={{ padding: '8px 16px', borderRadius: 8, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                  ✓ Approve
+                </button>
+              )}
             </>
           )}
         </div>
@@ -750,7 +792,28 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
         <div style={{ background: C.honeydew, color: C.green, borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600 }}>{toast}</div>
       )}
 
-      {/* Admin review — internal record only, feeds the monthly service report. */}
+      {/* Progress through the review steps */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        {(['Submitted', 'Reviewed', review.jobType === 'warranty' ? 'Warranty' : review.jobType === 'invoice' ? 'Invoice' : 'Warranty / Invoice', 'Completed'] as const).map((name, i) => {
+          const at = completed ? 3 : typed ? 2 : stage === 'reviewed' ? 1 : 0;
+          const state = i < at ? 'done' : i === at ? 'now' : 'next';
+          return (
+            <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              {i > 0 && <span style={{ width: 18, height: 2, background: i <= at ? C.green : '#DDE3E8' }} />}
+              <span style={{ fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 99, whiteSpace: 'nowrap',
+                background: state === 'now' ? C.green : state === 'done' ? C.honeydew : C.white,
+                color: state === 'now' ? C.white : state === 'done' ? C.green : C.slate,
+                border: `1px solid ${state === 'next' ? '#EBEBEB' : C.green}` }}>
+                {state === 'done' ? '✓ ' : ''}{name}
+              </span>
+            </span>
+          );
+        })}
+      </div>
+
+      {/* Admin review — internal record only, feeds the monthly service report.
+          Opens once the report is approved (Reviewed). */}
+      {reviewStarted && (
       <div style={{ background: C.white, borderRadius: 14, border: '1px solid #EBEBEB', padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>Admin Review</div>
@@ -768,66 +831,90 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Start Time</label>
-            <input type="time" value={review.startTime} onChange={(e) => setRev({ startTime: e.target.value })}
-              style={{ width: '100%', padding: '8px 10px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
-          </div>
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>End Time</label>
-            <input type="time" value={review.endTime} onChange={(e) => setRev({ endTime: e.target.value })}
-              style={{ width: '100%', padding: '8px 10px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
-            {durationLabel(review.startTime, review.endTime) && (
-              <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Duration: {durationLabel(review.startTime, review.endTime)}</div>
-            )}
-          </div>
-          <div style={{ gridColumn: 'span 2', minWidth: 200 }}>
-            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Technician(s)</label>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', minHeight: 34 }}>
-              {techOptions.map((name) => {
-                const on = reviewTechs.includes(name);
+        <div>
+          <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Job Type</label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <div style={{ display: 'inline-flex', gap: 6 }}>
+              {(['warranty', 'invoice'] as const).map((t) => {
+                const on = review.jobType === t;
+                // Once approved as one type, switch via "Change job type" so the status follows.
+                const locked = (typed || completed) && !on;
                 return (
-                  <button key={name} type="button" onClick={() => toggleReviewTech(name)}
-                    style={{ padding: '6px 14px', borderRadius: 99, border: `1px solid ${on ? C.green : '#EBEBEB'}`,
-                      background: on ? C.green : C.white, color: on ? C.white : C.slate,
-                      fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-                    {on ? '✓ ' : ''}{name}
+                  <button key={t} disabled={locked} onClick={() => setRev({ jobType: t, warranty: t === 'warranty' })}
+                    style={{ padding: '8px 20px', borderRadius: 99, border: `1px solid ${on ? C.green : '#EBEBEB'}`, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700,
+                      cursor: locked ? 'not-allowed' : 'pointer', opacity: locked ? 0.5 : 1,
+                      background: on ? C.green : C.white, color: on ? C.white : C.slate }}>
+                    {on ? '✓ ' : ''}{t === 'warranty' ? 'Warranty' : 'Invoice'}
                   </button>
                 );
               })}
-              {techOptions.length === 0 && <span style={{ fontSize: 12, color: C.slate }}>No technicians in the roster yet.</span>}
             </div>
+            {stage === 'reviewed' && (
+              <span style={{ fontSize: 12, fontWeight: 600, color: missing.length ? '#B45309' : C.green }}>
+                {missing.length ? `To approve: ${missing.join(', ')}.` : `Ready — click "Approve ${review.jobType}" at the top.`}
+              </span>
+            )}
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-          <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Job Type</label>
-            <div style={{ display: 'inline-flex', border: '1px solid #EBEBEB', borderRadius: 99, overflow: 'hidden' }}>
-              {([[false, 'Non-warranty'], [true, 'Warranty']] as const).map(([val, label]) => (
-                <button key={label} onClick={() => setRev({ warranty: val })}
-                  style={{ padding: '7px 16px', border: 'none', fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer',
-                    background: review.warranty === val ? C.green : 'transparent', color: review.warranty === val ? C.white : C.slate }}>
-                  {label}
-                </button>
-              ))}
+        {review.jobType === 'warranty' && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+            <div>
+              <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Start Time *</label>
+              <input type="time" value={review.startTime} onChange={(e) => setRev({ startTime: e.target.value })} style={{ width: '100%', padding: '8px 10px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
+            </div>
+            <div>
+              <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>End Time *</label>
+              <input type="time" value={review.endTime} onChange={(e) => setRev({ endTime: e.target.value })} style={{ width: '100%', padding: '8px 10px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
+              {durationLabel(review.startTime, review.endTime) && (
+                <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Duration: {durationLabel(review.startTime, review.endTime)}</div>
+              )}
+            </div>
+            <div style={{ gridColumn: 'span 2', minWidth: 200 }}>
+              <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Technician(s) *</label>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', minHeight: 34 }}>
+                {techOptions.map((name) => {
+                  const on = reviewTechs.includes(name);
+                  return (
+                    <button key={name} type="button" onClick={() => toggleReviewTech(name)}
+                      style={{ padding: '6px 14px', borderRadius: 99, border: `1px solid ${on ? C.green : '#EBEBEB'}`,
+                        background: on ? C.green : C.white, color: on ? C.white : C.slate,
+                        fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                      {on ? '✓ ' : ''}{name}
+                    </button>
+                  );
+                })}
+                {techOptions.length === 0 && <span style={{ fontSize: 12, color: C.slate }}>No technicians in the roster yet.</span>}
+              </div>
             </div>
           </div>
+        )}
+
+        {review.jobType === 'invoice' && (
+          <div style={{ display: 'flex', gap: 16, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <div>
+              <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Invoice amount ($) *</label>
+              <input type="number" min="0" step="0.01" inputMode="decimal" placeholder="e.g. 500"
+                value={review.quotedPrice == null ? '' : String(review.quotedPrice)}
+                onChange={(e) => setRev({ quotedPrice: e.target.value === '' ? null : Number(e.target.value) })}
+                style={{ ...({ width: '100%', padding: '8px 10px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }), width: 160, textAlign: 'right' }} />
+            </div>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 0', cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#1a1a1a' }}>
+              <input type="checkbox" checked={!!review.invoiced} onChange={(e) => setRev({ invoiced: e.target.checked })}
+                style={{ width: 18, height: 18, accentColor: C.green, cursor: 'pointer' }} />
+              Invoiced
+            </label>
+          </div>
+        )}
+
+        {review.jobType && (
           <div>
-            <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Quoted ($)</label>
-            <input type="number" min="0" step="0.01" placeholder="e.g. 500"
-              value={review.quotedPrice == null ? '' : String(review.quotedPrice)}
-              onChange={(e) => setRev({ quotedPrice: e.target.value === '' ? null : Number(e.target.value) })}
-              style={{ width: 130, padding: '8px 10px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', textAlign: 'right', boxSizing: 'border-box' }} />
-          </div>
-          <div style={{ flex: 1, minWidth: 220 }}>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Remark</label>
-            <input value={review.remark} onChange={(e) => setRev({ remark: e.target.value })} placeholder="e.g. CPO · paid before · inclusive"
-              style={{ width: '100%', padding: '8px 10px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
+            <input value={review.remark} onChange={(e) => setRev({ remark: e.target.value })} placeholder="e.g. CPO · paid before · inclusive" style={{ width: '100%', padding: '8px 10px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box' }} />
           </div>
-        </div>
+        )}
       </div>
+      )}
 
       {forms.map((inst, i) => {
         const tpl = store.getTemplate(inst.templateId);
@@ -871,7 +958,7 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
           <div><strong style={{ color: '#1a1a1a' }}>Audit:</strong></div>
           {workOrder.response.submittedBy && <div>Submitted by {workOrder.response.submittedBy} on {workOrder.response.submittedAt}</div>}
           {workOrder.response.editedBy && <div>Edited by {workOrder.response.editedBy} on {workOrder.response.editedAt}</div>}
-          {completed && <div>Approved & marked completed.</div>}
+          {reviewStarted && <div>Report approved{workOrder.picReview?.jobType ? ` · ${workOrder.picReview.jobType === 'warranty' ? 'Warranty' : 'Invoice'}` : ''}{completed ? ' · completed' : ''}.</div>}
         </div>
       )}
 
