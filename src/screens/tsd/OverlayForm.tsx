@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { C } from '../../theme';
-import { FileText, Camera } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { FileText, Camera, ChevronDown, Search, Check } from 'lucide-react';
 import { uploadFormPhoto } from '../../lib/formMedia';
 import { supabase } from '../../lib/supabase';
 import type {
@@ -96,6 +97,77 @@ function useSpareParts(enabled: boolean): SparePart[] {
   }, [enabled]);
   return parts;
 }
+// Spare-part picker: a centred card on desktop, a bottom sheet on phones. It is
+// portalled to <body> because the form page clips and re-bases fixed children.
+function PartPicker({ parts, value, onPick, onClose }: {
+  parts: SparePart[]; value: string;
+  /** partNo undefined = leave the part-number box alone (a typed, unlisted part). */
+  onPick: (name: string, partNo?: string) => void; onClose: () => void;
+}) {
+  const [q, setQ] = useState('');
+  const phone = typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches;
+  const ql = q.trim().toLowerCase();
+  const shown = ql ? parts.filter((p) => p.name.toLowerCase().includes(ql) || p.partNo.toLowerCase().includes(ql)) : parts;
+  const exact = parts.some((p) => p.name.toLowerCase() === ql);
+  return createPortal(
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 3000, display: 'flex', alignItems: phone ? 'flex-end' : 'center', justifyContent: 'center', padding: phone ? 0 : 12 }}>
+      <div style={{ background: C.white, width: phone ? '100%' : 460, maxWidth: '100%', height: phone ? '82dvh' : undefined, maxHeight: phone ? '82dvh' : '80vh',
+        borderRadius: phone ? '20px 20px 0 0' : 20, boxShadow: '0 24px 64px rgba(0,0,0,.18)', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'Figtree' }}>
+        <div style={{ padding: '18px 20px 12px', display: 'flex', flexDirection: 'column', gap: 12, borderBottom: '1px solid #F3F3F3' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>Select spare part</div>
+              <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>Charger Spare Parts from Stock Levels</div>
+            </div>
+            <button type="button" onClick={onClose} style={{ width: 36, height: 36, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree', flexShrink: 0 }}>×</button>
+          </div>
+          <div style={{ position: 'relative' }}>
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search part name or number…" autoFocus={!phone}
+              style={{ width: '100%', padding: '10px 14px 10px 36px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 14, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
+            <span style={{ position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)', color: C.slate, display: 'inline-flex' }}><Search size={15} /></span>
+          </div>
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto', padding: 8, WebkitOverflowScrolling: 'touch' }}>
+          {shown.map((p) => {
+            const on = p.name === value;
+            return (
+              <button key={p.name} type="button" onClick={() => onPick(p.name, p.partNo)}
+                style={{ width: '100%', minHeight: 52, padding: '8px 12px', borderRadius: 10, border: 'none', background: on ? C.honeydew : 'transparent', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', fontFamily: 'Figtree' }}>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ display: 'block', fontSize: 14, fontWeight: 600, color: on ? C.green : '#1a1a1a' }}>{p.name}</span>
+                  <span style={{ display: 'block', fontSize: 12, color: p.partNo ? C.slate : '#B45309' }}>{p.partNo || 'No part number in Stock Levels'}</span>
+                </span>
+                {on && <Check size={16} strokeWidth={2.5} color={C.green} style={{ flexShrink: 0 }} />}
+              </button>
+            );
+          })}
+          {shown.length === 0 && (
+            <div style={{ padding: '28px 16px', textAlign: 'center', fontSize: 13, color: C.slate }}>
+              {parts.length === 0 ? 'No spare parts could be loaded — type the part name below.' : 'No spare part matches.'}
+            </div>
+          )}
+        </div>
+        <div style={{ padding: '12px 16px calc(12px + env(safe-area-inset-bottom))', borderTop: '1px solid #F3F3F3', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {ql && !exact && (
+            <button type="button" onClick={() => onPick(q.trim())}
+              style={{ flex: 1, minHeight: 44, padding: '8px 14px', borderRadius: 10, border: `1px dashed ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              Use “{q.trim()}” (not in the list)
+            </button>
+          )}
+          {value && (
+            <button type="button" onClick={() => onPick('', '')}
+              style={{ minHeight: 44, padding: '8px 14px', borderRadius: 10, border: '1px solid #FDEAEA', background: C.white, color: '#C0321A', fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+              Clear this part
+            </button>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 /** The field a Part field writes the part number into, if any. */
 export function partFillTarget(field: FormField, fields: FormField[]): FormField | null {
   if (field.fillsFieldId === 'none') return null;
@@ -918,6 +990,7 @@ export function OverlayFormRenderer({
               containerType: 'size', // lets fields size text as % of page height (cqh)
               ...pageAspect(page),
             }}
+            data-overlay-page=""
           >
             <img
               src={page.imageSrc}
@@ -943,9 +1016,9 @@ export function OverlayFormRenderer({
                   onChange={(v) => onChange(f.id, v)}
                   disabled={disabled}
                   parts={parts}
-                  onPickPart={(part) => {
+                  onFillPart={(partNo) => {
                     const target = partFillTarget(f, template.fields);
-                    if (target) onChange(target.id, part.partNo);
+                    if (target) onChange(target.id, partNo);
                   }}
                 />
               ))}
@@ -962,16 +1035,18 @@ function OverlayInput({
   onChange,
   disabled,
   parts,
-  onPickPart,
+  onFillPart,
 }: {
   field: FormField;
   value: string | boolean | undefined;
   onChange: (v: string | boolean) => void;
   disabled: boolean;
   parts: SparePart[];
-  onPickPart: (part: SparePart) => void;
+  /** Write the paired part-number box ('' clears it). */
+  onFillPart: (partNo: string) => void;
 }) {
   const [uploading, setUploading] = useState(false);
+  const [picking, setPicking] = useState(false);
   const base: React.CSSProperties = {
     position: 'absolute',
     left: `${field.x ?? 0}%`,
@@ -1045,39 +1120,46 @@ function OverlayInput({
   // Explicit text size (as % of page height via container-query units) or default.
   const textFont = field.fontSize ? `${field.fontSize}cqh` : undefined;
 
-  // Part: type to search the spare parts, or type a part that isn't listed.
-  // Choosing a listed part also fills its part number into the paired box.
+  // Part: opens the spare-part picker (a sheet on phones). Choosing a part
+  // also sets its part number in the paired box; a part that isn't listed can
+  // still be typed in the picker.
   if (field.type === 'part') {
-    const listId = `parts-${field.id}`;
     return (
       <>
-        <input
-          value={strVal}
+        <button
+          type="button"
           disabled={disabled}
-          list={listId}
-          placeholder={field.label}
-          autoComplete="off"
-          onChange={(e) => {
-            const v = e.target.value;
-            onChange(v);
-            const hit = parts.find((p) => p.name.toLowerCase() === v.trim().toLowerCase());
-            if (hit) onPickPart(hit);
-          }}
+          onClick={() => setPicking(true)}
+          title={strVal || undefined}
           style={{
             ...base,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 2,
             background: 'rgba(255,255,255,0.85)',
             border: `1px solid ${disabled ? 'transparent' : '#DADADA'}`,
             borderRadius: 4,
             fontFamily: 'Figtree',
             fontSize: textFont ?? 12,
-            padding: '2px 6px',
+            padding: '0 4px 0 6px',
             outline: 'none',
-            color: '#1a1a1a',
+            color: strVal ? '#1a1a1a' : '#9AA5AF',
+            cursor: disabled ? 'default' : 'pointer',
+            textAlign: 'left',
+            overflow: 'hidden',
           }}
-        />
-        <datalist id={listId}>
-          {parts.map((p) => <option key={p.name} value={p.name}>{p.partNo}</option>)}
-        </datalist>
+        >
+          <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{strVal || field.label}</span>
+          {!disabled && <ChevronDown size={12} strokeWidth={2.5} style={{ flexShrink: 0, color: C.slate }} />}
+        </button>
+        {picking && (
+          <PartPicker
+            parts={parts}
+            value={strVal}
+            onClose={() => setPicking(false)}
+            onPick={(name, partNo) => { onChange(name); if (partNo !== undefined) onFillPart(partNo); setPicking(false); }}
+          />
+        )}
       </>
     );
   }

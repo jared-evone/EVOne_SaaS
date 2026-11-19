@@ -47,10 +47,12 @@ select,
 }
 
 @media (pointer: coarse) {
-  /* Safari zooms the page when a focused field's text is under 16px. */
-  input,
-  select,
-  textarea {
+  /* Safari zooms the page when a focused field's text is under 16px. Fields
+     drawn on a form page are exempt: they must keep the size that fits their
+     printed box, or the text spills out of it on a phone. */
+  input:not([data-overlay-page] *),
+  select:not([data-overlay-page] *),
+  textarea:not([data-overlay-page] *) {
     font-size: 16px !important;
   }
 
