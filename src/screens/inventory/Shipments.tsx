@@ -211,9 +211,9 @@ export function ScreenInvShipments() {
 
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1050 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1150 }}>
             <thead>
-              <tr>{['PO', 'Supplier', 'Items', 'Received / Qty', 'Ordered', 'ETA', 'Status'].map((h) => <th key={h} style={{ ...thStyle, textAlign: h === 'Received / Qty' ? 'right' : 'left' }}>{h}</th>)}</tr>
+              <tr>{['PO', 'Type', 'Supplier', 'Items', 'Received / Qty', 'Ordered', 'ETA', 'Status'].map((h) => <th key={h} style={{ ...thStyle, textAlign: h === 'Received / Qty' ? 'right' : 'left' }}>{h}</th>)}</tr>
             </thead>
             <tbody>
               {visible.map((s) => {
@@ -232,8 +232,12 @@ export function ScreenInvShipments() {
                       {h.po_no || <span style={{ color: C.slate }}>No PO</span>}
                       {h.po_pdf_path && <Paperclip size={12} strokeWidth={2.25} style={{ display: 'inline', verticalAlign: '-1px', marginLeft: 5, color: C.slate }} aria-label="PO PDF attached" />}
                       {h.po_id && <div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>From Raise PO</div>}
-                      {typeOf(s) === 'warranty_claim' && <div style={{ marginTop: 4 }}><Pill bg="#FFF0E0" color="#B45309">Warranty claim</Pill></div>}
                       {excel.length > 0 && <div style={{ fontSize: 11, color: C.slate, fontWeight: 600 }}>Excel #{excel.join(', ')}</div>}
+                    </td>
+                    <td style={tdStyle}>
+                      {typeOf(s) === 'warranty_claim'
+                        ? <Pill bg="#FFF0E0" color="#B45309">Warranty claim</Pill>
+                        : <Pill bg="#F0E8FF" color="#6B21A8">Purchase</Pill>}
                     </td>
                     <td style={tdStyle}>{h.supplier || '—'}{h.customer && <div style={{ fontSize: 11, color: C.slate }}>For {h.customer}</div>}</td>
                     <td style={tdStyle}>
@@ -262,7 +266,7 @@ export function ScreenInvShipments() {
                   </tr>
                 );
               })}
-              {visible.length === 0 && <tr><td colSpan={7} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No shipments here.</td></tr>}
+              {visible.length === 0 && <tr><td colSpan={8} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>No shipments here.</td></tr>}
             </tbody>
           </table>
         </div>
