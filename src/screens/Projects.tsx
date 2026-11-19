@@ -2232,7 +2232,7 @@ function FilesTab({ projectId, files, sites, brandModels, customer, canEdit, can
       </div>
 
       {/* Right — inline viewer for cross-checking */}
-      <div style={{ position: 'sticky', top: 0, border: '1px solid #EBEBEB', borderRadius: 12, background: C.seasalt, height: 'calc(100vh - 210px)', minHeight: 460, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{ position: 'sticky', top: 0, border: '1px solid #EBEBEB', borderRadius: 12, background: C.seasalt, height: 'calc(100dvh - 210px)', minHeight: 460, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {!selected ? (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: C.slate, padding: 24, textAlign: 'center' }}>
             <FileText size={32} strokeWidth={1.5} />

@@ -257,7 +257,7 @@ export function PODecisionPage({ token, decision }: { token: string; decision: s
   };
 
   const card: React.CSSProperties = { width: '100%', maxWidth: 460, background: C.white, borderRadius: 20, border: '1px solid #EBEBEB', padding: 32, boxShadow: '0 12px 40px rgba(0,0,0,0.06)', display: 'flex', flexDirection: 'column', gap: 16, alignItems: 'stretch' };
-  const wrap: React.CSSProperties = { minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: C.seasalt, padding: 20 };
+  const wrap: React.CSSProperties = { minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: C.seasalt, padding: 20 };
 
   const summaryBox = po && (
     <div style={{ background: C.seasalt, borderRadius: 12, padding: '14px 16px' }}>

@@ -20,7 +20,7 @@ const DEPARTMENT_ICONS: Record<Department, LucideIcon> = {
 // chip above the department sections (multi-department accounts only), never
 // repeated inside them. Add future cross-department tabs here.
 const GLOBAL_SCREEN_IDS: ScreenKey[] = ['customers', 'projects'];
-import { useIsMobile } from './lib/useIsMobile';
+import { useIsMobile, useIsCompact } from './lib/useIsMobile';
 import { setAppToken, hasValidAppToken } from './lib/supabase';
 import { startVersionWatch } from './lib/version';
 import { ScreenOverview } from './screens/Overview';
@@ -268,13 +268,19 @@ function Dashboard({ onSignOut, onSwitchDepartment }: DashboardProps) {
   const toggleGroup = (key: string) => setOpenGroups((s) => ({ ...s, [key]: !s[key] }));
 
   const isMobile = useIsMobile();
+  // Drawer on phones and upright tablets; on wider screens the sidebar is a
+  // column the menu button can hide (remembered per device) for more room.
+  const drawer = useIsCompact();
   const [navOpen, setNavOpen] = useState(false);
-  const contentPad = isMobile ? 12 : 28;
+  const [navPinned, setNavPinned] = useState(() => { try { return localStorage.getItem('evone.nav.pinned') !== '0'; } catch { return true; } });
+  const togglePinned = () => setNavPinned((v) => { try { localStorage.setItem('evone.nav.pinned', v ? '0' : '1'); } catch { /* storage unavailable */ } return !v; });
+  const navShown = drawer ? navOpen : navPinned;
+  const contentPad = isMobile ? 12 : drawer ? 20 : 28;
   const userInitial = (user.full_name || user.email).trim().charAt(0).toUpperCase();
 
   const selectScreen = (id: ScreenId) => {
     setScreen(id);
-    if (isMobile) setNavOpen(false);
+    if (drawer) setNavOpen(false);
   };
 
   // Clicking a screen inside another department's section also switches the
@@ -299,9 +305,9 @@ function Dashboard({ onSignOut, onSwitchDepartment }: DashboardProps) {
 
   return (
     <ScreenNavContext.Provider value={selectScreen}>
-    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: C.seasalt }}>
+    <div style={{ display: 'flex', height: '100dvh', overflow: 'hidden', background: C.seasalt }}>
       {/* Mobile drawer scrim */}
-      {isMobile && navOpen && (
+      {drawer && navOpen && (
         <div
           onClick={() => setNavOpen(false)}
           style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 1090 }}
@@ -310,15 +316,15 @@ function Dashboard({ onSignOut, onSwitchDepartment }: DashboardProps) {
       {/* Sidebar — fixed column on desktop, slide-over drawer on mobile */}
       <aside
         style={{
-          width: isMobile ? 264 : 224,
+          width: drawer ? 264 : 224,
           flexShrink: 0,
           background: C.white,
           borderRight: '1px solid #EBEBEB',
-          display: isMobile && !navOpen ? 'none' : 'flex',
+          display: navShown ? 'flex' : 'none',
           flexDirection: 'column',
           padding: '0 12px',
           overflow: 'hidden',
-          ...(isMobile
+          ...(drawer
             ? { position: 'fixed' as const, left: 0, top: 0, bottom: 0, zIndex: 1100, boxShadow: '0 0 48px rgba(0,0,0,.18)' }
             : {}),
         }}
@@ -524,13 +530,14 @@ function Dashboard({ onSignOut, onSwitchDepartment }: DashboardProps) {
             gap: isMobile ? 10 : 16,
           }}
         >
-          {isMobile && (
+          {(
             <button
-              onClick={() => setNavOpen(true)}
-              aria-label="Open menu"
+              onClick={() => (drawer ? setNavOpen(true) : togglePinned())}
+              aria-label={drawer ? 'Open menu' : navPinned ? 'Hide menu' : 'Show menu'}
+              title={drawer ? undefined : navPinned ? 'Hide menu' : 'Show menu'}
               style={{
-                width: 36,
-                height: 36,
+                width: 40,
+                height: 40,
                 borderRadius: 10,
                 border: '1px solid #EBEBEB',
                 background: 'transparent',

@@ -29,3 +29,43 @@ body {
   background: #d1d5db;
   border-radius: 9px;
 }
+
+/* Touch devices (the team's iPads). Inline styles can't express these. */
+html,
+body {
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+}
+
+button,
+a,
+label,
+select,
+[role='button'] {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+@media (pointer: coarse) {
+  /* Safari zooms the page when a focused field's text is under 16px. */
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+
+  /* A finger-sized hit area around small buttons, without moving the layout. */
+  button {
+    position: relative;
+  }
+  button::after {
+    content: '';
+    position: absolute;
+    inset: -5px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+}

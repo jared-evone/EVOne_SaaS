@@ -34,7 +34,7 @@ export function FormTestPage({ templateId }: { templateId: string }) {
   const setField = (id: string, val: string | boolean) => setValues((v) => ({ ...v, [id]: val }));
 
   return (
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: C.seasalt }}>
+    <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', background: C.seasalt }}>
       <div style={{ background: C.white, borderBottom: '1px solid #EBEBEB', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
         <Logo height={26} />
         <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 9px', borderRadius: 99, background: C.honeydew, color: C.green, letterSpacing: '0.04em', textTransform: 'uppercase' }}>

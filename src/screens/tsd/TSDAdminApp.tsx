@@ -46,7 +46,7 @@ export function TSDAdminApp({ onBack, onSignOut }: TSDAdminAppProps) {
   ];
 
   return (
-    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: C.seasalt }}>
+    <div style={{ display: 'flex', height: '100dvh', overflow: 'hidden', background: C.seasalt }}>
       {/* Sidebar */}
       <aside
         style={{
@@ -2503,7 +2503,7 @@ function PhoneFrame({ children }: { children: React.ReactNode }) {
         boxShadow: '0 14px 40px rgba(0,0,0,0.22), 0 0 0 1px rgba(0,0,0,0.04)',
         display: 'flex',
         flexDirection: 'column',
-        height: 'min(740px, calc(100vh - 200px))',
+        height: 'min(740px, calc(100dvh - 200px))',
         flexShrink: 0,
       }}
     >

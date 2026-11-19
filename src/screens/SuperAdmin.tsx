@@ -18,7 +18,7 @@ export function SuperAdminConsole({ onSignOut }: { onSignOut: () => void }) {
   });
 
   return (
-    <div style={{ height: '100vh', overflowY: 'auto', background: C.seasalt }}>
+    <div style={{ height: '100dvh', overflowY: 'auto', background: C.seasalt }}>
       {/* Top bar */}
       <div style={{ background: C.white, borderBottom: '1px solid #EBEBEB', padding: '14px 28px', display: 'flex', alignItems: 'center', gap: 16, position: 'sticky', top: 0, zIndex: 10 }}>
         <Logo height={30} />
