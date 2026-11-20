@@ -62,3 +62,10 @@ end $$;
 
 create trigger sales_quotations_delete_guard before delete on public.sales_quotations
   for each row execute function public.sales_quote_delete_guard();
+
+-- 2026-11-20 · migration sales_order_lines_warranty_years — years of warranty
+-- sold with each charger line (set on the quote or in the Order Book), so the
+-- PO raised for it buys the matching warranty from the supplier. Nullable:
+-- existing lines are untouched and show "not set".
+alter table public.sales_order_lines
+  add column if not exists warranty_years numeric check (warranty_years is null or (warranty_years >= 0 and warranty_years <= 20));

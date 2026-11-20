@@ -37,7 +37,10 @@ interface OrderLine {
   po_no: string | null;
   notes: string | null;
   position: number;
+  warranty_years: number | null;
 }
+
+const warrantyLabel = (y: number | null | undefined) => (y == null ? '' : `${y}-yr warranty`);
 
 interface PORef {
   id: string;
@@ -65,6 +68,7 @@ interface ModelRow {
   inHand: number;
   refs: { id: string; ref: string }[];
   oldest: string;
+  warranty: number | null;
 }
 
 type LineState = 'awaiting' | 'po_dead' | 'po_pending' | 'po_finance' | 'po_raised' | 'ordered' | 'in_transit' | 'received' | 'stock';
@@ -217,11 +221,11 @@ export function ScreenOrderBook() {
     for (const q of visible.filter(stageOk)) {
       for (const l of linesByQuote.get(q.id) ?? []) {
         const item = l.item_id ? items.find((i) => i.id === l.item_id) : undefined;
-        const key = l.item_id ?? `name:${l.item_name.trim().toLowerCase()}`;
+        const key = `${l.item_id ?? `name:${l.item_name.trim().toLowerCase()}`}|${l.warranty_years ?? ''}`;
         const brand = item?.brand?.trim()
           || (!item ? knownBrands.get(l.item_name.trim().split(/\s+/)[0]?.toLowerCase() ?? '') : undefined)
           || 'Others';
-        const row = m.get(key) ?? { key, brand, model: item?.name ?? l.item_name, sold: 0, awaiting: 0, inPo: 0, onOrder: 0, inHand: 0, refs: [], oldest: wonDate(q) };
+        const row = m.get(key) ?? { key, brand, model: item?.name ?? l.item_name, sold: 0, awaiting: 0, inPo: 0, onOrder: 0, inHand: 0, refs: [], oldest: wonDate(q), warranty: l.warranty_years };
         const st = lineState(l);
         row.sold += l.qty;
         if (st === 'received' || st === 'stock') row.inHand += l.qty;
@@ -261,16 +265,16 @@ export function ScreenOrderBook() {
 
   const exportCsv = () => {
     const rows: (string | number | null)[][] = view === 'orders'
-      ? [['Quotation', 'Customer', 'Salesperson', 'Won', 'Value', 'Stage', 'Charger', 'Qty', 'Purchase', 'PO', 'Notes']]
-      : [['Brand', 'Model', 'Sold', 'Awaiting PO', 'PO in progress', 'Ordered / in transit', 'In hand', 'Quotations', 'Oldest win']];
+      ? [['Quotation', 'Customer', 'Salesperson', 'Won', 'Value', 'Stage', 'Charger', 'Qty', 'Warranty (years)', 'Purchase', 'PO', 'Notes']]
+      : [['Brand', 'Model', 'Warranty (years)', 'Sold', 'Awaiting PO', 'PO in progress', 'Ordered / in transit', 'In hand', 'Quotations', 'Oldest win']];
     if (view !== 'orders') {
-      for (const g of brandGroups) for (const r of g.rows) rows.push([g.brand, r.model, r.sold, r.awaiting, r.inPo, r.onOrder, r.inHand, r.refs.map((x) => x.ref).join(' '), r.oldest]);
+      for (const g of brandGroups) for (const r of g.rows) rows.push([g.brand, r.model, r.warranty, r.sold, r.awaiting, r.inPo, r.onOrder, r.inHand, r.refs.map((x) => x.ref).join(' '), r.oldest]);
     }
     for (const q of view === 'orders' ? shown : []) {
       const ls = linesByQuote.get(q.id) ?? [];
       const base = [q.ref, q.customer_name, q.salesperson_name, wonDate(q), q.total, q.won_stage ? WON_STAGE_LABELS[q.won_stage] : ''];
-      if (!ls.length) rows.push([...base, '', '', ORDER_META.unlisted.label, '', '']);
-      for (const l of ls) rows.push([...base, l.item_name, l.qty, LINE_META[lineState(l)].label, (l.po_id && poById.get(l.po_id)?.po_number) || l.po_no || '', l.notes]);
+      if (!ls.length) rows.push([...base, '', '', '', ORDER_META.unlisted.label, '', '']);
+      for (const l of ls) rows.push([...base, l.item_name, l.qty, l.warranty_years, LINE_META[lineState(l)].label, (l.po_id && poById.get(l.po_id)?.po_number) || l.po_no || '', l.notes]);
     }
     const csv = rows.map((r) => r.map((v) => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; }).join(',')).join('\n');
     const a = document.createElement('a');
@@ -373,7 +377,7 @@ export function ScreenOrderBook() {
                         {ls.length === 0 ? <span style={{ fontSize: 12, color: C.slate }}>None listed</span> : (
                           <>
                             {ls.slice(0, 3).map((l) => (
-                              <div key={l.id} style={{ fontSize: 13 }}>{l.qty} × {l.item_name}</div>
+                              <div key={l.id} style={{ fontSize: 13 }}>{l.qty} × {l.item_name}{l.warranty_years != null && <span style={{ color: '#6B21A8', fontWeight: 700, fontSize: 11 }}> · {warrantyLabel(l.warranty_years)}</span>}</div>
                             ))}
                             {ls.length > 3 && <div style={{ fontSize: 11, fontWeight: 700, color: C.slate }}>+ {ls.length - 3} more</div>}
                           </>
@@ -441,7 +445,13 @@ export function ScreenOrderBook() {
                     </tr>,
                     ...g.rows.map((r) => (
                       <tr key={r.key} style={{ borderBottom: '1px solid #F3F3F3' }}>
-                        <td style={{ ...td, paddingLeft: 32, fontWeight: 600 }}>{r.model}</td>
+                        <td style={{ ...td, paddingLeft: 32, fontWeight: 600 }}>
+                          {r.model}
+                          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 99, whiteSpace: 'nowrap',
+                            background: r.warranty == null ? '#F3F3F3' : '#F0E8FF', color: r.warranty == null ? '#767B77' : '#6B21A8' }}>
+                            {r.warranty == null ? 'Warranty not set' : warrantyLabel(r.warranty)}
+                          </span>
+                        </td>
                         {nums(r).map((n, i) => (
                           <td key={i} style={{ ...td, textAlign: 'right', fontWeight: 700, color: n.v ? n.color : C.slate }}>{n.v || '—'}</td>
                         ))}
@@ -491,6 +501,7 @@ interface DraftLine {
   po_id: string;
   po_no: string;
   notes: string;
+  warranty: string;
 }
 
 interface OrderModalProps {
@@ -510,8 +521,9 @@ function OrderModal({ quote, lines, items, pos, lineState, canEdit, me, customer
   const toDraft = (l: OrderLine): DraftLine => ({
     key: l.id, id: l.id, item_id: l.item_id ?? '', item_name: l.item_name, qty: String(l.qty), from_stock: l.from_stock,
     po_id: l.po_id ?? '', po_no: l.po_id ? '' : (l.po_no ?? ''), notes: l.notes ?? '',
+    warranty: l.warranty_years == null ? '' : String(l.warranty_years),
   });
-  const blank = (): DraftLine => ({ key: crypto.randomUUID(), id: null, item_id: '', item_name: '', qty: '1', from_stock: false, po_id: '', po_no: '', notes: '' });
+  const blank = (): DraftLine => ({ key: crypto.randomUUID(), id: null, item_id: '', item_name: '', qty: '1', from_stock: false, po_id: '', po_no: '', notes: '', warranty: '' });
   const [draft, setDraft] = useState<DraftLine[]>(() => (lines.length ? lines.map(toDraft) : canEdit ? [blank()] : []));
   const [allItems, setAllItems] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -549,6 +561,8 @@ function OrderModal({ quote, lines, items, pos, lineState, canEdit, me, customer
       const n = Number(l.qty);
       if (!l.item_name.trim()) { setErr(`Line ${i + 1}: pick the charger.`); return; }
       if (!Number.isInteger(n) || n <= 0) { setErr(`Line ${i + 1}: quantity must be a whole number above zero.`); return; }
+      const w = l.warranty.trim() === '' ? null : Number(l.warranty);
+      if (w != null && (!Number.isFinite(w) || w < 0 || w > 20)) { setErr(`Line ${i + 1}: warranty is in years, between 0 and 20.`); return; }
     }
     setBusy(true);
     setErr(null);
@@ -567,6 +581,7 @@ function OrderModal({ quote, lines, items, pos, lineState, canEdit, me, customer
         po_id: l.from_stock ? null : po?.id ?? null,
         po_no: l.from_stock ? null : po?.po_number ?? (l.po_no.trim() || null),
         notes: l.notes.trim() || null, position: i, updated_at: now,
+        warranty_years: l.warranty.trim() === '' ? null : Number(l.warranty),
       };
       const { error } = l.id
         ? await supabase.from('sales_order_lines').update(row).eq('id', l.id)
@@ -624,7 +639,7 @@ function OrderModal({ quote, lines, items, pos, lineState, canEdit, me, customer
                     </button>
                   )}
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: 12 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 90px 130px', gap: 12 }}>
                   <div style={{ minWidth: 0 }}>
                     <label style={label}>Charger</label>
                     <SearchSelect value={l.item_id || (l.item_name ? `name:${l.item_name}` : '')} options={itemOptions(l)} disabled={ro}
@@ -635,6 +650,10 @@ function OrderModal({ quote, lines, items, pos, lineState, canEdit, me, customer
                   <div>
                     <label style={label}>Qty</label>
                     <input type="number" min={1} step={1} value={l.qty} disabled={ro} onChange={(e) => setLine(l.key, { qty: e.target.value })} style={input} />
+                  </div>
+                  <div>
+                    <label style={label}>Warranty (years)</label>
+                    <input type="number" min={0} max={20} step={0.5} value={l.warranty} disabled={ro} placeholder="Not set" onChange={(e) => setLine(l.key, { warranty: e.target.value })} style={input} />
                   </div>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'minmax(200px, auto) 1fr', gap: 12, alignItems: 'end' }}>

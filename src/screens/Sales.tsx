@@ -90,8 +90,9 @@ export interface CostItem {
 }
 
 export interface ChargerItem { id: string; name: string; brand: string | null; active: boolean }
-interface CardCharger { name: string; qty: number }
-interface ChargerDraft { key: string; id: string | null; item_id: string; item_name: string; qty: string; locked: boolean }
+interface CardCharger { name: string; qty: number; warranty: number | null }
+const chargerLine = (c: CardCharger) => `${c.qty} × ${c.name}${c.warranty != null ? ` · ${c.warranty}-yr warranty` : ''}`;
+interface ChargerDraft { key: string; id: string | null; item_id: string; item_name: string; qty: string; warranty: string; locked: boolean }
 
 export interface CostOption {
   id: string;
@@ -308,9 +309,9 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
     if (err) { setError(err.message); setLoading(false); return; }
     setQuotes((q.data ?? []) as Quote[]);
     if (pipeline === 'sales') {
-      const { data: ol } = await supabase.from('sales_order_lines').select('quote_id, item_name, qty').order('position').order('created_at');
+      const { data: ol } = await supabase.from('sales_order_lines').select('quote_id, item_name, qty, warranty_years').order('position').order('created_at');
       const m = new Map<string, CardCharger[]>();
-      for (const r of (ol ?? []) as { quote_id: string; item_name: string; qty: number }[]) m.set(r.quote_id, [...(m.get(r.quote_id) ?? []), { name: r.item_name, qty: r.qty }]);
+      for (const r of (ol ?? []) as { quote_id: string; item_name: string; qty: number; warranty_years: number | null }[]) m.set(r.quote_id, [...(m.get(r.quote_id) ?? []), { name: r.item_name, qty: r.qty, warranty: r.warranty_years }]);
       setQuoteChargers(m);
     }
     const firstContact = new Map<string, { name: string | null; email: string | null }>();
@@ -780,11 +781,12 @@ function PipelineBoard({ quotes, canEdit, onOpen, onDropStatus, chargers }: {
                     const pw = parseChargerPower(first.name);
                     const tc = pw?.current === 'DC' ? { bg: '#E3F0FF', color: '#1A62C0' } : { bg: '#E4F3E3', color: '#1B512D' };
                     return (
-                      <div title={cs.map((c) => `${c.qty} × ${c.name}`).join('\n')}
+                      <div title={cs.map(chargerLine).join('\n')}
                         style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#1a1a1a', background: C.seasalt, borderRadius: 8, padding: '5px 8px', lineHeight: 1.4, flexShrink: 0, minWidth: 0, overflow: 'hidden' }}>
                         {pw && <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 6, background: tc.bg, color: tc.color, whiteSpace: 'nowrap', flexShrink: 0 }}>{pw.current} {fmtKw(pw.kw)}</span>}
                         <span style={{ fontWeight: 700, whiteSpace: 'nowrap', flexShrink: 0 }}>{first.qty} ×</span>
                         <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{first.name}</span>
+                        {first.warranty != null && <span style={{ fontSize: 10, fontWeight: 700, color: C.slate, whiteSpace: 'nowrap', flexShrink: 0 }}>{first.warranty}y</span>}
                         {cs.length > 1 && <span style={{ marginLeft: 'auto', fontSize: 10, fontWeight: 700, color: C.slate, whiteSpace: 'nowrap', flexShrink: 0 }}>+{cs.length - 1}</span>}
                       </div>
                     );
@@ -878,8 +880,8 @@ function QuoteTable({ quotes, onOpen, selectable, selected, onToggle, onToggleAl
                 <td title={q.customer_name} style={{ ...clip, fontWeight: 600 }}>{q.customer_name}</td>
                 {chargers && (() => {
                   const cs = chargers.get(q.id) ?? [];
-                  const text = cs.map((c) => `${c.qty} × ${c.name}`).join(', ');
-                  return <td title={cs.map((c) => `${c.qty} × ${c.name}`).join('\n')} style={{ ...clip, maxWidth: 240, color: cs.length ? '#1a1a1a' : C.slate }}>{text || '—'}</td>;
+                  const text = cs.map(chargerLine).join(', ');
+                  return <td title={cs.map(chargerLine).join('\n')} style={{ ...clip, maxWidth: 240, color: cs.length ? '#1a1a1a' : C.slate }}>{text || '—'}</td>;
                 })()}
                 <td title={q.salesperson_name} style={{ ...clip, maxWidth: 160, color: C.slate }}>{q.salesperson_name}</td>
                 <td style={{ ...one, fontWeight: 700, color: C.green }}>{fmtMoney(Number(q.total))}</td>
@@ -943,18 +945,18 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
   // on a new quote; optional to add or change on an existing one. A line whose
   // purchase has started (PO / from stock) is managed in the Order Book only.
   const withChargers = !!chargerItems;
-  const blankCharger = (): ChargerDraft => ({ key: crypto.randomUUID(), id: null, item_id: '', item_name: '', qty: '1', locked: false });
+  const blankCharger = (): ChargerDraft => ({ key: crypto.randomUUID(), id: null, item_id: '', item_name: '', qty: '1', warranty: '', locked: false });
   const [chargers, setChargers] = useState<ChargerDraft[]>(() => (isNew && withChargers ? [blankCharger()] : []));
   const [origChargers, setOrigChargers] = useState<ChargerDraft[]>([]);
   const [chargersLoaded, setChargersLoaded] = useState(isNew || !withChargers);
   useEffect(() => {
     if (!withChargers || !quote) return;
-    void supabase.from('sales_order_lines').select('id, item_id, item_name, qty, po_id, po_no, from_stock')
+    void supabase.from('sales_order_lines').select('id, item_id, item_name, qty, warranty_years, po_id, po_no, from_stock')
       .eq('quote_id', quote.id).order('position').order('created_at')
       .then(({ data, error: e }) => {
         if (e) { setError(`Could not load the chargers: ${e.message}`); return; }
-        const rows = ((data ?? []) as { id: string; item_id: string | null; item_name: string; qty: number; po_id: string | null; po_no: string | null; from_stock: boolean }[])
-          .map((r) => ({ key: r.id, id: r.id, item_id: r.item_id ?? '', item_name: r.item_name, qty: String(r.qty), locked: !!(r.po_id || r.po_no?.trim() || r.from_stock) }));
+        const rows = ((data ?? []) as { id: string; item_id: string | null; item_name: string; qty: number; warranty_years: number | null; po_id: string | null; po_no: string | null; from_stock: boolean }[])
+          .map((r) => ({ key: r.id, id: r.id, item_id: r.item_id ?? '', item_name: r.item_name, qty: String(r.qty), warranty: r.warranty_years == null ? '' : String(r.warranty_years), locked: !!(r.po_id || r.po_no?.trim() || r.from_stock) }));
         setChargers(rows);
         setOrigChargers(rows);
         setChargersLoaded(true);
@@ -963,7 +965,8 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
   const setCharger = (key: string, patch: Partial<ChargerDraft>) => setChargers((cs) => cs.map((c) => (c.key === key ? { ...c, ...patch } : c)));
   const listedChargers = chargers.filter((c) => c.item_name.trim());
   const chargerQtyBad = listedChargers.some((c) => { const n = Number(c.qty); return !Number.isInteger(n) || n <= 0; });
-  const chargersOk = !withChargers || (chargersLoaded && !chargerQtyBad && (!isNew || listedChargers.length > 0));
+  const chargerWarrantyBad = listedChargers.some((c) => { if (c.warranty.trim() === '') return false; const n = Number(c.warranty); return !Number.isFinite(n) || n < 0 || n > 20; });
+  const chargersOk = !withChargers || (chargersLoaded && !chargerQtyBad && !chargerWarrantyBad && (!isNew || listedChargers.length > 0));
 
   const syncChargers = async (quoteId: string): Promise<string | null> => {
     if (!withChargers || !chargersLoaded) return null;
@@ -976,9 +979,9 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
     const now = new Date().toISOString();
     for (const [i, c] of listedChargers.entries()) {
       if (c.locked) continue;
-      const row = { item_id: c.item_id || null, item_name: c.item_name.trim(), qty: Number(c.qty), position: i };
+      const row = { item_id: c.item_id || null, item_name: c.item_name.trim(), qty: Number(c.qty), warranty_years: c.warranty.trim() === '' ? null : Number(c.warranty), position: i };
       const before = origChargers.find((o) => o.id === c.id);
-      if (before && before.item_id === c.item_id && before.qty === c.qty && origChargers.indexOf(before) === i) continue;
+      if (before && before.item_id === c.item_id && before.qty === c.qty && before.warranty === c.warranty && origChargers.indexOf(before) === i) continue;
       const { error: e } = c.id
         ? await supabase.from('sales_order_lines').update({ ...row, updated_at: now }).eq('id', c.id)
         : await supabase.from('sales_order_lines').insert({ ...row, quote_id: quoteId, created_by: user.full_name || user.email });
@@ -1418,7 +1421,7 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
               <label style={{ ...label, marginBottom: 0 }}>Chargers{isNew ? ' *' : ''}</label>
-              <span style={{ fontSize: 11, color: C.slate }}>model + quantity · carried to the Order Book when won</span>
+              <span style={{ fontSize: 11, color: C.slate }}>model · quantity · years of warranty — carried to the Order Book when won</span>
             </div>
             {!chargersLoaded ? (
               <div style={{ fontSize: 12, color: C.slate }}>Loading chargers…</div>
@@ -1430,7 +1433,7 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
                     .map((it) => ({ value: it.id, label: it.name, sub: it.brand ?? undefined }));
                   if (c.item_name && !opts.some((o) => o.value === c.item_id)) opts.unshift({ value: c.item_id || `name:${c.item_name}`, label: c.item_name, sub: 'Not in Stock Levels' });
                   return (
-                    <div key={c.key} style={{ display: 'grid', gridTemplateColumns: '1fr 100px 32px', gap: 10, alignItems: 'center' }}>
+                    <div key={c.key} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 76px 104px 32px', gap: 10, alignItems: 'center' }}>
                       {c.locked ? (
                         <div style={{ ...input(true), display: 'flex', flexDirection: 'column', gap: 2 }}>
                           <span style={{ fontWeight: 600 }}>{c.item_name}</span>
@@ -1443,6 +1446,9 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
                       )}
                       <input type="number" min={1} step={1} value={c.qty} disabled={readOnly || c.locked} aria-label="Quantity"
                         onChange={(e) => setCharger(c.key, { qty: e.target.value })} style={{ ...input(readOnly || c.locked), textAlign: 'right' }} />
+                      <input type="number" min={0} max={20} step={0.5} value={c.warranty} disabled={readOnly || c.locked} aria-label="Warranty in years" placeholder="Warranty yrs"
+                        title="Years of warranty sold with this charger"
+                        onChange={(e) => setCharger(c.key, { warranty: e.target.value })} style={{ ...input(readOnly || c.locked), textAlign: 'right' }} />
                       {!readOnly && !c.locked ? (
                         <button type="button" onClick={() => setChargers((cs) => cs.filter((x) => x.key !== c.key))} title="Remove this charger"
                           style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}>
@@ -1460,6 +1466,7 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
                 )}
                 {isNew && listedChargers.length === 0 && <div style={{ fontSize: 11, color: '#B45309', fontWeight: 600 }}>Pick at least one charger to create the quote.</div>}
                 {chargerQtyBad && <div style={{ fontSize: 11, color: '#C0321A', fontWeight: 600 }}>Each charger needs a whole-number quantity above zero.</div>}
+                {chargerWarrantyBad && <div style={{ fontSize: 11, color: '#C0321A', fontWeight: 600 }}>Warranty is in years, between 0 and 20.</div>}
               </>
             )}
           </div>
