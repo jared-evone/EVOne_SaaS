@@ -742,7 +742,7 @@ function PICReportEditor({ workOrder, cpoCustomer = false, alreadyPushed = false
               Reopen for Warranty / Invoice
             </button>
           )}
-          {hasTemplated && completed && (
+          {hasTemplated && reviewStarted && (
             <button onClick={() => setPdfOpen(true)}
               style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
               <DownloadIcon size={12} strokeWidth={2.25} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 4 }} /> Export PDF
