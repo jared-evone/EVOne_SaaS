@@ -1356,27 +1356,15 @@ function PODetailModal({ po, busy, canDelete, canApprove, canFinance, approverNa
 function TemplateTab({ settings, accounts, onRefresh }: { settings: POSettings; accounts: PoAccount[]; onRefresh: () => Promise<void> }) {
   const [form, setForm] = useState<POSettings>(settings);
   const emailsOf = (ids: string[]) => accounts.filter((a) => ids.includes(a.id)).map((a) => a.email).join(', ');
-  const toggle = (field: 'approver_user_ids' | 'finance_user_ids', id: string) => {
-    const cur = form[field] ?? [];
-    setForm({ ...form, [field]: cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id] });
-    setSaved(false);
-  };
-  const accountPicker = (field: 'approver_user_ids' | 'finance_user_ids') => {
-    const chosen = form[field] ?? [];
-    const pool = accounts.filter((a) => a.is_active !== false || chosen.includes(a.id));
+  // One account per step, picked from the brand dropdown. Stored as a
+  // one-element list (the columns are arrays).
+  const accountPicker = (field: 'approver_user_ids' | 'finance_user_ids', placeholder: string) => {
+    const chosen = (form[field] ?? [])[0] ?? '';
+    const pool = accounts.filter((a) => a.is_active !== false || a.id === chosen);
     return (
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-        {pool.map((a) => {
-          const on = chosen.includes(a.id);
-          return (
-            <button key={a.id} type="button" onClick={() => toggle(field, a.id)} title={a.email}
-              style={{ padding: '6px 12px', borderRadius: 99, border: `1px solid ${on ? C.green : '#EBEBEB'}`, background: on ? C.green : C.white, color: on ? C.white : C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
-              {on ? '✓ ' : ''}{accountLabel(a)}
-            </button>
-          );
-        })}
-        {pool.length === 0 && <span style={{ fontSize: 12, color: C.slate }}>No accounts found.</span>}
-      </div>
+      <SearchSelect value={chosen} placeholder={placeholder} emptyText="No accounts match"
+        options={[{ value: '', label: 'Not chosen — a department admin acts' }, ...pool.map((a) => ({ value: a.id, label: accountLabel(a), sub: a.email }))]}
+        onChange={(v) => { setForm({ ...form, [field]: v ? [v] : [] }); setSaved(false); }} />
     );
   };
   const [saving, setSaving] = useState(false);
@@ -1417,17 +1405,17 @@ function TemplateTab({ settings, accounts, onRefresh }: { settings: POSettings; 
         </div>
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div>
-            <label style={label}>Approver account(s)</label>
-            {accountPicker('approver_user_ids')}
-            <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>Only these accounts get the Approve / Reject buttons on a pending PO.</div>
+            <label style={label}>Approver account</label>
+            {accountPicker('approver_user_ids', 'Select the approver…')}
+            <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>Only this account gets the Approve / Reject buttons on a pending PO.</div>
           </div>
           <div>
-            <label style={label}>Finance account(s)</label>
-            {accountPicker('finance_user_ids')}
-            <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>Only these accounts can mark an approved PO completed (which sends it to Incoming Shipments) or cancel it.</div>
+            <label style={label}>Finance account</label>
+            {accountPicker('finance_user_ids', 'Select the finance account…')}
+            <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>Only this account can mark an approved PO completed (which sends it to Incoming Shipments) or cancel it. It gets an email when a PO is approved — a notice only; everything is done in the app.</div>
           </div>
           <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.5 }}>
-            Everyone else with Raise PO can see every PO and its status, but not act on it. Each chosen account needs <strong>Raise PO</strong> ticked under Inventory in Settings to open this screen. While a step has nobody chosen, a department admin can act on it.
+            Everyone else with Raise PO can see every PO and its status, but not act on it. The chosen accounts need <strong>Raise PO</strong> ticked under Inventory in Settings to open this screen. While a step has nobody chosen, a department admin can act on it.
           </div>
         </div>
         <div>
