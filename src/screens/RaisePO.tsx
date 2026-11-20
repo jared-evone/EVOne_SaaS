@@ -357,7 +357,7 @@ const toProduct = (i: InvItemRow): Product => ({
 });
 
 export function ScreenRaisePO() {
-  const { can } = usePermissions();
+  const { can, user } = usePermissions();
   const canEdit = can('raise_po', 'can_edit');
   const canDelete = can('raise_po', 'can_delete');
 
@@ -400,7 +400,9 @@ export function ScreenRaisePO() {
   }
 
   const pending = pos.filter((p) => p.status === 'pending').length;
-  const tabs: [Tab, string][] = [['raise', 'Raise PO'], ['track', `${seeAll ? 'All POs' : 'My POs'}${pos.length ? ` · ${pos.length}` : ''}`]];
+  // The approver gets no email — flag what is waiting for them on the tab itself.
+  const mine = (settings?.approver_user_ids ?? []).includes(user.id) ? pending : 0;
+  const tabs: [Tab, string][] = [['raise', 'Raise PO'], ['track', `${seeAll ? 'All POs' : 'My POs'}${pos.length ? ` · ${pos.length}` : ''}${mine ? ` · ${mine} to approve` : ''}`]];
   if (canEdit) { tabs.push(['template', 'Approvers & Email']); }
 
   return (
@@ -541,7 +543,7 @@ function RaiseTab({ products, customers, accounts, settings, onSent }: { product
 
   const subtotal = lines.reduce((s, l) => s + l.qty * l.unit_price, 0);
   const sellSubtotal = lines.reduce((s, l) => s + l.qty * l.sell_price, 0);
-  const canSend = lines.length > 0 && !!approver.trim() && /@/.test(approver) && !sending;
+  const canSend = lines.length > 0 && !sending;
 
   const send = async () => {
     setSending(true);
@@ -561,27 +563,15 @@ function RaiseTab({ products, customers, accounts, settings, onSent }: { product
       notes: notes.trim() || null,
       app_base: `${window.location.origin}${window.location.pathname}`,
       status: 'pending',
-      email_status: 'queued',
+      email_status: 'in_app',
       created_by: user.full_name || user.email,
       created_by_id: user.id,
     }).select('*').single();
     if (insErr || !created) { setSending(false); setError(insErr?.message ?? 'Could not create the PO.'); return; }
 
+    // No email on raising: the approver sees pending POs in the app. Finance is
+    // emailed a notice once it is approved.
     const po = created as unknown as PurchaseOrder;
-    const html = buildPoEmail(po, settings, user.full_name || user.email);
-    const subject = `Purchase Order - ${po.supplier || 'No supplier'} - ${po.title}`;
-    let emailErr: string | null = null;
-    try {
-      const { data: r, error: fnErr } = await supabase.functions.invoke('send-customer-email', {
-        body: { to: toList(approver), subject, html, from: settings.from_address || undefined, replyTo: settings.reply_to || undefined },
-      });
-      emailErr = (r as { error?: string } | null)?.error ?? fnErr?.message ?? null;
-    } catch (e) { emailErr = (e as Error).message || 'send failed'; }
-    // The default CC gets a buttons-free FYI copy in a SEPARATE send, so the
-    // Approve/Reject links never leave the approver's inbox. A CC failure
-    // doesn't fail the PO.
-    if (!emailErr) void sendFyiCopies(po, settings, user.full_name || user.email, subject);
-    await supabase.from('purchase_orders').update({ email_status: emailErr ? 'failed' : 'sent', email_error: emailErr }).eq('id', po.id);
 
     // Tie each Order Book charger raised here to this PO. A failure only leaves
     // the link to be made by hand in the Order Book — the PO itself is saved.
@@ -602,7 +592,6 @@ function RaiseTab({ products, customers, accounts, settings, onSent }: { product
     clearAll();
     void loadAwaiting();
     if (linkErr) window.alert(`PO ${po.po_number} was raised, but its chargers could not be linked in the Order Book (${linkErr}). Link them there by hand.`);
-    if (emailErr) { setError(`PO ${po.po_number} saved, but the email failed: ${emailErr}. You can resend it from My POs.`); }
     await onSent();
   };
 
@@ -767,7 +756,6 @@ function RaiseTab({ products, customers, accounts, settings, onSent }: { product
               style={{ marginTop: 4, padding: '11px', borderRadius: 10, border: 'none', background: canSend ? C.green : '#ccc', color: C.white, fontFamily: 'Figtree', fontSize: 14, fontWeight: 700, cursor: canSend ? 'pointer' : 'default', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
               <Send size={14} strokeWidth={2.25} /> {sending ? 'Sending…' : 'Send for approval'}
             </button>
-            {!/@/.test(approver) && lines.length > 0 && <div style={{ fontSize: 11, color: C.slate, textAlign: 'center' }}>Choose the approver account in the Approvers & Email tab to send.</div>}
           </div>
         </div>
       </div>
@@ -1005,7 +993,7 @@ function TrackTab({ pos, customers, accounts, settings, canEdit, canDelete, onRe
                   </td>
                   <td style={{ padding: '12px 16px' }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: po.email_status === 'sent' ? '#1B512D' : po.email_status === 'failed' ? '#C0321A' : C.slate }}>
-                      {po.email_status === 'sent' ? '✓ Sent' : po.email_status === 'failed' ? 'Failed' : 'Queued'}
+                      {po.email_status === 'sent' ? '✓ Sent' : po.email_status === 'failed' ? 'Failed' : po.email_status === 'in_app' ? '—' : 'Queued'}
                     </span>
                   </td>
                   <td style={{ padding: '12px 16px', fontSize: 12, color: C.slate, whiteSpace: 'nowrap' }}>{new Date(po.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
@@ -1048,7 +1036,7 @@ const fmtDT = (s: string | null) => (s ? new Date(s).toLocaleString('en-GB', { d
 function POTimeline({ po, financeEmail, approverEmail }: { po: PurchaseOrder; financeEmail: string | null; approverEmail: string | null }) {
   const steps: { label: string; sub: string; state: StepState }[] = [];
   steps.push({ label: 'PO raised', sub: `by ${po.created_by ?? 'you'} · ${fmtDT(po.created_at)}`, state: 'done' });
-  steps.push({
+  if (po.email_status !== 'in_app') steps.push({
     label: 'Approver notified',
     sub: po.email_status === 'sent' ? `Sent to ${approverEmail ?? po.approver_email}` : po.email_status === 'failed' ? 'Send failed — resend below' : 'Queued to send',
     state: po.email_status === 'sent' ? 'done' : po.email_status === 'failed' ? 'error' : 'pending',
@@ -1320,7 +1308,7 @@ function PODetailModal({ po, busy, canDelete, canApprove, canFinance, approverNa
             </button>
           )}
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            {po.status === 'pending' && (
+            {po.status === 'pending' && po.email_status !== 'in_app' && (
               <button onClick={onResend} disabled={busy}
                 style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid #EBEBEB', background: 'transparent', color: C.slate, fontFamily: 'Figtree', fontSize: 13, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 <RefreshCw size={13} /> {busy ? 'Resending…' : 'Resend to approver'}
@@ -1394,20 +1382,12 @@ function TemplateTab({ settings, accounts, onRefresh }: { settings: POSettings; 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(340px, 1fr) 1fr', gap: 16, alignItems: 'flex-start' }}>
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>Approvers & notification email</div>
-        <div style={{ fontSize: 12, color: C.slate, background: C.seasalt, border: '1px dashed #EBEBEB', borderRadius: 10, padding: '8px 12px' }}>
-          Subject is set automatically: <strong style={{ color: '#1a1a1a' }}>Purchase Order - [Supplier] - [PO Title]</strong>
-        </div>
-        <div>
-          <label style={label}>Message in the approver's notification email</label>
-          <textarea value={form.body} onChange={(e) => { setForm({ ...form, body: e.target.value }); setSaved(false); }} rows={5} style={{ ...input, resize: 'vertical', lineHeight: 1.6, fontFamily: 'Figtree' }} />
-          <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>Sent to the approver account when a PO is raised — shown in the preview. Finance's notice (sent after approval) has fixed wording. Placeholders: <code style={{ background: C.seasalt, padding: '1px 5px', borderRadius: 4 }}>{'{{po_number}}'}</code> <code style={{ background: C.seasalt, padding: '1px 5px', borderRadius: 4 }}>{'{{title}}'}</code> <code style={{ background: C.seasalt, padding: '1px 5px', borderRadius: 4 }}>{'{{salesman}}'}</code> <code style={{ background: C.seasalt, padding: '1px 5px', borderRadius: 4 }}>{'{{supplier}}'}</code> <code style={{ background: C.seasalt, padding: '1px 5px', borderRadius: 4 }}>{'{{total}}'}</code>. The item table and a link to open EVOne are added automatically.</div>
-        </div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: C.green }}>Approver, finance & notification email</div>
         <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div>
             <label style={label}>Approver account</label>
             {accountPicker('approver_user_ids', 'Select the approver…')}
-            <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>Only this account gets the Approve / Reject buttons on a pending PO.</div>
+            <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>Only this account gets the Approve / Reject buttons on a pending PO. No email is sent to the approver — pending POs wait in All POs.</div>
           </div>
           <div>
             <label style={label}>Finance account</label>
@@ -1419,10 +1399,10 @@ function TemplateTab({ settings, accounts, onRefresh }: { settings: POSettings; 
           </div>
         </div>
         <div>
-          <label style={label}>CC on PO emails (comma-separated)</label>
+          <label style={label}>CC on finance's notice (comma-separated)</label>
           <input value={form.cc_email ?? ''} onChange={(e) => { setForm({ ...form, cc_email: e.target.value }); setSaved(false); }} placeholder="e.g. ops@evone.com, director@evone.com" style={input} />
           <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
-            The approver and finance accounts get an email when a PO is waiting for them, with a link to open EVOne — approving and completing happen in the app. CC'd people get an FYI copy of both.
+            Finance gets an email when a PO is approved, with a link to open EVOne — completing happens in the app. CC'd people get an FYI copy of it.
           </div>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
@@ -1434,11 +1414,11 @@ function TemplateTab({ settings, accounts, onRefresh }: { settings: POSettings; 
       </div>
 
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: 20 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>Preview</div>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>Preview — finance's notice after approval</div>
         <div style={{ border: '1px solid #EBEBEB', borderRadius: 12, padding: 18 }}
-          dangerouslySetInnerHTML={{ __html: buildPoEmail(
+          dangerouslySetInnerHTML={{ __html: buildFinanceEmail(
             { id: '', po_number: 'EV1PO-000250', title: 'Sample PO', supplier: 'Acme Supplies', approver_email: '', finance_email: '', currency: 'SGD', sell_subtotal: 0, sell_currency: 'SGD', lines: [{ product_id: null, name: '22kW AC Charger', remark: 'Model ABC-22\nOCPP 1.6J, Type 2 socket', unit: 'unit', unit_price: 1800, sell_price: 2300, qty: 2, currency: 'SGD', supplier: 'Acme Supplies' }, { product_id: null, name: 'Installation', remark: null, unit: 'lot', unit_price: 600, sell_price: 800, qty: 1, currency: 'SGD', supplier: 'Acme Supplies' }], subtotal: 4200, notes: '', status: 'pending', approval_token: 'preview', decided_at: null, finance_decided_at: null, email_status: null, email_error: null, app_base: null, forwarded_at: null, created_by: 'You', created_by_id: '', created_at: '' },
-            form, 'You',
+            'You', form,
           ) }} />
       </div>
     </div>
