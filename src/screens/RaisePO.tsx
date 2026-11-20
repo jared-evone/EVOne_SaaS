@@ -24,7 +24,17 @@ interface Product {
   is_active: boolean;
 }
 
-interface POLine { key: string; product_id: string | null; name: string; remark?: string | null; unit: string; unit_price: number; sell_price: number; qty: number; currency: string; supplier: string | null; }
+interface POLine {
+  key: string; product_id: string | null; name: string; remark?: string | null; unit: string; unit_price: number; sell_price: number; qty: number; currency: string; supplier: string | null;
+  /** Set when the line was added from a won quote's charger awaiting a PO (sales_order_lines.id) — linked to this PO once it is raised. */
+  order_line_id?: string;
+}
+
+/** A charger on a won Sales quote that still needs a purchase order. */
+interface AwaitingCharger {
+  id: string; item_id: string | null; item_name: string; qty: number; warranty_years: number | null;
+  quote_ref: string; customer_id: string | null; customer_name: string; won: string;
+}
 type StoredLine = Omit<POLine, 'key'>;
 
 interface PurchaseOrder {
@@ -458,6 +468,49 @@ function RaiseTab({ products, customers, settings, onSent }: { products: Product
 
   const poCurrency = lines[0]?.currency ?? 'SGD';
   const poSupplier = lines.find((l) => l.supplier)?.supplier ?? ''; // a PO is for one supplier — taken from its items
+  // Chargers on won Sales quotes with no PO yet (or whose PO was rejected /
+  // cancelled). Adding one brings its quantity and warranty onto this PO and,
+  // once the PO is raised, links the Order Book line to it.
+  const [source, setSource] = useState<'items' | 'awaiting'>('items');
+  const [awaiting, setAwaiting] = useState<AwaitingCharger[]>([]);
+  const loadAwaiting = async () => {
+    const [{ data: ol }, { data: qs }, { data: dead }] = await Promise.all([
+      supabase.from('sales_order_lines').select('id, quote_id, item_id, item_name, qty, warranty_years, po_id, po_no, from_stock').eq('from_stock', false).order('created_at'),
+      supabase.from('sales_quotations').select('id, ref, customer_id, customer_name, won_at, outcome_date').eq('status', 'Won'),
+      supabase.from('purchase_orders').select('id').in('status', ['rejected', 'cancelled']),
+    ]);
+    const quoteById = new Map(((qs ?? []) as { id: string; ref: string; customer_id: string | null; customer_name: string; won_at: string | null; outcome_date: string | null }[]).map((q) => [q.id, q]));
+    const deadPo = new Set(((dead ?? []) as { id: string }[]).map((d) => d.id));
+    setAwaiting(((ol ?? []) as { id: string; quote_id: string; item_id: string | null; item_name: string; qty: number; warranty_years: number | null; po_id: string | null; po_no: string | null }[])
+      .filter((l) => quoteById.has(l.quote_id) && (l.po_id ? deadPo.has(l.po_id) : !(l.po_no ?? '').trim()))
+      .map((l) => {
+        const q = quoteById.get(l.quote_id)!;
+        return { id: l.id, item_id: l.item_id, item_name: l.item_name, qty: l.qty, warranty_years: l.warranty_years,
+          quote_ref: q.ref, customer_id: q.customer_id, customer_name: (q.customer_id && customers.find((c) => c.id === q.customer_id)?.name) || q.customer_name,
+          won: (q.won_at ?? q.outcome_date ?? '').slice(0, 10) };
+      })
+      .sort((a, b) => a.won.localeCompare(b.won)));
+  };
+  useEffect(() => { void loadAwaiting(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const addAwaiting = (a: AwaitingCharger) => {
+    const p = a.item_id ? products.find((x) => x.id === a.item_id) : undefined;
+    const currency = p?.currency ?? lines[0]?.currency ?? 'SGD';
+    const sup = lines.find((l) => l.supplier)?.supplier ?? null;
+    if (lines.length && (lines[0].currency !== currency || (sup && p?.supplier && sup !== p.supplier))) {
+      window.alert(`This PO is for ${sup || 'no supplier'} (${lines[0].currency}). ${a.item_name} is ${p?.supplier ? `from ${p.supplier}` : 'priced'} in ${currency} — raise it on its own PO, or remove the current items first.`);
+      return;
+    }
+    if (lines.some((l) => l.order_line_id === a.id)) return;
+    const warranty = a.warranty_years != null ? `Warranty: ${a.warranty_years} year${a.warranty_years === 1 ? '' : 's'}` : '';
+    setLines((prev) => [...prev, {
+      key: newKey(), product_id: p?.id ?? null, name: p?.name ?? a.item_name,
+      remark: [p?.description, warranty].filter(Boolean).join('\n') || null,
+      unit: p?.unit ?? 'unit', unit_price: p?.unit_price ?? 0, sell_price: 0, qty: a.qty, currency, supplier: p?.supplier ?? null, order_line_id: a.id,
+    }]);
+    if (!customer && a.customer_id) { const c = customers.find((x) => x.id === a.customer_id); if (c) setCustomer(c); }
+  };
+
   const addProduct = (p: Product) => setLines((prev) => {
     if (prev.length) {
       // Items with no supplier on file fit any PO; otherwise one supplier and one currency per PO.
@@ -467,7 +520,7 @@ function RaiseTab({ products, customers, settings, onSent }: { products: Product
         return prev;
       }
     }
-    const ex = prev.find((l) => l.product_id === p.id);
+    const ex = prev.find((l) => l.product_id === p.id && !l.order_line_id);
     if (ex) return prev.map((l) => (l.key === ex.key ? { ...l, qty: l.qty + 1 } : l));
     return [...prev, { key: newKey(), product_id: p.id, name: p.name, remark: p.description, unit: p.unit, unit_price: p.unit_price, sell_price: 0, qty: 1, currency: p.currency, supplier: p.supplier }];
   });
@@ -518,8 +571,19 @@ function RaiseTab({ products, customers, settings, onSent }: { products: Product
     if (!emailErr) void sendFyiCopies(po, settings, user.full_name || user.email, subject);
     await supabase.from('purchase_orders').update({ email_status: emailErr ? 'failed' : 'sent', email_error: emailErr }).eq('id', po.id);
 
+    // Tie each Order Book charger raised here to this PO. A failure only leaves
+    // the link to be made by hand in the Order Book — the PO itself is saved.
+    const linked = lines.map((l) => l.order_line_id).filter((x): x is string => !!x);
+    let linkErr: string | null = null;
+    if (linked.length) {
+      const { error: le } = await supabase.from('sales_order_lines').update({ po_id: po.id, po_no: po.po_number, updated_at: new Date().toISOString() }).in('id', linked);
+      linkErr = le?.message ?? null;
+    }
+
     setSending(false);
     clearAll();
+    void loadAwaiting();
+    if (linkErr) window.alert(`PO ${po.po_number} was raised, but its chargers could not be linked in the Order Book (${linkErr}). Link them there by hand.`);
     if (emailErr) { setError(`PO ${po.po_number} saved, but the email failed: ${emailErr}. You can resend it from My POs.`); }
     await onSent();
   };
@@ -533,14 +597,51 @@ function RaiseTab({ products, customers, settings, onSent }: { products: Product
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden', display: 'flex', flexDirection: 'column', maxHeight: '72vh' }}>
         <div style={{ padding: 14, borderBottom: '1px solid #F3F3F3', display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>Add items</div>
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search items, models, suppliers…" style={inputStyle} />
-          <select value={catFilter} onChange={(e) => setCatFilter(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
-            <option value="">All categories</option>
-            {cats.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
+          <div style={{ display: 'flex', gap: 4, background: C.seasalt, borderRadius: 10, padding: 3 }}>
+            {([['items', 'Stock Levels'], ['awaiting', `Awaiting PO${awaiting.length ? ` · ${awaiting.length}` : ''}`]] as const).map(([id, label]) => (
+              <button key={id} type="button" onClick={() => setSource(id)}
+                style={{ flex: 1, padding: '7px 8px', borderRadius: 8, border: 'none', fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap',
+                  background: source === id ? C.green : 'transparent', color: source === id ? C.white : C.slate }}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={source === 'awaiting' ? 'Search charger, quote, customer…' : 'Search items, models, suppliers…'} style={inputStyle} />
+          {source === 'items' && (
+            <select value={catFilter} onChange={(e) => setCatFilter(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+              <option value="">All categories</option>
+              {cats.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          )}
+          {source === 'awaiting' && <div style={{ fontSize: 11, color: C.slate, lineHeight: 1.4 }}>Chargers on won quotes with no PO yet. Adding one brings its quantity and warranty, and links it to this PO in the Order Book.</div>}
         </div>
         <div style={{ overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {active.length === 0 ? (
+          {source === 'awaiting' ? (() => {
+            const list = awaiting.filter((a) => !ql || `${a.item_name} ${a.quote_ref} ${a.customer_name}`.toLowerCase().includes(ql));
+            if (!list.length) return <div style={{ padding: '30px 14px', textAlign: 'center', color: C.slate, fontSize: 12 }}>{awaiting.length ? 'No chargers match.' : 'No chargers are awaiting a PO.'}</div>;
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {list.map((a) => {
+                  const added = lines.some((l) => l.order_line_id === a.id);
+                  return (
+                    <button key={a.id} type="button" onClick={() => addAwaiting(a)} disabled={added}
+                      style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 8, border: 'none', background: added ? C.honeydew : 'transparent', cursor: added ? 'default' : 'pointer', textAlign: 'left', fontFamily: 'Figtree' }}>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#1a1a1a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.qty} × {a.item_name}</span>
+                        <span style={{ display: 'block', fontSize: 11, color: C.slate, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.quote_ref} · {a.customer_name}</span>
+                        <span style={{ display: 'block', fontSize: 11, fontWeight: 700, color: a.warranty_years != null ? '#6B21A8' : '#B45309' }}>
+                          {a.warranty_years != null ? `${a.warranty_years}-yr warranty` : 'Warranty not set'}{!a.item_id ? ' · not in Stock Levels' : ''}
+                        </span>
+                      </span>
+                      <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 700, color: C.green, minWidth: 24, height: 24, padding: added ? '0 6px' : 0, borderRadius: 7, background: C.honeydew, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                        {added ? 'Added' : <Plus size={14} strokeWidth={2.5} />}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })() : active.length === 0 ? (
             <div style={{ padding: '30px 14px', textAlign: 'center', color: C.slate, fontSize: 12 }}>No items yet. Add them in <strong>Inventory → Stock Levels</strong>.</div>
           ) : grouped.map(([cat, list]) => (
             <div key={cat}>
