@@ -166,6 +166,7 @@ export function ScreenProjects() {
   const [projects, setProjects]   = useState<Project[]>([]);
   const [customers, setCustomers] = useState<CustomerLite[]>([]);
   const [siteCounts, setSiteCounts]       = useState<Record<string, number>>({});
+  const [siteAddrs, setSiteAddrs]         = useState<Record<string, { name: string; address: string }[]>>({});
   const [chargerCounts, setChargerCounts] = useState<Record<string, number>>({});
   // Per registry: each charger's size key + Brand & Model, for the charger filters.
   const [chargerSpecs, setChargerSpecs] = useState<Record<string, { power: string; model: string }[]>>({});
@@ -193,7 +194,7 @@ export function ScreenProjects() {
     const [{ data: ps, error: pErr }, { data: cs }, { data: siteData }, { data: chargerData }] = await Promise.all([
       supabase.from('projects').select('*').order('created_at', { ascending: false }).order('id', { ascending: true }),
       supabase.from('customers').select('id, name, type').order('name'),
-      supabase.from('project_sites').select('id, project_id'),
+      supabase.from('project_sites').select('id, project_id, name, address').order('position').order('created_at'),
       supabase.from('site_chargers').select('site_id, brand_model'),
     ]);
     setLoading(false);
@@ -203,7 +204,10 @@ export function ScreenProjects() {
     setCustomers((cs ?? []) as CustomerLite[]);
 
     // Site + charger counts per registry entry (project).
-    const sites = (siteData ?? []) as { id: string; project_id: string }[];
+    const sites = (siteData ?? []) as { id: string; project_id: string; name: string | null; address: string | null }[];
+    const addrs: Record<string, { name: string; address: string }[]> = {};
+    for (const s of sites) (addrs[s.project_id] ??= []).push({ name: s.name ?? '', address: (s.address ?? '').trim() });
+    setSiteAddrs(addrs);
     const chargers = (chargerData ?? []) as { site_id: string; brand_model: string | null }[];
     const siteToProject = new Map(sites.map((s) => [s.id, s.project_id]));
     const sc: Record<string, number> = {};
@@ -273,7 +277,8 @@ export function ScreenProjects() {
     if (!search) return true;
     const q = search.toLowerCase();
     const customerName = customerById(p.customer_id)?.name ?? '';
-    return (p.name + ' ' + customerName + ' ' + (p.notes ?? '')).toLowerCase().includes(q);
+    const siteText = (siteAddrs[p.id] ?? []).map((x) => `${x.name} ${x.address}`).join(' ');
+    return (p.name + ' ' + customerName + ' ' + (p.notes ?? '') + ' ' + siteText).toLowerCase().includes(q);
   });
   const totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
@@ -314,7 +319,7 @@ export function ScreenProjects() {
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <div style={{ position: 'relative', width: 260 }}>
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search chargers…"
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search customer or address…"
             style={{ width: '100%', padding: '8px 14px 8px 34px', borderRadius: 99, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', background: C.white, boxSizing: 'border-box' }} />
           <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: C.slate, display: 'inline-flex' }}><Search size={14} /></span>
         </div>
@@ -339,19 +344,19 @@ export function ScreenProjects() {
 
       <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflow: 'hidden' }}>
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', minWidth: 600, borderCollapse: 'collapse' }}>
+          <table style={{ width: '100%', minWidth: 860, borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: C.seasalt }}>
-                {['Customer', 'Type', 'Status', 'Sites', 'Chargers', 'Updated'].map((h) => (
+                {['Customer', 'Address', 'Type', 'Status', 'Sites', 'Chargers', 'Updated'].map((h) => (
                   <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={6} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</td></tr>
+                <tr><td colSpan={7} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Loading…</td></tr>
               ) : visible.length === 0 ? (
-                <tr><td colSpan={6} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
+                <tr><td colSpan={7} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>
                   {projects.length === 0 ? 'No customers yet. Click "+ New Registration" to add one.' : 'No customers match your filters.'}
                 </td></tr>
               ) : pageRows.map((p) => {
@@ -373,6 +378,23 @@ export function ScreenProjects() {
                         <div style={{ fontSize: 11, color: C.slate, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 480 }}>{p.notes}</div>
                       )}
                     </td>
+                    {(() => {
+                      // The site whose address matches the search leads; otherwise the first site.
+                      const all = (siteAddrs[p.id] ?? []).filter((x) => x.address);
+                      const ql = search.trim().toLowerCase();
+                      const lead = (ql && all.find((x) => `${x.name} ${x.address}`.toLowerCase().includes(ql))) || all[0];
+                      return (
+                        <td onClick={open} title={all.map((x) => x.address).join('\n') || undefined}
+                          style={{ padding: '13px 16px', cursor: 'pointer', fontSize: 12, color: C.slate, maxWidth: 320 }}>
+                          {lead ? (
+                            <>
+                              <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{lead.address}</div>
+                              {all.length > 1 && <div style={{ fontSize: 11, fontWeight: 700 }}>+ {all.length - 1} more site{all.length - 1 === 1 ? '' : 's'}</div>}
+                            </>
+                          ) : '—'}
+                        </td>
+                      );
+                    })()}
                     <td onClick={open} style={{ padding: '13px 16px', cursor: 'pointer' }}>
                       {cust ? (
                         <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99, background: TYPE_PALETTE[cust.type].bg, color: TYPE_PALETTE[cust.type].color, whiteSpace: 'nowrap' }}>
