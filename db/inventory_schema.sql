@@ -666,3 +666,16 @@ alter table public.purchase_orders
 alter table public.inv_shipments
   add column if not exists shipment_type text not null default 'purchase'
   check (shipment_type in ('purchase', 'warranty_claim'));
+
+-- 2026-11-20 · migration po_approver_finance_accounts — PO approval moves from
+-- email links to app accounts. po_settings names the accounts that may approve
+-- (approver_user_ids) and the accounts that handle the finance step
+-- (finance_user_ids); the PO records who acted (decided_by / finance_decided_by).
+-- Additive: approver_email / finance_email and the po-decision email links
+-- stay as they were.
+alter table public.po_settings
+  add column if not exists approver_user_ids uuid[] not null default '{}',
+  add column if not exists finance_user_ids uuid[] not null default '{}';
+alter table public.purchase_orders
+  add column if not exists decided_by text,
+  add column if not exists finance_decided_by text;
