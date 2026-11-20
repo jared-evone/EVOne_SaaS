@@ -28,7 +28,10 @@ interface POLine {
   key: string; product_id: string | null; name: string; remark?: string | null; unit: string; unit_price: number; sell_price: number; qty: number; currency: string; supplier: string | null;
   /** Set when the line was added from a won quote's charger awaiting a PO (sales_order_lines.id) — linked to this PO once it is raised. */
   order_line_id?: string;
+  /** Years of warranty to buy from the supplier for this line — shown on the PO and its emails. */
+  warranty_years?: number | null;
 }
+const warrantyText = (y: number | null | undefined) => (y == null ? '' : `Warranty to order: ${y} year${y === 1 ? '' : 's'}`);
 
 /** A charger on a won Sales quote that still needs a purchase order. */
 interface AwaitingCharger {
@@ -149,7 +152,8 @@ function buildPoEmail(po: PurchaseOrder, settings: POSettings, salesman: string,
 // Shared item table + cost/sell totals block used by both the boss and finance emails.
 function poItemsHtml(po: PurchaseOrder): string {
   const rows = po.lines.map((l) => {
-    const remark = l.remark ? `<div style="font-size:12px;color:#8A97A3;margin-top:2px;">${esc(l.remark).replace(/\n/g, '<br>')}</div>` : '';
+    const remark = (l.remark ? `<div style="font-size:12px;color:#8A97A3;margin-top:2px;">${esc(l.remark).replace(/\n/g, '<br>')}</div>` : '')
+      + (l.warranty_years != null ? `<div style="font-size:12px;font-weight:700;color:#6B21A8;margin-top:3px;">${esc(warrantyText(l.warranty_years))}</div>` : '');
     return `<tr>
     <td style="padding:8px 10px;border-bottom:1px solid #EEE;font-size:13px;">${esc(l.name)}${remark}</td>
     <td style="padding:8px 10px;border-bottom:1px solid #EEE;font-size:13px;text-align:right;vertical-align:top;">${l.qty} ${esc(l.unit)}</td>
@@ -165,7 +169,7 @@ function poItemsHtml(po: PurchaseOrder): string {
       </tr></thead><tbody>${rows}</tbody></table>
     <div style="text-align:right;font-size:14px;color:#5B6B7A;margin:12px 0 2px;">Purchase cost: <b style="color:#1a1a1a;">${money(po.subtotal, po.currency)} ${esc(po.currency)}</b></div>
     ${po.sell_subtotal ? `<div style="text-align:right;font-size:14px;color:#5B6B7A;margin:2px 0;">Selling to customer: <b style="color:${C.green};">${money(po.sell_subtotal, po.sell_currency)} ${esc(po.sell_currency)}</b></div>
-    ${po.sell_currency === po.currency ? `<div style="text-align:right;font-size:14px;color:#5B6B7A;margin:2px 0 22px;">Margin: <b style="color:#1a1a1a;">${money(po.sell_subtotal - po.subtotal, po.currency)}</b></div>` : '<div style="margin-bottom:22px;"></div>'}` : '<div style="margin-bottom:22px;"></div>'}`;
+    ${po.sell_subtotal && po.sell_currency === po.currency ? `<div style="text-align:right;font-size:14px;color:#5B6B7A;margin:2px 0 22px;">Margin: <b style="color:#1a1a1a;">${money(po.sell_subtotal - po.subtotal, po.currency)}</b></div>` : '<div style="margin-bottom:22px;"></div>'}` : '<div style="margin-bottom:22px;"></div>'}`;
 }
 
 // FYI copies to the template's default CC list — same PO, no action buttons,
@@ -502,11 +506,10 @@ function RaiseTab({ products, customers, settings, onSent }: { products: Product
       return;
     }
     if (lines.some((l) => l.order_line_id === a.id)) return;
-    const warranty = a.warranty_years != null ? `Warranty: ${a.warranty_years} year${a.warranty_years === 1 ? '' : 's'}` : '';
     setLines((prev) => [...prev, {
       key: newKey(), product_id: p?.id ?? null, name: p?.name ?? a.item_name,
-      remark: [p?.description, warranty].filter(Boolean).join('\n') || null,
-      unit: p?.unit ?? 'unit', unit_price: p?.unit_price ?? 0, sell_price: 0, qty: a.qty, currency, supplier: p?.supplier ?? null, order_line_id: a.id,
+      remark: p?.description || null,
+      unit: p?.unit ?? 'unit', unit_price: p?.unit_price ?? 0, sell_price: 0, qty: a.qty, currency, supplier: p?.supplier ?? null, order_line_id: a.id, warranty_years: a.warranty_years,
     }]);
     if (!customer && a.customer_id) { const c = customers.find((x) => x.id === a.customer_id); if (c) setCustomer(c); }
   };
@@ -578,6 +581,12 @@ function RaiseTab({ products, customers, settings, onSent }: { products: Product
     if (linked.length) {
       const { error: le } = await supabase.from('sales_order_lines').update({ po_id: po.id, po_no: po.po_number, updated_at: new Date().toISOString() }).in('id', linked);
       linkErr = le?.message ?? null;
+      // A warranty keyed in here is the one being bought — keep the Order Book in step.
+      for (const l of lines) {
+        if (linkErr || !l.order_line_id || l.warranty_years == null) continue;
+        const { error: we } = await supabase.from('sales_order_lines').update({ warranty_years: l.warranty_years }).eq('id', l.order_line_id);
+        if (we) linkErr = we.message;
+      }
     }
 
     setSending(false);
@@ -696,7 +705,7 @@ function RaiseTab({ products, customers, settings, onSent }: { products: Product
             <thead>
               <tr style={{ background: C.seasalt }}>
                 <th style={{ padding: '11px 14px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>Item</th>
-                {[`Unit Cost (${poCurrency})`, `Sell / unit (${sellCurrency})`, 'Qty', 'Unit', 'Line Cost', 'Line Sell', ''].map((h, i) => (
+                {[`Unit Cost (${poCurrency})`, 'Qty', 'Unit', 'Line Cost', ''].map((h, i) => (
                   <th key={i} style={{ padding: '11px 14px', textAlign: 'right', fontSize: 11, fontWeight: 700, color: C.slate, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: '1px solid #EBEBEB', whiteSpace: 'nowrap' }}>{h}</th>
                 ))}
               </tr>
@@ -707,14 +716,17 @@ function RaiseTab({ products, customers, settings, onSent }: { products: Product
                   <td style={{ padding: '8px 14px' }}>
                     <div style={{ fontSize: 13, fontWeight: 600, color: '#1a1a1a' }}>{l.name}</div>
                     {l.remark && <div style={{ fontSize: 12, color: C.slate, whiteSpace: 'pre-line', marginTop: 2 }}>{l.remark}</div>}
+                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 11, fontWeight: 700, color: l.warranty_years != null ? '#6B21A8' : C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      Warranty to order
+                      <input type="number" min={0} max={20} step={0.5} value={l.warranty_years ?? ''} placeholder="—" aria-label="Warranty years to order from the supplier"
+                        onChange={(e) => { const n = Number(e.target.value); updateLine(l.key, { warranty_years: e.target.value === '' || !Number.isFinite(n) ? null : Math.min(20, Math.max(0, n)) }); }}
+                        style={{ width: 64, padding: '4px 6px', borderRadius: 8, border: `1px solid ${l.warranty_years != null ? '#6B21A8' : '#EBEBEB'}`, fontFamily: 'Figtree', fontSize: 13, textAlign: 'right', outline: 'none', background: C.white }} />
+                      yrs
+                    </label>
                   </td>
                   <td style={{ padding: '8px 14px', textAlign: 'right', verticalAlign: 'middle' }}>
                     <input type="text" inputMode="decimal" {...priceInput(l, 'unit_price')}
                       style={{ width: 88, padding: '6px 8px', borderRadius: 8, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, textAlign: 'right', outline: 'none', background: C.white }} />
-                  </td>
-                  <td style={{ padding: '8px 14px', textAlign: 'right', verticalAlign: 'middle' }}>
-                    <input type="text" inputMode="decimal" {...priceInput(l, 'sell_price')}
-                      style={{ width: 88, padding: '6px 8px', borderRadius: 8, border: `1px solid ${C.green}`, fontFamily: 'Figtree', fontSize: 13, textAlign: 'right', outline: 'none', background: C.white }} />
                   </td>
                   <td style={{ padding: '8px 14px', textAlign: 'right', verticalAlign: 'middle' }}>
                     <input type="text" inputMode="decimal" value={l.qty} onChange={(e) => updateLine(l.key, { qty: Math.max(0, parseFloat(e.target.value.replace(/[^0-9.]/g, '')) || 0) })}
@@ -722,13 +734,12 @@ function RaiseTab({ products, customers, settings, onSent }: { products: Product
                   </td>
                   <td style={{ padding: '8px 14px', textAlign: 'right', fontSize: 13, color: C.slate, verticalAlign: 'middle' }}>{l.unit}</td>
                   <td style={{ padding: '8px 14px', textAlign: 'right', fontSize: 13, fontWeight: 700, color: '#1a1a1a', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{money(l.qty * l.unit_price, poCurrency)}</td>
-                  <td style={{ padding: '8px 14px', textAlign: 'right', fontSize: 13, fontWeight: 700, color: C.green, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{money(l.qty * l.sell_price, sellCurrency)}</td>
                   <td style={{ padding: '8px 14px', textAlign: 'right' }}>
                     <button onClick={() => removeLine(l.key)} title="Remove" style={{ width: 28, height: 28, borderRadius: 8, border: '1px solid #FDEAEA', background: 'transparent', color: '#C0321A', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}><Trash2 size={13} /></button>
                   </td>
                 </tr>
               ))}
-              {lines.length === 0 && <tr><td colSpan={8} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Add products from the catalog to build this PO.</td></tr>}
+              {lines.length === 0 && <tr><td colSpan={6} style={{ padding: '40px 16px', textAlign: 'center', color: C.slate, fontSize: 13 }}>Add products from the catalog to build this PO.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -737,17 +748,8 @@ function RaiseTab({ products, customers, settings, onSent }: { products: Product
           <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', padding: '18px 22px', width: 340, display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
               <span style={{ fontSize: 13, color: C.slate }}>Purchase cost <span style={{ fontSize: 11 }}>({poCurrency})</span></span>
-              <span style={{ fontSize: 16, fontWeight: 700, color: '#1a1a1a' }}>{money(subtotal, poCurrency)}</span>
+              <span style={{ fontSize: 24, fontWeight: 700, color: C.green, letterSpacing: '-0.02em' }}>{money(subtotal, poCurrency)}</span>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>Sold to customer <span style={{ fontSize: 11, color: C.slate }}>({sellCurrency})</span></span>
-              <span style={{ fontSize: 24, fontWeight: 700, color: C.green, letterSpacing: '-0.02em' }}>{money(sellSubtotal, sellCurrency)}</span>
-            </div>
-            {sellCurrency === poCurrency && sellSubtotal > 0 && (
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: C.slate }}>
-                <span>Margin</span><span style={{ fontWeight: 600 }}>{money(sellSubtotal - subtotal, poCurrency)}</span>
-              </div>
-            )}
             <div>
               <label style={labelStyle}>Notes to approver</label>
               <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} placeholder="Optional" style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.5, fontFamily: 'Figtree' }} />
@@ -1139,6 +1141,7 @@ function PODetailModal({ po, busy, canDelete, isAdmin, notice, customers, custom
                   <td style={{ padding: '8px 12px', fontSize: 13, color: '#1a1a1a', verticalAlign: 'top' }}>
                     <div>{l.name}</div>
                     {l.remark && <div style={{ fontSize: 12, color: C.slate, whiteSpace: 'pre-line', marginTop: 2 }}>{l.remark}</div>}
+                    {l.warranty_years != null && <div style={{ fontSize: 12, fontWeight: 700, color: '#6B21A8', marginTop: 3 }}>{warrantyText(l.warranty_years)}</div>}
                   </td>
                   <td style={{ padding: '8px 12px', fontSize: 12, color: C.slate, textAlign: 'right', whiteSpace: 'nowrap', verticalAlign: 'top' }}>{l.qty} {l.unit} × {money(l.unit_price, po.currency)}</td>
                   <td style={{ padding: '8px 12px', fontSize: 13, fontWeight: 700, color: C.green, textAlign: 'right', whiteSpace: 'nowrap', verticalAlign: 'top' }}>{money(l.qty * l.unit_price, po.currency)}</td>
