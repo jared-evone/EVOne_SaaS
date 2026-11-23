@@ -687,3 +687,12 @@ alter table public.purchase_orders
 alter table public.inv_items
   add column if not exists warranty_years_included numeric check (warranty_years_included is null or (warranty_years_included >= 0 and warranty_years_included <= 20)),
   add column if not exists extra_warranty_cost numeric check (extra_warranty_cost is null or extra_warranty_cost >= 0);
+
+-- 2026-11-23 · migration purchase_orders_netsuite_po — finance must give the
+-- real NetSuite PO number and attach the official PO PDF (inv-po-pdfs bucket)
+-- when marking a PO completed. The shipment the trigger creates is then given
+-- the same number and its own copy of the PDF by the app. Additive.
+alter table public.purchase_orders
+  add column if not exists netsuite_po_no text,
+  add column if not exists po_pdf_path text,
+  add column if not exists po_pdf_name text;

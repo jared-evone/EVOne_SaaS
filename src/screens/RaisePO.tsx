@@ -88,6 +88,10 @@ interface PurchaseOrder {
   finance_decided_at: string | null;
   decided_by?: string | null;
   finance_decided_by?: string | null;
+  /** Given by finance on completing: the real PO number in NetSuite and the official PO PDF. */
+  netsuite_po_no?: string | null;
+  po_pdf_path?: string | null;
+  po_pdf_name?: string | null;
   email_status: string | null;
   email_error: string | null;
   app_base: string | null;
@@ -128,6 +132,7 @@ interface POSettings {
   finance_user_ids?: string[] | null;
 }
 interface PoAccount { id: string; full_name: string | null; email: string; is_active: boolean | null }
+const PO_PDF_BUCKET = 'inv-po-pdfs';
 const toList = (s: string | null | undefined) => (s ?? '').split(/[,;]/).map((e) => e.trim()).filter((e) => /@/.test(e));
 const accountLabel = (a: PoAccount) => a.full_name || a.email;
 
@@ -881,20 +886,47 @@ function TrackTab({ pos, customers, accounts, settings, canEdit, canDelete, onRe
   // Admin stand-in for finance's "Mark completed" email link. Status
   // 'completed' fires the purchase_orders_to_shipments trigger, which turns
   // the PO lines into one Ordered shipment in Incoming Shipments.
-  const completeAsAdmin = async (po: PurchaseOrder) => {
+  const completeAsAdmin = async (po: PurchaseOrder, netsuiteNo: string, file: File) => {
     setBusy(true);
+    // The official PO goes up first: without it the PO must not be completed.
+    const safe = file.name.replace(/[^\w.\-]+/g, '_');
+    const po_pdf_path = `po/${po.id}/${Date.now()}-${safe}`;
+    const up = await supabase.storage.from(PO_PDF_BUCKET).upload(po_pdf_path, file, { contentType: 'application/pdf' });
+    if (up.error) { setBusy(false); setNotice({ text: `Could not upload the PO PDF: ${up.error.message}. Nothing was changed.`, tone: 'err' }); return; }
     const finance_decided_at = new Date().toISOString();
-    const { data, error } = await supabase.from('purchase_orders')
-      .update({ status: 'completed', finance_decided_at, finance_decided_by: me }).eq('id', po.id).in('status', ['approved', 'sent_to_finance']).select('id');
-    if (error) { setBusy(false); setNotice({ text: `Could not complete the PO: ${error.message}`, tone: 'err' }); return; }
-    if (!data?.length) { setBusy(false); setNotice({ text: 'This PO changed status elsewhere — the list has been refreshed.', tone: 'err' }); setOpen(null); await onRefresh(); return; }
-    const { count } = await supabase.from('inv_shipments').select('id', { count: 'exact', head: true }).eq('po_id', po.id);
+    const done = { status: 'completed' as const, finance_decided_at, finance_decided_by: me, netsuite_po_no: netsuiteNo, po_pdf_path, po_pdf_name: file.name };
+    const { data, error } = await supabase.from('purchase_orders').update(done).eq('id', po.id).in('status', ['approved', 'sent_to_finance']).select('id');
+    if (error || !data?.length) {
+      void supabase.storage.from(PO_PDF_BUCKET).remove([po_pdf_path]);
+      setBusy(false);
+      if (error) { setNotice({ text: `Could not complete the PO: ${error.message}`, tone: 'err' }); return; }
+      setNotice({ text: 'This PO changed status elsewhere — the list has been refreshed.', tone: 'err' }); setOpen(null); await onRefresh(); return;
+    }
+    // The shipment the trigger just created carries the real PO number and its
+    // own copy of the PDF (its own file, so deleting a shipment never removes the PO's).
+    const { data: ships } = await supabase.from('inv_shipments').select('id, group_id').eq('po_id', po.id);
+    const rows = (ships ?? []) as { id: string; group_id: string }[];
+    let shipWarn = '';
+    if (rows.length) {
+      const shipPath = `${rows[0].group_id}/${Date.now()}-${safe}`;
+      const copy = await supabase.storage.from(PO_PDF_BUCKET).upload(shipPath, file, { contentType: 'application/pdf' });
+      const { error: se } = await supabase.from('inv_shipments')
+        .update({ po_no: netsuiteNo, ...(copy.error ? {} : { po_pdf_path: shipPath, po_pdf_name: file.name }) }).eq('po_id', po.id);
+      if (se || copy.error) shipWarn = ` The shipment's PO number / PDF could not be set (${se?.message ?? copy.error?.message}) — set it in Incoming Shipments.`;
+    }
     setBusy(false);
-    setOpen({ ...po, status: 'completed', finance_decided_at, finance_decided_by: me });
-    setNotice(count
-      ? { text: `Marked completed by you (${user.full_name || user.email}) — ${count} item line${count === 1 ? '' : 's'} now in Incoming Shipments as Ordered.`, tone: 'ok' }
+    setOpen({ ...po, ...done });
+    setNotice(rows.length
+      ? { text: `Marked completed by you (${user.full_name || user.email}) as ${netsuiteNo} — ${rows.length} item line${rows.length === 1 ? '' : 's'} now in Incoming Shipments as Ordered.${shipWarn}`, tone: shipWarn ? 'err' : 'ok' }
       : { text: 'Marked completed, but no shipment lines were created (no line has a quantity). Add the shipment by hand in Incoming Shipments.', tone: 'err' });
     await onRefresh();
+  };
+
+  const viewPoPdf = async (po: PurchaseOrder) => {
+    if (!po.po_pdf_path) return;
+    const { data, error } = await supabase.storage.from(PO_PDF_BUCKET).createSignedUrl(po.po_pdf_path, 60);
+    if (error || !data) { setNotice({ text: `Could not open the PO PDF: ${error?.message ?? 'unknown error'}`, tone: 'err' }); return; }
+    window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
   };
 
   const cancelByFinance = async (po: PurchaseOrder) => {
@@ -1042,6 +1074,7 @@ function TrackTab({ pos, customers, accounts, settings, canEdit, canDelete, onRe
                   onClick={() => openPo(po)}>
                   <td style={{ padding: '12px 16px' }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>{po.po_number}</div>
+                    {po.netsuite_po_no && po.netsuite_po_no !== po.po_number && <div style={{ fontSize: 11, fontWeight: 700, color: '#1a1a1a' }}>NetSuite {po.netsuite_po_no}</div>}
                     <div style={{ fontSize: 12, color: C.slate }}>{po.title}</div>
                     {customerName(po) && <div style={{ fontSize: 11, color: C.slate, marginTop: 1 }}>for <span style={{ fontWeight: 700, color: '#1a1a1a' }}>{customerName(po)}</span></div>}
                     {po.created_by && po.created_by_id !== user.id && (
@@ -1080,7 +1113,7 @@ function TrackTab({ pos, customers, accounts, settings, canEdit, canDelete, onRe
           onResend={() => resend(open)} onForward={() => forwardToFinance(open)}
           onResendFinance={() => resendFinance(open)}
           onManualDecision={(d) => manualDecision(open, d)}
-          onComplete={() => completeAsAdmin(open)}
+          onComplete={(no, file) => completeAsAdmin(open, no, file)} onViewPdf={() => void viewPoPdf(open)}
           onOpenShipments={can('inv_shipments', 'can_view') ? () => { setOpen(null); go('inv_shipments'); } : undefined}
           onDelete={() => deletePO(open)} onClose={() => setOpen(null)} />
       )}
@@ -1162,7 +1195,7 @@ function POTimeline({ po, financeEmail, approverEmail }: { po: PurchaseOrder; fi
   );
 }
 
-function PODetailModal({ po, busy, canDelete, canApprove, canFinance, approverNames, financeNames, onCancel, notice, customers, customerName, canEditCustomer, onSetCustomer, financeEmail, approverEmail, onResend, onForward, onResendFinance, onManualDecision, onComplete, onOpenShipments, onDelete, onClose }: {
+function PODetailModal({ po, busy, canDelete, canApprove, canFinance, approverNames, financeNames, onCancel, onViewPdf, notice, customers, customerName, canEditCustomer, onSetCustomer, financeEmail, approverEmail, onResend, onForward, onResendFinance, onManualDecision, onComplete, onOpenShipments, onDelete, onClose }: {
   po: PurchaseOrder;
   customers: CustomerRef[];
   customerName: string | null;
@@ -1184,7 +1217,8 @@ function PODetailModal({ po, busy, canDelete, canApprove, canFinance, approverNa
   onForward: () => void;
   onResendFinance: () => void;
   onManualDecision: (decision: 'approved' | 'rejected') => void;
-  onComplete: () => void;
+  onComplete: (netsuiteNo: string, file: File) => void;
+  onViewPdf: () => void;
   onOpenShipments?: () => void;
   onDelete: () => void;
   onClose: () => void;
@@ -1192,6 +1226,9 @@ function PODetailModal({ po, busy, canDelete, canApprove, canFinance, approverNa
   const [confirmOverride, setConfirmOverride] = useState<'approved' | 'rejected' | null>(null);
   const [confirmComplete, setConfirmComplete] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [nsNo, setNsNo] = useState('');
+  const [nsFile, setNsFile] = useState<File | null>(null);
+  const [nsErr, setNsErr] = useState<string | null>(null);
   const shipLines = po.lines.filter((l) => Number(l.qty) > 0).length;
   const st = STATUS_STYLE[po.status];
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -1211,6 +1248,20 @@ function PODetailModal({ po, busy, canDelete, canApprove, canFinance, approverNa
           {po.decided_at && <span style={{ fontSize: 12, color: C.slate }}>on {new Date(po.decided_at).toLocaleString('en-GB')}</span>}
         </div>
 
+        {(po.netsuite_po_no || po.po_pdf_path) && (
+          <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>NetSuite PO</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', minWidth: 0 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{po.netsuite_po_no || '—'}</span>
+              {po.po_pdf_path && (
+                <button onClick={onViewPdf} title={po.po_pdf_name ?? undefined}
+                  style={{ padding: '4px 12px', borderRadius: 99, border: '1px solid #EBEBEB', background: C.honeydew, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  View PO PDF
+                </button>
+              )}
+            </span>
+          </div>
+        )}
         <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Customer</span>
           {canEditCustomer
@@ -1328,17 +1379,41 @@ function PODetailModal({ po, busy, canDelete, canApprove, canFinance, approverNa
           <div style={{ background: C.seasalt, borderRadius: 12, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Finance step</div>
             {confirmComplete ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 12.5, fontWeight: 700, color: '#1B512D', flex: 1, minWidth: 200 }}>
-                  Mark this PO completed (sent to the supplier)? {shipLines} item line{shipLines === 1 ? '' : 's'} go{shipLines === 1 ? 'es' : ''} to Incoming Shipments as Ordered.
-                  
-                </span>
-                <button onClick={() => setConfirmComplete(false)} disabled={busy}
-                  style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
-                <button onClick={() => { onComplete(); setConfirmComplete(false); }} disabled={busy}
-                  style={{ padding: '7px 16px', borderRadius: 8, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: busy ? 'default' : 'pointer' }}>
-                  {busy ? 'Saving…' : 'Yes, complete'}
-                </button>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: '#1B512D' }}>
+                  To complete: enter the NetSuite PO number and attach the official PO. {shipLines} item line{shipLines === 1 ? '' : 's'} then go{shipLines === 1 ? 'es' : ''} to Incoming Shipments as Ordered.
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>NetSuite PO number *</label>
+                    <input value={nsNo} onChange={(e) => setNsNo(e.target.value)} placeholder="e.g. EV1PO-000253" disabled={busy}
+                      style={{ width: '100%', padding: '9px 12px', borderRadius: 10, border: '1px solid #EBEBEB', fontFamily: 'Figtree', fontSize: 13, outline: 'none', boxSizing: 'border-box', background: C.white }} />
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <label style={{ fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Official PO (PDF) *</label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 10, border: `1px dashed ${nsFile ? C.green : '#CBD5DD'}`, background: C.white, cursor: busy ? 'default' : 'pointer', fontSize: 13, fontWeight: 600, color: nsFile ? C.green : C.slate, minWidth: 0 }}>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nsFile ? nsFile.name : 'Attach PDF…'}</span>
+                      <input type="file" accept="application/pdf,.pdf" disabled={busy} style={{ display: 'none' }}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0]; e.target.value = '';
+                          if (!f) return;
+                          if (f.type !== 'application/pdf' && !f.name.toLowerCase().endsWith('.pdf')) { setNsErr('The PO must be a PDF file.'); return; }
+                          if (f.size > 25 * 1024 * 1024) { setNsErr('That PDF is over 25 MB.'); return; }
+                          setNsErr(null); setNsFile(f);
+                        }} />
+                    </label>
+                  </div>
+                </div>
+                {nsErr && <div style={{ fontSize: 12, fontWeight: 600, color: '#C0321A' }}>{nsErr}</div>}
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button onClick={() => { setConfirmComplete(false); setNsErr(null); }} disabled={busy}
+                    style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+                  <button disabled={busy || !nsNo.trim() || !nsFile} title={!nsNo.trim() ? 'Enter the NetSuite PO number' : !nsFile ? 'Attach the PO PDF' : undefined}
+                    onClick={() => { if (nsNo.trim() && nsFile) onComplete(nsNo.trim(), nsFile); }}
+                    style={{ padding: '7px 16px', borderRadius: 8, border: 'none', background: busy || !nsNo.trim() || !nsFile ? '#ccc' : C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: busy || !nsNo.trim() || !nsFile ? 'not-allowed' : 'pointer' }}>
+                    {busy ? 'Uploading…' : 'Complete PO'}
+                  </button>
+                </div>
               </div>
             ) : (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
