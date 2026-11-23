@@ -7,7 +7,7 @@ import { useIsMobile } from '../lib/useIsMobile';
 import { CustomerCreateModal, type CreatedCustomer } from '../components/CustomerCreateModal';
 import { SearchSelect as ItemSearchSelect } from '../components/SearchSelect';
 import { parseChargerPower, fmtKw } from '../lib/chargerPower';
-import { Search, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Handshake, FileUp, FileText, X, Plus, Archive, ArchiveRestore, ArrowRightLeft } from 'lucide-react';
+import { Search, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Handshake, FileUp, FileText, X, Plus, Archive, ArchiveRestore, ArrowRightLeft, Check } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -1084,17 +1084,25 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
   const removeVersion = (i: number) => setVersions((vs) => vs.filter((_, idx) => idx !== i));
   const maxAmount = Math.max(0, ...versions.map((v) => Number(v.amountText) || 0));
 
-  // Winning: the final price the customer pays, GST included, is keyed in when
+  // Winning: the final price the customer pays, GST included, is confirmed when
   // a quote moves to Won, with at least one quotation PDF attached — every PDF
-  // on the quote shows on its Project Handover. A quote won before this existed
-  // can still be saved without them; once a final price is set it can't be blanked.
+  // on the quote shows on its Project Handover. The box fills itself with the
+  // quotation amount as a suggestion (wonFinalText null = not typed yet), and
+  // nothing is stored until the user confirms the figure; editing it asks again.
+  // A quote won before this existed can still be saved without one; once a
+  // final price is stored it can't be blanked.
   const winning = form.status === 'Won' && (fromStatus ?? quote?.status) !== 'Won';
-  const [wonFinalText, setWonFinalText] = useState(quote?.won_final_price ? String(quote.won_final_price) : '');
-  const wonFinal = Math.max(0, Number(wonFinalText) || 0);
-  const setWonFinal = (raw: string) => setWonFinalText(raw.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1'));
+  const [wonFinalText, setWonFinalText] = useState<string | null>(quote?.won_final_price ? String(quote.won_final_price) : null);
+  const [wonConfirmed, setWonConfirmed] = useState(!!quote?.won_final_price);
+  const wonShown = wonFinalText ?? (!readOnly && maxAmount > 0 ? String(maxAmount) : '');
+  const wonFinal = Math.max(0, Number(wonShown) || 0);
+  const setWonFinal = (raw: string) => { setWonFinalText(raw.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1')); setWonConfirmed(false); };
+  const confirmWonFinal = () => { setWonFinalText(wonShown); setWonConfirmed(true); };
   const pdfCount = versions.reduce((n, v) => n + v.files.length, 0);
+  const needFinal = winning || !!quote?.won_final_price || (wonFinalText !== null && wonFinal > 0);
   const wonMissing: string[] = form.status !== 'Won' ? [] : [
-    (winning || !!quote?.won_final_price) && wonFinal <= 0 && 'key in the final price after GST',
+    needFinal && wonFinal <= 0 && 'key in the final price after GST',
+    needFinal && wonFinal > 0 && !wonConfirmed && 'confirm the final price after GST',
     winning && pdfCount === 0 && 'attach at least one quotation PDF',
   ].filter((x): x is string => !!x);
   const wonOk = wonMissing.length === 0;
@@ -1255,7 +1263,7 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
       pdf_filename: files[0]?.name ?? null,
       won_at: form.status === 'Won' ? (quote?.won_at ?? new Date().toISOString()) : null,
       won_stage: form.status === 'Won' ? form.won_stage : null,
-      won_final_price: form.status === 'Won' && wonFinal > 0 ? wonFinal : (quote?.won_final_price ?? null),
+      won_final_price: form.status === 'Won' && wonConfirmed && wonFinal > 0 ? wonFinal : (quote?.won_final_price ?? null),
       updated_at: new Date().toISOString(),
     };
     const { data: saved, error: err } = isNew
@@ -1375,24 +1383,38 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
         {form.status === 'Won' && (
           <div style={{ background: C.honeydew, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div>
-              <label style={{ ...label, color: C.green }}>Final price after GST{(winning || !!quote?.won_final_price) && <span style={{ color: '#C0321A' }}> *</span>}</label>
-              <input type="text" inputMode="decimal" value={fmtAmountInput(wonFinalText)} disabled={readOnly}
+              <label style={{ ...label, color: C.green }}>Final price after GST{needFinal && <span style={{ color: '#C0321A' }}> *</span>}</label>
+              <input type="text" inputMode="decimal" value={fmtAmountInput(wonShown)} disabled={readOnly}
                 onChange={(e) => setWonFinal(e.target.value)}
-                onPaste={(e) => { e.preventDefault(); setWonFinal(wonFinalText + e.clipboardData.getData('text')); }}
+                onPaste={(e) => { e.preventDefault(); setWonFinal(e.clipboardData.getData('text')); }}
                 placeholder="Total the customer pays, GST included ($)"
                 style={{ ...input(readOnly), fontSize: 15, fontWeight: 700, color: C.green }} />
-              <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
-                Key in the agreed total including GST.{maxAmount > 0 ? ` The quotation on this deal is ${fmtMoney(maxAmount)} — check whether that figure already includes GST.` : ''}
-              </div>
+              {wonFinal <= 0 && (
+                <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>Key in the agreed total the customer pays, GST included.</div>
+              )}
+              {wonFinal > 0 && !wonConfirmed && !readOnly && (
+                <div style={{ marginTop: 8, background: '#FFF8E1', borderRadius: 10, padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <span style={{ flex: 1, minWidth: 200, fontSize: 12, color: '#B07D00', lineHeight: 1.5 }}>
+                    <span style={{ fontWeight: 700 }}>Is {fmtMoney(wonFinal)} the final price after GST?</span>
+                    {wonFinalText === null ? ' It was filled in from the quotation amount — if GST still has to be added, change the figure first.' : ''}
+                  </span>
+                  <button type="button" onClick={confirmWonFinal}
+                    style={{ padding: '8px 14px', borderRadius: 8, border: 'none', background: C.green, color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                    Yes, confirm
+                  </button>
+                </div>
+              )}
+              {wonFinal > 0 && wonConfirmed && (
+                <div style={{ marginTop: 8, fontSize: 12, fontWeight: 700, color: C.green, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Check size={14} strokeWidth={2.5} style={{ flexShrink: 0 }} /> Confirmed — {fmtMoney(wonFinal)} is the final price after GST.
+                </div>
+              )}
             </div>
             <div style={{ fontSize: 12, lineHeight: 1.5, color: pdfCount ? C.slate : '#B45309', fontWeight: pdfCount ? 400 : 700 }}>
               {pdfCount
                 ? `${pdfCount} quotation PDF${pdfCount === 1 ? '' : 's'} attached — ${pdfCount === 1 ? 'it shows' : 'all of them show'} on this deal's Project Handover.`
                 : 'No quotation PDF attached yet — attach at least one under Quotations below. Every PDF on the quote shows on its Project Handover.'}
             </div>
-            {wonMissing.length > 0 && (
-              <div style={{ fontSize: 12, fontWeight: 700, color: '#B45309' }}>{winning ? 'To mark this quote won' : 'To save'}: {wonMissing.join('; ')}.</div>
-            )}
           </div>
         )}
 
@@ -1760,6 +1782,12 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
             <span style={{ fontSize: 12, fontWeight: 600, color: '#C0321A', flex: 1, minWidth: 160 }}>Delete {quote?.ref}? This cannot be undone.</span>
             <button onClick={() => setConfirmDelete(false)} style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, fontFamily: 'Figtree', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
             <button onClick={handleDelete} style={{ padding: '7px 14px', borderRadius: 8, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Yes, Delete</button>
+          </div>
+        )}
+
+        {!readOnly && wonMissing.length > 0 && (
+          <div style={{ background: '#FFF8E1', borderRadius: 12, padding: '12px 16px', fontSize: 12, fontWeight: 600, color: '#B07D00' }}>
+            {winning ? 'To mark this quote won' : 'To save'}: {wonMissing.join('; ')}{tab !== 'overview' ? ' (Overview tab)' : ''}.
           </div>
         )}
 

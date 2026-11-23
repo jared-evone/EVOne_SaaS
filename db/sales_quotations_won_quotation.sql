@@ -15,6 +15,16 @@ alter table public.sales_quotations
 alter table public.cpo_sales_quotations
   add column if not exists won_final_price numeric check (won_final_price is null or won_final_price >= 0);
 
+-- Data fill, same day, on the owner's instruction ("assume all the current won
+-- is already confirmed after gst price"): every quote that was already Won and
+-- had no final price took its quotation amount as the confirmed figure — 56
+-- rows in sales_quotations, 2 in cpo_sales_quotations. Only empty values were
+-- filled; the one quote that already had a final price keyed in was left as is.
+update public.sales_quotations set won_final_price = total
+  where status = 'Won' and won_final_price is null and total > 0;
+update public.cpo_sales_quotations set won_final_price = total
+  where status = 'Won' and won_final_price is null and total > 0;
+
 -- migration sales_quotations_won_quotation — UNUSED. Applied earlier the same
 -- day for a first design (pick the ONE accepted quotation + a yes/no "price is
 -- after GST"), which the owner replaced with the final-price field above
