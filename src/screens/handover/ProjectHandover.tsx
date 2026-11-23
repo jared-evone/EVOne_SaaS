@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Search, Plus, X, ArrowLeft, Download, Trash2, ClipboardCheck, FileUp, Paperclip } from 'lucide-react';
+import { Search, Plus, X, ArrowLeft, Download, Trash2, ClipboardCheck, FileUp, Paperclip, Pencil, Check, RotateCcw } from 'lucide-react';
 import { C } from '../../theme';
 import { KPICard } from '../../components/KPICard';
 import { SearchSelect } from '../../components/SearchSelect';
@@ -7,9 +7,10 @@ import { supabase } from '../../lib/supabase';
 import { usePermissions } from '../../permissions';
 import {
   BRANDS, FILE_KINDS, LANDLORD_DOCS, PLATFORMS, SCOPE_LABEL, FLOOR_LABEL, SECTION_TITLES, DC_SPECS,
-  kwOptionsFor, ampsOf, isDc, blankState, normaliseState, buildChecklist, progressOf, paymentStatus,
+  kwOptionsFor, ampsOf, isDc, blankState, normaliseState, buildChecklist, templateChecklist, progressOf, paymentStatus,
   chargerCount, totalLoad, lewGrade, ltaFeeTotal, ltaFeePer, installLists, chargerFromItemName, onPlatform, blewInvolved,
-  type HandoverState, type HandoverCharger, type HandoverInfo, type FlagKey, type CheckSection, type CheckItem,
+  DEFAULT_PM_USER_ID, CABLE_CATEGORY,
+  type HandoverState, type HandoverCharger, type HandoverInfo, type FlagKey, type CheckSection, type CheckItem, type ChecklistCustom, type CheckOwner,
   type PendingItem, type PendingOwner, type FileKind, type Brand,
 } from './handoverRules';
 
@@ -41,6 +42,7 @@ interface HandoverRow {
   checks: Record<string, boolean> | null;
   done: number;
   total: number;
+  created_by: string | null;
   updated_at: string;
 }
 interface QuotePdf { path: string; name: string; quote_no?: string | null }
@@ -63,14 +65,32 @@ const quotePdfs = (q: WonQuote | undefined): QuotePdf[] => {
   const seen = new Set<string>();
   return all.filter((f) => !!f?.path && !seen.has(f.path) && !!seen.add(f.path));
 };
+/** How an attached quotation is named on screen: the quotation no. keyed in on the sale, else the EV1QO number in the file name, else the file name. */
+const quoteDocLabel = (f: QuotePdf) =>
+  f.quote_no?.trim() || f.name.match(/EV1QO[-_ ]?\d+(?:[-_ ]?v\d+)?/i)?.[0] || f.name.replace(/\.pdf$/i, '');
+/** Opens a stored file in a new tab; returns what went wrong if it can't. */
+async function openStored(bucket: string, path: string): Promise<string | null> {
+  const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, 60);
+  if (error || !data) return error?.message ?? 'unknown error';
+  window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
+  return null;
+}
 const money = (n: number) => `$${Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 interface Refs {
   quotes: WonQuote[];
   customers: { id: string; name: string; address: string | null }[];
   salespeople: { id: string; name: string }[];
   accounts: { id: string; full_name: string | null; email: string }[];
+  /** Main cable sizes, from the Quote Machine catalogue. */
+  cables: string[];
 }
+/** The name the default Project Manager goes by in the PM picker ('' if that account is gone). */
+const defaultPmName = (refs: Refs) => {
+  const a = refs.accounts.find((x) => x.id === DEFAULT_PM_USER_ID);
+  return a ? (a.full_name || a.email) : '';
+};
 
+type EditCard = 'B' | 'C' | 'D';
 const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const fmtDate = (s: string | null | undefined) => (s ? new Date(s).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—');
 
@@ -113,13 +133,13 @@ function Toggle({ on, label, onChange, disabled }: { on: boolean; label: string;
 }
 
 export function ScreenProjectHandover() {
-  const { can, user } = usePermissions();
+  const { can, user, isAdmin } = usePermissions();
   const canEdit = can('sales_handover', 'can_edit');
   const canDelete = can('sales_handover', 'can_delete');
   const me = user.full_name || user.email;
 
   const [rows, setRows] = useState<HandoverRow[]>([]);
-  const [refs, setRefs] = useState<Refs>({ quotes: [], customers: [], salespeople: [], accounts: [] });
+  const [refs, setRefs] = useState<Refs>({ quotes: [], customers: [], salespeople: [], accounts: [], cables: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -128,7 +148,7 @@ export function ScreenProjectHandover() {
   const [creating, setCreating] = useState(false);
 
   const load = async () => {
-    const [h, q, c, sp, u] = await Promise.all([
+    const [h, q, c, sp, u, cb] = await Promise.all([
       supabase.from('sales_handovers').select('*').order('updated_at', { ascending: false }),
       // Every status, not just Won: a handover stays linked (and keeps showing the
       // sale's PDFs) if its quote is later moved in the pipeline. Pickers list Won only.
@@ -136,6 +156,7 @@ export function ScreenProjectHandover() {
       supabase.from('customers').select('id, name, address').order('name'),
       supabase.from('sales_people').select('id, name').order('name'),
       supabase.from('app_users').select('id, full_name, email, is_active').order('full_name'),
+      supabase.from('quote_catalog_items').select('name').eq('category', CABLE_CATEGORY).eq('is_active', true),
     ]);
     const err = h.error ?? q.error ?? c.error ?? sp.error ?? u.error;
     if (err) { setError(err.message); setLoading(false); return; }
@@ -146,18 +167,22 @@ export function ScreenProjectHandover() {
       customers: (c.data ?? []) as Refs['customers'],
       salespeople: (sp.data ?? []) as Refs['salespeople'],
       accounts: ((u.data ?? []) as (Refs['accounts'][number] & { is_active: boolean | null })[]).filter((a) => a.is_active !== false),
+      // Smallest conductor first; the list is only a convenience, so a failed read just leaves it empty.
+      cables: [...new Set(((cb.data ?? []) as { name: string }[]).map((x) => x.name.trim()).filter(Boolean))]
+        .sort((a, b) => (Number(a.match(/x(\d+)\s*mm/i)?.[1]) || 0) - (Number(b.match(/x(\d+)\s*mm/i)?.[1]) || 0) || a.localeCompare(b)),
     });
     setLoading(false);
   };
   useEffect(() => { void load(); }, []);
 
   const quoteRef = (id: string | null) => (id ? refs.quotes.find((q) => q.id === id)?.ref ?? null : null);
+  const quoteDocs = (id: string | null) => (id ? quotePdfs(refs.quotes.find((q) => q.id === id)) : []);
   const ql = search.trim().toLowerCase();
   const shown = rows.filter((r) => {
     if (statusFilter !== 'all' && r.status !== statusFilter) return false;
     if (!ql) return true;
     const st = normaliseState(r.state);
-    return [r.company, r.sales, r.pm, quoteRef(r.quote_id), st.info.quote, st.info.site, st.info.contractor].join(' ').toLowerCase().includes(ql);
+    return [r.company, r.sales, r.pm, quoteRef(r.quote_id), ...quoteDocs(r.quote_id).flatMap((f) => [quoteDocLabel(f), f.name]), st.info.quote, st.info.site, st.info.contractor].join(' ').toLowerCase().includes(ql);
   });
 
   if (loading) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '40vh', color: C.slate, fontSize: 13 }}>Loading…</div>;
@@ -165,7 +190,7 @@ export function ScreenProjectHandover() {
   const open = openId ? rows.find((r) => r.id === openId) ?? null : null;
   if (open) {
     return (
-      <HandoverEditor key={open.id} row={open} refs={refs} canEdit={canEdit} canDelete={canDelete} me={me}
+      <HandoverEditor key={open.id} row={open} refs={refs} canEdit={canEdit} canDelete={canDelete} isAdmin={isAdmin} me={me}
         onBack={async () => { setOpenId(null); await load(); }} />
     );
   }
@@ -206,7 +231,7 @@ export function ScreenProjectHandover() {
         <table style={{ width: '100%', minWidth: 920, borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: C.seasalt }}>
-              {['Company', 'Quotation', 'Sales', 'Project Manager', 'Handover', 'Checklist', 'Status', 'Payment'].map((h) => <th key={h} style={th}>{h}</th>)}
+              {['Company', 'Quotation · EVOne quotation', 'Sales', 'Project Manager', 'Handover', 'Checklist', 'Status', 'Payment'].map((h) => <th key={h} style={th}>{h}</th>)}
             </tr>
           </thead>
           <tbody>
@@ -215,6 +240,7 @@ export function ScreenProjectHandover() {
               const pay = paymentStatus(st, r.checks ?? {});
               const sc = STATUS_COLORS[r.status] ?? STATUS_COLORS.Draft;
               const pct = r.total ? Math.round((r.done / r.total) * 100) : 0;
+              const docs = quoteDocs(r.quote_id);
               return (
                 <tr key={r.id} onClick={() => setOpenId(r.id)} style={{ borderBottom: '1px solid #F3F3F3', cursor: 'pointer' }}
                   onMouseEnter={(e) => { e.currentTarget.style.background = '#FAFAFA'; }}
@@ -223,7 +249,22 @@ export function ScreenProjectHandover() {
                     <div style={{ fontWeight: 700, color: C.green }}>{r.company || 'Untitled handover'}</div>
                     {st.info.site && <div style={{ fontSize: 12, color: C.slate, maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{st.info.site}</div>}
                   </td>
-                  <td style={{ ...td, whiteSpace: 'nowrap' }}>{quoteRef(r.quote_id) ?? (st.info.quote || '—')}{!r.quote_id && <div style={{ fontSize: 11, color: '#B45309', fontWeight: 700 }}>Not linked</div>}</td>
+                  <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                    {quoteRef(r.quote_id) ?? (st.info.quote || '—')}
+                    {!r.quote_id && <div style={{ fontSize: 11, color: '#B45309', fontWeight: 700 }}>Not linked</div>}
+                    {docs.length > 0 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2, marginTop: 3 }}>
+                        {docs.slice(0, 3).map((f) => (
+                          <button key={f.path} type="button" title={`Open ${f.name}`}
+                            onClick={(e) => { e.stopPropagation(); void openStored(QUOTE_BUCKET, f.path).then((err) => { if (err) setError(`Could not open the quotation: ${err}`); }); }}
+                            style={{ border: 'none', background: 'none', padding: 0, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4, maxWidth: 220 }}>
+                            <Paperclip size={11} style={{ flexShrink: 0 }} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{quoteDocLabel(f)}</span>
+                          </button>
+                        ))}
+                        {docs.length > 3 && <span style={{ fontSize: 11, color: C.slate }}>+{docs.length - 3} more</span>}
+                      </div>
+                    )}
+                  </td>
                   <td style={{ ...td, color: C.slate }}>{r.sales || '—'}</td>
                   <td style={{ ...td, color: C.slate }}>{r.pm || '—'}</td>
                   <td style={{ ...td, color: C.slate, whiteSpace: 'nowrap' }}>{fmtDate(r.hdate)}</td>
@@ -297,11 +338,12 @@ function NewHandoverModal({ refs, rows, me, onClose, onCreated, onOpenExisting }
     let company = '';
     if (!blank && quote) ({ state, company } = await prefillFromQuote(quote, refs));
     else state.info.hdate = todayISO();
+    if (!state.info.pm.trim()) state.info.pm = defaultPmName(refs);
     const { done, total } = progressOf(state, {});
     const { data, error } = await supabase.from('sales_handovers').insert({
       quote_id: blank ? null : quote?.id ?? null, customer_id: blank ? null : quote?.customer_id ?? null,
       company, salesperson_id: blank ? null : quote?.salesperson_id ?? null,
-      sales: state.info.sales || null, pm: null, hdate: state.info.hdate || null,
+      sales: state.info.sales || null, pm: state.info.pm || null, hdate: state.info.hdate || null,
       status: 'Draft', state, checks: {}, done, total, created_by: me,
     }).select('id').single();
     setBusy(false);
@@ -357,8 +399,8 @@ interface Draft {
   checks: Record<string, boolean>;
 }
 
-function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
-  row: HandoverRow; refs: Refs; canEdit: boolean; canDelete: boolean; me: string; onBack: () => Promise<void>;
+function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, onBack }: {
+  row: HandoverRow; refs: Refs; canEdit: boolean; canDelete: boolean; isAdmin: boolean; me: string; onBack: () => Promise<void>;
 }) {
   const [doc, setDoc] = useState<Draft>(() => ({
     company: row.company, quote_id: row.quote_id, customer_id: row.customer_id, salesperson_id: row.salesperson_id,
@@ -411,7 +453,33 @@ function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
   const setInfo = (patch: Partial<HandoverInfo>) => setState((x) => ({ ...x, info: { ...x.info, ...patch } }));
   const setFlag = (k: FlagKey, v: boolean) => setState((x) => ({ ...x, c: { ...x.c, [k]: v } }));
 
+  // A handover with no Project Manager yet takes the default one (DEFAULT_PM_USER_ID in the rules).
+  useEffect(() => {
+    if (ro || doc.status === 'Completed' || doc.state.info.pm.trim()) return;
+    const pm = defaultPmName(refs);
+    if (pm) setInfo({ pm });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const checklist = useMemo(() => buildChecklist(s), [s]);
+  // The checklist starts from the template for the options picked. Whoever
+  // created the handover (or a department admin) can then reword, remove or
+  // add items in each section — kept in state.custom, so the PDF and the
+  // progress count follow. A removed template item is only hidden here.
+  const canCustomise = !ro && (isAdmin || (!!row.created_by && row.created_by === me));
+  const template = useMemo(() => templateChecklist(s), [s]);
+  const [editing, setEditing] = useState<ReadonlySet<EditCard>>(new Set());
+  const setCustom = (fn: (c: ChecklistCustom) => ChecklistCustom) => setState((x) => ({ ...x, custom: fn(x.custom) }));
+  const toggleEditing = (card: EditCard) => {
+    if (editing.has(card)) {
+      // Done: drop blank rows and rewordings that match the template again.
+      const tpl = new Map(template.map((i) => [i.id, i.text]));
+      const cu = s.custom;
+      const text = Object.fromEntries(Object.entries(cu.text).filter(([id, t]) => t.trim() && t.trim() !== tpl.get(id)));
+      const added = cu.added.filter((a) => a.text.trim());
+      if (Object.keys(text).length !== Object.keys(cu.text).length || added.length !== cu.added.length) setCustom((c) => ({ ...c, text, added }));
+    }
+    setEditing((e) => { const n = new Set(e); if (n.has(card)) n.delete(card); else n.add(card); return n; });
+  };
   const { done, total } = progressOf(s, doc.checks);
   const pay = paymentStatus(s, doc.checks);
   const grade = lewGrade(s);
@@ -466,9 +534,8 @@ function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
     setNote(failed ? `Could not upload — ${failed}` : `${added.length} file${added.length === 1 ? '' : 's'} uploaded.`);
   };
   const openFile = async (path: string, bucket: string = BUCKET) => {
-    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, 60);
-    if (error || !data) { setNote(`Could not open the file: ${error?.message ?? 'unknown error'}`); return; }
-    window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
+    const err = await openStored(bucket, path);
+    if (err) setNote(`Could not open the file: ${err}`);
   };
   const removeFile = async (path: string) => {
     setState((x) => ({ ...x, files: x.files.filter((f) => f.path !== path) }));
@@ -480,7 +547,7 @@ function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
     setBusy(true);
     try {
       const { handoverPdfBlob } = await import('./HandoverPDF');
-      const blob = await handoverPdfBlob({ company: doc.company, status: doc.status, state: s, checks: doc.checks });
+      const blob = await handoverPdfBlob({ company: doc.company, status: doc.status, state: s, checks: doc.checks, evoneQuotes: salesPdfs.map(quoteDocLabel) });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = `Project Handover - ${(doc.company || 'untitled').replace(/[\\/:*?"<>|]+/g, ' ')}.pdf`;
@@ -520,7 +587,60 @@ function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
       {extra}
     </div>
   );
+  const editBtn = (card: EditCard) => (canCustomise ? (
+    <button type="button" onClick={() => toggleEditing(card)}
+      style={{ ...ghostBtn, marginLeft: 'auto', padding: '6px 12px', ...(editing.has(card) ? { background: C.green, borderColor: C.green, color: C.white } : {}) }}>
+      {editing.has(card) ? <><Check size={13} /> Done</> : <><Pencil size={13} /> Edit items</>}
+    </button>
+  ) : null);
+  const editRows = (sec: CheckSection) => {
+    const tpl = template.filter((i) => i.section === sec);
+    const hidden = tpl.filter((i) => s.custom.removed.includes(i.id));
+    const added = s.custom.added.filter((a) => a.section === sec);
+    const setAdded = (id: string, patch: Partial<ChecklistCustom['added'][number]>) => setCustom((c) => ({ ...c, added: c.added.map((a) => (a.id === id ? { ...a, ...patch } : a)) }));
+    const iconBtn: React.CSSProperties = { width: 36, height: 36, borderRadius: 8, border: '1px solid #EBEBEB', background: C.white, color: C.slate, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, flexShrink: 0 };
+    const del: React.CSSProperties = { ...iconBtn, borderColor: '#FDEAEA', color: '#C0321A' };
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {tpl.filter((i) => !s.custom.removed.includes(i.id)).map((i) => {
+          const over = s.custom.text[i.id];
+          return (
+            <div key={i.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input value={over ?? i.text} onChange={(e) => setCustom((c) => ({ ...c, text: { ...c.text, [i.id]: e.target.value } }))} style={{ ...inputStyle, flex: 1, minWidth: 0 }} />
+              {over !== undefined && over.trim() !== i.text && (
+                <button type="button" title="Back to the template wording" onClick={() => setCustom((c) => { const t = { ...c.text }; delete t[i.id]; return { ...c, text: t }; })} style={iconBtn}><RotateCcw size={14} /></button>
+              )}
+              <button type="button" title="Remove this item" onClick={() => setCustom((c) => ({ ...c, removed: [...c.removed, i.id] }))} style={del}><Trash2 size={14} /></button>
+            </div>
+          );
+        })}
+        {added.map((a) => (
+          <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input value={a.text} autoFocus={!a.text} placeholder="New checklist item" onChange={(e) => setAdded(a.id, { text: e.target.value })} style={{ ...inputStyle, flex: 1, minWidth: 0, borderColor: C.green }} />
+            {sec === 'B' && (
+              <button type="button" title="Who does this — tap to switch" onClick={() => setAdded(a.id, { owner: a.owner === 'Sales' ? 'PE' : 'Sales' })}
+                style={{ ...iconBtn, width: 'auto', padding: '0 10px', fontFamily: 'Figtree', fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: a.owner === 'Sales' ? C.opal : C.slate }}>{a.owner}</button>
+            )}
+            <button type="button" title="Delete this item" onClick={() => setCustom((c) => ({ ...c, added: c.added.filter((x) => x.id !== a.id) }))} style={del}><Trash2 size={14} /></button>
+          </div>
+        ))}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <button type="button" style={{ ...ghostBtn, borderStyle: 'dashed', borderColor: C.green, color: C.green }}
+            onClick={() => setCustom((c) => ({ ...c, added: [...c.added, { id: `x_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, section: sec, text: '', owner: (sec === 'C' ? 'Contractor' : 'PE') as CheckOwner }] }))}>
+            <Plus size={13} /> Add an item
+          </button>
+          {hidden.length > 0 && (
+            <button type="button" style={ghostBtn} title={hidden.map((i) => i.text).join('\n')}
+              onClick={() => setCustom((c) => ({ ...c, removed: c.removed.filter((id) => !hidden.some((i) => i.id === id)) }))}>
+              <RotateCcw size={13} /> Put back {hidden.length} removed
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  };
   const checkRows = (sec: CheckSection, showOwner = false) => {
+    if (canCustomise && editing.has(sec === 'B' || sec === 'C' ? sec : 'D')) return editRows(sec);
     const items = checklist.filter((i) => i.section === sec);
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -546,9 +666,9 @@ function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
   const lists = s.scope === 'install' ? installLists(s) : null;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 1180 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {/* Header */}
-      <div style={{ ...cardStyle, padding: '16px 20px', flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 12, position: 'sticky', top: 0, zIndex: 5 }}>
+      <div style={{ ...cardStyle, padding: '16px 20px', flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
         <button onClick={() => void back()} style={ghostBtn}><ArrowLeft size={14} /> All handovers</button>
         <div style={{ flex: 1, minWidth: 200 }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: C.green, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.company || 'Untitled handover'}</div>
@@ -593,7 +713,7 @@ function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
 
       {/* Job set-up */}
       <div style={cardStyle}>
-        {heading('Job set-up', <span style={{ fontSize: 12, color: C.slate }}>The checklist below is built from these choices.</span>)}
+        {heading('Job set-up', <span style={{ fontSize: 12, color: C.slate }}>The checklist below is built from these choices{canCustomise ? ' — use Edit items on a section to change it for this job' : ''}.</span>)}
         <div style={grid(240)}>
           <Field label="Won quotation" hint={linkedQuote
             ? `Sale by ${linkedQuote.salesperson_name}${linkedQuote.won_final_price ? ` · final price after GST ${money(linkedQuote.won_final_price)}` : ''}${linkedQuote.status !== 'Won' ? ` · now ${linkedQuote.status} in the pipeline` : ''}`
@@ -616,6 +736,21 @@ function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
             <input value={doc.company} disabled={ro} onChange={(e) => change((d) => ({ ...d, company: e.target.value, state: { ...d.state, info: { ...d.state.info, project: e.target.value } } }))} style={inputStyle} />
           </Field>
           <Field label="Quotation no.">{text('quote', 'e.g. SQ-2026-0199')}</Field>
+          <Field label="EVOne quotation">
+            <div style={{ minHeight: 38, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              {salesPdfs.map((f) => (
+                <button key={f.path} type="button" title={`Open ${f.name}`} onClick={() => void openFile(f.path, QUOTE_BUCKET)}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 5, maxWidth: '100%', padding: '7px 12px', borderRadius: 99, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                  <Paperclip size={12} style={{ flexShrink: 0 }} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{quoteDocLabel(f)}</span>
+                </button>
+              ))}
+              {salesPdfs.length === 0 && (
+                <span style={{ fontSize: 12, fontWeight: linkedQuote ? 600 : 400, color: linkedQuote ? '#B45309' : C.slate }}>
+                  {linkedQuote ? `None attached to ${linkedQuote.ref} yet` : 'Link a won quotation to show it'}
+                </span>
+              )}
+            </div>
+          </Field>
           <Field label="Sales">
             <SearchSelect value={s.info.sales} disabled={ro} placeholder="Select salesperson…"
               options={[...new Set([...refs.salespeople.map((p) => p.name), ...(s.info.sales ? [s.info.sales] : [])])].map((n) => ({ value: n, label: n }))}
@@ -656,6 +791,61 @@ function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
             ))}
             {!ro && <button type="button" onClick={() => setState((x) => ({ ...x, contacts: [...x.contacts, { name: '', phone: '' }] }))} style={{ ...ghostBtn, alignSelf: 'flex-start' }}><Plus size={13} /> Add contact</button>}
           </div>
+        </div>
+
+        {/* Documents */}
+        <div style={{ background: C.seasalt, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ ...labelStyle, marginBottom: 0 }}>Documents</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: C.green }}>{s.files.length + salesPdfs.length} file{s.files.length + salesPdfs.length === 1 ? '' : 's'}</span>
+          </div>
+          {linkedQuote && (
+            <div>
+              <div style={{ ...labelStyle, marginBottom: 6 }}>Quotation · from the Sales Pipeline ({linkedQuote.ref})</div>
+              {salesPdfs.length ? (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {salesPdfs.map((f) => (
+                    <button key={f.path} type="button" onClick={() => void openFile(f.path, QUOTE_BUCKET)} title={f.quote_no ? `Quotation no. ${f.quote_no}` : 'Attached to the sale'}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 5, maxWidth: '100%', padding: '5px 10px', borderRadius: 99, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                      <Paperclip size={12} style={{ flexShrink: 0 }} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 260 }}>{f.name}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#B45309' }}>No quotation PDF is attached to {linkedQuote.ref} yet — attach it on the quote in the Sales Pipeline and it appears here.</div>
+              )}
+              {salesPdfs.length > 0 && <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>These belong to the quote — add or change them in the Sales Pipeline.</div>}
+            </div>
+          )}
+          {!ro && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <div style={{ width: 230 }}>
+                <SearchSelect value={uploadKind} onChange={(v) => setUploadKind(v as FileKind)} options={FILE_KINDS.map((k) => ({ value: k, label: k }))} />
+              </div>
+              <label style={{ ...ghostBtn, borderColor: C.green, color: C.green, cursor: busy ? 'default' : 'pointer' }}>
+                <FileUp size={13} /> {busy ? 'Uploading…' : `Upload ${uploadKind.toLowerCase()}`}
+                <input type="file" multiple disabled={busy} accept="application/pdf,image/*" style={{ display: 'none' }} onChange={(e) => { void upload(e.target.files); e.target.value = ''; }} />
+              </label>
+              <span style={{ fontSize: 11, color: C.slate }}>PDF or photos, up to 25 MB each</span>
+            </div>
+          )}
+          {FILE_KINDS.filter((k) => s.files.some((f) => f.kind === k)).map((k) => (
+            <div key={k}>
+              <div style={{ ...labelStyle, marginBottom: 6 }}>{k}</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {s.files.filter((f) => f.kind === k).map((f) => (
+                  <span key={f.path} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: '100%', padding: '5px 6px 5px 10px', borderRadius: 99, border: '1px solid #EBEBEB', background: C.honeydew }}>
+                    <button type="button" onClick={() => void openFile(f.path)} title={`Uploaded by ${f.by}`}
+                      style={{ border: 'none', background: 'none', padding: 0, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+                      <Paperclip size={12} style={{ flexShrink: 0 }} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 260 }}>{f.name}</span>
+                    </button>
+                    {!ro && <button type="button" title="Remove file" onClick={() => void removeFile(f.path)} style={{ width: 20, height: 20, borderRadius: 99, border: 'none', background: C.white, color: C.slate, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}><X size={11} strokeWidth={3} /></button>}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+          {s.files.length === 0 && <div style={{ fontSize: 13, color: C.slate }}>Nothing uploaded here yet — {linkedQuote ? '' : 'quotation, '}cable routing, signed completion form, commissioning photos.</div>}
         </div>
 
         {/* Chargers */}
@@ -743,7 +933,15 @@ function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
           </div>
         </div>
         <div style={grid(200)}>
-          {s.scope === 'full' && <Field label="Cable">{text('cable', 'e.g. 4C 70mm² XLPE, 60 m')}</Field>}
+          {s.scope === 'full' && (
+            <Field label="Main cable size">
+              <SearchSelect value={s.info.cable} disabled={ro} placeholder="Select the cable size…" emptyText="No cable sizes match"
+                options={[{ value: '', label: 'Not decided yet' }, ...[...new Set([...refs.cables, ...(s.info.cable ? [s.info.cable] : [])])].map((n) => ({ value: n, label: n }))]}
+                onChange={(v) => setInfo({ cable: v })}
+                addNewLabel="Use a size not in the list" onAddNew={(q) => { if (q.trim()) setInfo({ cable: q.trim() }); }} />
+            </Field>
+          )}
+          {s.scope === 'full' && <Field label="Cable run (m)">{text('cableLen', 'e.g. 60')}</Field>}
           {s.scope === 'full' && s.c.msb && <Field label="MSB from (A)">{text('msbFrom', 'e.g. 200')}</Field>}
           {s.scope === 'full' && s.c.msb && <Field label="MSB to (A)">{text('msbTo', 'e.g. 400')}</Field>}
           {s.c.bollard && <Field label="Bollards (qty)">{text('bollards', 'e.g. 4')}</Field>}
@@ -811,10 +1009,10 @@ function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
         )}
       </div>
 
-      <div style={cardStyle}>{heading(SECTION_TITLES.B, sectionCount(['B']))}{checkRows('B', true)}</div>
+      <div style={cardStyle}>{heading(SECTION_TITLES.B, <>{sectionCount(['B'])}{editBtn('B')}</>)}{checkRows('B', true)}</div>
 
       <div style={cardStyle}>
-        {heading(SECTION_TITLES.C, sectionCount(['C']))}
+        {heading(SECTION_TITLES.C, <>{sectionCount(['C'])}{editBtn('C')}</>)}
         <div style={{ fontSize: 12, color: C.slate }}>Brief the contractor on every item before work starts. They sign the acknowledgement on the printed PDF.</div>
         <div style={grid(220)}>
           <Field label="Contractor">{text('contractor', 'Contractor company')}</Field>
@@ -823,7 +1021,7 @@ function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
       </div>
 
       <div style={cardStyle}>
-        {heading('D · Turn-on day and commissioning', sectionCount(['D1', 'D2']))}
+        {heading('D · Turn-on day and commissioning', <>{sectionCount(['D1', 'D2'])}{editBtn('D')}</>)}
         <div style={{ fontSize: 11, fontWeight: 700, color: C.opal, textTransform: 'uppercase', letterSpacing: '0.05em' }}>PE to prepare</div>
         {checkRows('D1')}
         <div style={{ fontSize: 11, fontWeight: 700, color: C.opal, textTransform: 'uppercase', letterSpacing: '0.05em' }}>On turn-on day</div>
@@ -873,58 +1071,6 @@ function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
             <div key={t} style={{ fontSize: 13, fontWeight: 600, color: ok ? '#1B512D' : '#B45309' }}>{ok ? '✓' : '○'} {t}</div>
           ))}
         </div>
-      </div>
-
-      {/* Documents */}
-      <div style={cardStyle}>
-        {heading('Documents', <span style={{ fontSize: 12, fontWeight: 700, color: C.slate }}>{s.files.length + salesPdfs.length} file{s.files.length + salesPdfs.length === 1 ? '' : 's'}</span>)}
-        {linkedQuote && (
-          <div>
-            <div style={{ ...labelStyle, marginBottom: 6 }}>Quotation · from the Sales Pipeline ({linkedQuote.ref})</div>
-            {salesPdfs.length ? (
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {salesPdfs.map((f) => (
-                  <button key={f.path} type="button" onClick={() => void openFile(f.path, QUOTE_BUCKET)} title={f.quote_no ? `Quotation no. ${f.quote_no}` : 'Attached to the sale'}
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: 5, maxWidth: '100%', padding: '5px 10px', borderRadius: 99, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
-                    <Paperclip size={12} style={{ flexShrink: 0 }} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 260 }}>{f.name}</span>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div style={{ fontSize: 12, fontWeight: 600, color: '#B45309' }}>No quotation PDF is attached to {linkedQuote.ref} yet — attach it on the quote in the Sales Pipeline and it appears here.</div>
-            )}
-            {salesPdfs.length > 0 && <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>These belong to the quote — add or change them in the Sales Pipeline.</div>}
-          </div>
-        )}
-        {!ro && (
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <div style={{ width: 230 }}>
-              <SearchSelect value={uploadKind} onChange={(v) => setUploadKind(v as FileKind)} options={FILE_KINDS.map((k) => ({ value: k, label: k }))} />
-            </div>
-            <label style={{ ...ghostBtn, borderColor: C.green, color: C.green, cursor: busy ? 'default' : 'pointer' }}>
-              <FileUp size={13} /> {busy ? 'Uploading…' : `Upload ${uploadKind.toLowerCase()}`}
-              <input type="file" multiple disabled={busy} accept="application/pdf,image/*" style={{ display: 'none' }} onChange={(e) => { void upload(e.target.files); e.target.value = ''; }} />
-            </label>
-            <span style={{ fontSize: 11, color: C.slate }}>PDF or photos, up to 25 MB each</span>
-          </div>
-        )}
-        {FILE_KINDS.filter((k) => s.files.some((f) => f.kind === k)).map((k) => (
-          <div key={k}>
-            <div style={{ ...labelStyle, marginBottom: 6 }}>{k}</div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {s.files.filter((f) => f.kind === k).map((f) => (
-                <span key={f.path} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: '100%', padding: '5px 6px 5px 10px', borderRadius: 99, border: '1px solid #EBEBEB', background: C.honeydew }}>
-                  <button type="button" onClick={() => void openFile(f.path)} title={`Uploaded by ${f.by}`}
-                    style={{ border: 'none', background: 'none', padding: 0, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
-                    <Paperclip size={12} style={{ flexShrink: 0 }} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 260 }}>{f.name}</span>
-                  </button>
-                  {!ro && <button type="button" title="Remove file" onClick={() => void removeFile(f.path)} style={{ width: 20, height: 20, borderRadius: 99, border: 'none', background: C.white, color: C.slate, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}><X size={11} strokeWidth={3} /></button>}
-                </span>
-              ))}
-            </div>
-          </div>
-        ))}
-        {s.files.length === 0 && <div style={{ fontSize: 13, color: C.slate }}>Nothing uploaded here yet — {linkedQuote ? '' : 'quotation, '}cable routing, signed completion form, commissioning photos.</div>}
       </div>
 
       {/* G · Sign-off */}

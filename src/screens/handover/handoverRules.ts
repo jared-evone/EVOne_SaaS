@@ -43,7 +43,7 @@ export interface HandoverInfo {
   project: string; site: string; site2: string; site3: string; site4: string;
   quote: string; hdate: string; sales: string; pm: string;
   ddate: string; logistics: string; statusNotes: string;
-  contractor: string; contractorPrice: string; contractorQuote: string; cable: string;
+  contractor: string; contractorPrice: string; contractorQuote: string; cable: string; cableLen: string;
   msbFrom: string; msbTo: string; bollards: string; lots: string; paintColour: string;
   platformName: string; platformNotes: string; blewPhone: string; otherDocs: string; notes: string;
   cpOther: string; niOther: string;
@@ -67,12 +67,44 @@ export interface HandoverState {
   files: HandoverFile[];
   photos: Record<string, unknown>;
   signoff?: { sales?: SignOff | null; pm?: SignOff | null };
+  /** This handover's own changes to the checklist the rules build. */
+  custom: ChecklistCustom;
 }
+
+export type CheckSection = 'B' | 'C' | 'D1' | 'D2';
+export type CheckOwner = 'Sales' | 'PE' | 'Contractor';
+export const CHECK_SECTIONS: CheckSection[] = ['B', 'C', 'D1', 'D2'];
+export interface CustomCheckItem { id: string; section: CheckSection; text: string; owner: CheckOwner }
+/** Removing a template item only hides it here (it can be put back); its tick is kept. */
+export interface ChecklistCustom {
+  /** Reworded template items, by item id. */
+  text: Record<string, string>;
+  /** Template items taken off this handover, by item id. */
+  removed: string[];
+  /** Items added to this handover only. */
+  added: CustomCheckItem[];
+}
+export const blankCustom = (): ChecklistCustom => ({ text: {}, removed: [], added: [] });
+function normaliseCustom(raw: unknown): ChecklistCustom {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Partial<ChecklistCustom>;
+  const owners: CheckOwner[] = ['Sales', 'PE', 'Contractor'];
+  return {
+    text: r.text && typeof r.text === 'object' ? Object.fromEntries(Object.entries(r.text).filter(([, v]) => typeof v === 'string')) : {},
+    removed: Array.isArray(r.removed) ? r.removed.filter((x): x is string => typeof x === 'string') : [],
+    added: Array.isArray(r.added)
+      ? r.added.filter((a) => a && typeof a === 'object' && typeof a.id === 'string' && CHECK_SECTIONS.includes(a.section))
+        .map((a) => ({ id: a.id, section: a.section, text: typeof a.text === 'string' ? a.text : '', owner: owners.includes(a.owner) ? a.owner : 'PE' }))
+      : [],
+  };
+}
+
+/** New handovers go to this Project Manager unless another is picked: Wan Shahrilnizam Fadzillah (app_users.id). */
+export const DEFAULT_PM_USER_ID = 'f31e5ae0-84bc-4409-bb37-c92caffc51d1';
 
 export const BLANK_CHARGER: HandoverCharger = { brand: 'Hiconics', kw: '22', qty: 1, other: '', variant: 'Standard', stand: false, site: '1' };
 export const blankInfo = (): HandoverInfo => ({
   project: '', site: '', site2: '', site3: '', site4: '', quote: '', hdate: '', sales: '', pm: '',
-  ddate: '', logistics: '', statusNotes: '', contractor: '', contractorPrice: '', contractorQuote: '', cable: '',
+  ddate: '', logistics: '', statusNotes: '', contractor: '', contractorPrice: '', contractorQuote: '', cable: '', cableLen: '',
   msbFrom: '', msbTo: '', bollards: '', lots: '', paintColour: '', platformName: '', platformNotes: '',
   blewPhone: '', otherDocs: '', notes: '', cpOther: '', niOther: '',
 });
@@ -80,7 +112,7 @@ export const blankState = (): HandoverState => ({
   info: blankInfo(), contacts: [{ name: '', phone: '' }], chargers: [],
   ownership: 'customer', scope: 'full', halfProt: 'mccb', floor: 'concrete', chargerStatus: 'Ordered',
   platform: 'no', blewPayer: 'EVOne', ltaPayer: 'Customer', ltaAccess: 'open',
-  c: {}, d: {}, pending: [], files: [], photos: {}, signoff: {},
+  c: {}, d: {}, pending: [], files: [], photos: {}, signoff: {}, custom: blankCustom(),
 });
 /** Fills anything missing, so a row saved by an older version (or imported) always renders. */
 export function normaliseState(raw: unknown): HandoverState {
@@ -95,6 +127,7 @@ export function normaliseState(raw: unknown): HandoverState {
     pending: Array.isArray(r.pending) ? r.pending : [],
     files: Array.isArray(r.files) ? r.files.filter((f) => f && typeof f === 'object' && 'path' in f) : [],
     photos: r.photos ?? {}, signoff: r.signoff ?? {},
+    custom: normaliseCustom(r.custom),
   };
 }
 
@@ -132,6 +165,11 @@ export const chargerLabel = (c: HandoverCharger) => {
   const dc = isDc(c.kw);
   return `${brand} ${c.kw} kW ${dc ? 'DC' : 'AC'}${dc ? '' : ` · ${c.variant}${c.stand ? ' · on stand' : ' · wall-mount'}`}`;
 };
+/** The main cable as written on the checklist and the PDF: the size picked, plus the run length when given. */
+export const cableText = (info: HandoverInfo) =>
+  [info.cable.trim(), info.cableLen.trim() ? `${info.cableLen.trim()} m` : ''].filter(Boolean).join(', ');
+/** The Quote Machine catalogue category the cable sizes are picked from. */
+export const CABLE_CATEGORY = 'Supply & Installation of Main Cable';
 export const sitesOf = (s: HandoverState) => [s.info.site, s.info.site2, s.info.site3, s.info.site4];
 export const SCOPE_LABEL: Record<HandoverState['scope'], string> = {
   full: 'Full job (from Main Switch Room)', half: 'Half job (from isolator)', install: 'Installation job only (from cement plinth)',
@@ -164,15 +202,34 @@ export function installLists(s: HandoverState) {
 
 // ── Checklist ─────────────────────────────────────────────────────
 
-export type CheckSection = 'B' | 'C' | 'D1' | 'D2';
-export type CheckOwner = 'Sales' | 'PE' | 'Contractor';
 export interface CheckItem { id: string; section: CheckSection; text: string; owner: CheckOwner }
 export const SECTION_TITLES: Record<CheckSection, string> = {
   B: 'B · Preparation', C: 'C · Contractor briefing (before work starts)',
   D1: 'D · Turn-on day — PE to prepare', D2: 'D · Turn-on day — on the day',
 };
 
+/** The checklist as the screen, the PDF and the progress count use it: the
+ *  template for the options picked, minus the items taken off this handover,
+ *  with its rewordings, plus its own items at the end of each section. */
 export function buildChecklist(s: HandoverState): CheckItem[] {
+  const base = templateChecklist(s);
+  const cu = s.custom;
+  if (!cu || (!cu.removed.length && !cu.added.length && !Object.keys(cu.text).length)) return base;
+  const removed = new Set(cu.removed);
+  const out: CheckItem[] = [];
+  for (const sec of CHECK_SECTIONS) {
+    for (const i of base) {
+      if (i.section !== sec || removed.has(i.id)) continue;
+      const reworded = cu.text[i.id]?.trim();
+      out.push(reworded ? { ...i, text: reworded } : i);
+    }
+    for (const a of cu.added) if (a.section === sec && a.text.trim()) out.push({ ...a, text: a.text.trim() });
+  }
+  return out;
+}
+
+/** What the rules alone build for the options picked — before this handover's own changes. */
+export function templateChecklist(s: HandoverState): CheckItem[] {
   const out: CheckItem[] = [];
   const add = (section: CheckSection, id: string, text: string, owner: CheckOwner) => out.push({ id, section, text, owner });
   const { info, c } = s;
@@ -194,7 +251,7 @@ export function buildChecklist(s: HandoverState): CheckItem[] {
   if (grade) add('B', 'b_lew', `Grade ${grade} LEW engaged (total load ${totalLoad(s)} A)`, 'PE');
   add('B', 'b_contractor', `Contractor${tail(info.contractor, ' ')} appointed — price and quotation recorded in Section F`, 'PE');
   if (s.scope === 'full') {
-    add('B', 'b_msr', `Cable route from the Main Switch Room confirmed${tail(info.cable)}`, 'PE');
+    add('B', 'b_msr', `Cable route from the Main Switch Room confirmed${tail(cableText(info))}`, 'PE');
     if (c.msb) add('B', 'b_msb', `MSB modification planned${info.msbFrom || info.msbTo ? ` (from ${info.msbFrom || '—'} A to ${info.msbTo || '—'} A)` : ''}`, 'PE');
   } else if (s.scope === 'half') {
     add('B', 'b_half', s.halfProt === 'mccb'
@@ -239,7 +296,7 @@ export function buildChecklist(s: HandoverState): CheckItem[] {
   if (stands) add('C', 'c_stand', `Install ${stands} AC charger${stands === 1 ? '' : 's'} on a charger stand${acTotal > stands ? `; the other ${acTotal - stands} wall-mounted` : ''}`, 'Contractor');
   else if (acTotal) add('C', 'c_stand', `Wall-mount the ${acTotal} AC charger${acTotal === 1 ? '' : 's'} (no charger stand)`, 'Contractor');
   if (s.scope === 'full') {
-    add('C', 'c_msr', `Lay the cable from the Main Switch Room${tail(info.cable)}`, 'Contractor');
+    add('C', 'c_msr', `Lay the cable from the Main Switch Room${tail(cableText(info))}`, 'Contractor');
     if (c.msb) add('C', 'c_msb', `Modify the MSB${info.msbFrom || info.msbTo ? ` from ${info.msbFrom || '—'} A to ${info.msbTo || '—'} A` : ''}`, 'Contractor');
     add('C', 'c_isolator', 'Install one isolator per charger', 'Contractor');
     if (cpo) add('C', 'c_outlets', 'Provide 4 × 13A outlets in the DB (router, CCTV, maintenance, lightbox)', 'Contractor');

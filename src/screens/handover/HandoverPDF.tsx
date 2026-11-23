@@ -3,7 +3,7 @@ import logoSrc from '../../assets/evone-logo.png';
 import { C } from '../../theme';
 import {
   buildChecklist, chargerLabel, chargerCount, totalLoad, lewGrade, ltaFeeTotal, ltaFeePer, ampsOf, isDc, sitesOf, installLists,
-  paymentStatus, SCOPE_LABEL, FLOOR_LABEL, SECTION_TITLES, LANDLORD_DOCS, onPlatform,
+  paymentStatus, SCOPE_LABEL, FLOOR_LABEL, SECTION_TITLES, LANDLORD_DOCS, onPlatform, cableText,
   type HandoverState, type CheckItem, type CheckSection,
 } from './handoverRules';
 
@@ -12,6 +12,8 @@ export interface HandoverPdfInput {
   status: string;
   state: HandoverState;
   checks: Record<string, boolean>;
+  /** The EVOne quotation(s) attached to the linked sale in the Sales Pipeline. */
+  evoneQuotes?: string[];
 }
 
 const slate = C.slate;
@@ -70,7 +72,7 @@ function SignBox({ label, name, date }: { label: string; name?: string; date?: s
   );
 }
 
-function HandoverDoc({ company, status, state, checks }: HandoverPdfInput) {
+function HandoverDoc({ company, status, state, checks, evoneQuotes }: HandoverPdfInput) {
   const { info } = state;
   const list = buildChecklist(state);
   const of = (sec: CheckSection) => list.filter((i) => i.section === sec);
@@ -100,6 +102,7 @@ function HandoverDoc({ company, status, state, checks }: HandoverPdfInput) {
         <Heading>A · Project summary</Heading>
         <Pair label="Company / project" value={company || info.project} />
         <Pair label="Quotation" value={info.quote} />
+        {!!evoneQuotes?.length && <Pair label="EVOne quotation" value={evoneQuotes.join(', ')} />}
         {sites.map((a, i) => (a.trim() ? <Pair key={i} label={`Site ${i + 1}`} value={a} /> : null))}
         <Pair label="Site contact(s)" value={state.contacts.filter((c) => c.name.trim() || c.phone.trim()).map((c) => [c.name, c.phone].filter(Boolean).join(' ')).join('; ')} />
         <Pair label="Sales" value={info.sales} />
@@ -112,7 +115,7 @@ function HandoverDoc({ company, status, state, checks }: HandoverPdfInput) {
         <Pair label="Platform" value={onPlatform(state) ? `${info.platformName || 'Yes'}${info.platformNotes ? ` — ${info.platformNotes}` : ''}` : state.platform === 'maybe' ? 'Maybe' : 'No'} />
         <Pair label="Site works" value={flags} />
         <Pair label="Landlord documents" value={docs} />
-        {info.cable.trim() !== '' && <Pair label="Cable" value={info.cable} />}
+        {cableText(info) !== '' && <Pair label="Cable" value={cableText(info)} />}
         {info.notes.trim() !== '' && <Pair label="Notes" value={info.notes} />}
         {info.statusNotes.trim() !== '' && <Pair label="Status notes" value={info.statusNotes} />}
 
