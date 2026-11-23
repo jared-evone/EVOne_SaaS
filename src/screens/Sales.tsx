@@ -941,8 +941,8 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
   const { user } = usePermissions();
 
   // Chargers + quantities, stored as the quote's Order Book lines
-  // (sales_order_lines) so a won quote arrives there already listed. Required
-  // on a new quote; optional to add or change on an existing one. A line whose
+  // (sales_order_lines) so a won quote arrives there already listed. Optional
+  // — installation-only quotes have none. A line whose
   // purchase has started (PO / from stock) is managed in the Order Book only.
   const withChargers = !!chargerItems;
   const blankCharger = (): ChargerDraft => ({ key: crypto.randomUUID(), id: null, item_id: '', item_name: '', qty: '1', warranty: '', locked: false });
@@ -966,7 +966,7 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
   const listedChargers = chargers.filter((c) => c.item_name.trim());
   const chargerQtyBad = listedChargers.some((c) => { const n = Number(c.qty); return !Number.isInteger(n) || n <= 0; });
   const chargerWarrantyBad = listedChargers.some((c) => { if (c.warranty.trim() === '') return false; const n = Number(c.warranty); return !Number.isFinite(n) || n < 0 || n > 20; });
-  const chargersOk = !withChargers || (chargersLoaded && !chargerQtyBad && !chargerWarrantyBad && (!isNew || listedChargers.length > 0));
+  const chargersOk = !withChargers || (chargersLoaded && !chargerQtyBad && !chargerWarrantyBad);
 
   const syncChargers = async (quoteId: string): Promise<string | null> => {
     if (!withChargers || !chargersLoaded) return null;
@@ -1420,14 +1420,14 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
         {withChargers && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-              <label style={{ ...label, marginBottom: 0 }}>Chargers{isNew ? ' *' : ''}</label>
-              <span style={{ fontSize: 11, color: C.slate }}>model · quantity · years of warranty — carried to the Order Book when won</span>
+              <label style={{ ...label, marginBottom: 0 }}>Chargers</label>
+              <span style={{ fontSize: 11, color: C.slate }}>optional · model · quantity · years of warranty — carried to the Order Book when won</span>
             </div>
             {!chargersLoaded ? (
               <div style={{ fontSize: 12, color: C.slate }}>Loading chargers…</div>
             ) : (
               <>
-                {chargers.length === 0 && <div style={{ fontSize: 12, color: C.slate }}>No chargers listed{readOnly ? '.' : ' — add the model and quantity.'}</div>}
+                {chargers.length === 0 && <div style={{ fontSize: 12, color: C.slate }}>No chargers listed{readOnly ? '.' : ' — fine for an installation-only quote.'}</div>}
                 {chargers.map((c) => {
                   const opts = (chargerItems ?? []).filter((it) => it.active || it.id === c.item_id)
                     .map((it) => ({ value: it.id, label: it.name, sub: it.brand ?? undefined }));
@@ -1464,7 +1464,6 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
                     <Plus size={13} strokeWidth={2.5} /> Add a charger
                   </button>
                 )}
-                {isNew && listedChargers.length === 0 && <div style={{ fontSize: 11, color: '#B45309', fontWeight: 600 }}>Pick at least one charger to create the quote.</div>}
                 {chargerQtyBad && <div style={{ fontSize: 11, color: '#C0321A', fontWeight: 600 }}>Each charger needs a whole-number quantity above zero.</div>}
                 {chargerWarrantyBad && <div style={{ fontSize: 11, color: '#C0321A', fontWeight: 600 }}>Warranty is in years, between 0 and 20.</div>}
               </>
