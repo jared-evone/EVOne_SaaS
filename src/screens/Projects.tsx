@@ -5788,6 +5788,16 @@ function nextCycleDate(turnOn: string | null, intervalMonths: number): string | 
   return toYmd(next);
 }
 
+/** Next Form A / Form D dates as the registry stores them on a charger: Form A
+ *  every 6 months (24 for residential), Form D every 12 (none for residential).
+ *  Exported so other modules that create registry chargers store the same dates. */
+export function ltaNextDates(c: { lta_letter_date?: string | null; lta_letter_forms?: LetterForms | null; turn_on_date: string | null; procurement_date: string | null }, isResidential: boolean): { form_a_next_date: string | null; form_d_next_date: string | null } {
+  return {
+    form_a_next_date: nextCycleDate(ltaScheduleBase(c, isResidential ? 24 : 6, 'A'), isResidential ? 24 : 6),
+    form_d_next_date: isResidential ? null : nextCycleDate(ltaScheduleBase(c, 12, 'D'), 12),
+  };
+}
+
 function addYears(dateStr: string, years: number): string {
   const d = new Date(dateStr + 'T00:00:00');
   d.setFullYear(d.getFullYear() + years);
@@ -5982,8 +5992,7 @@ function ChargerModal({ title, initial, siteName, isResidential, brandModels, ca
       turn_on_date:            turnOn,
       lta_letter_date:         letter,
       lta_letter_forms:        letterForms,
-      form_a_next_date:        nextCycleDate(ltaScheduleBase(forSchedule, isResidential ? 24 : 6, 'A'), isResidential ? 24 : 6),
-      form_d_next_date:        isResidential ? null : nextCycleDate(ltaScheduleBase(forSchedule, 12, 'D'), 12),
+      ...ltaNextDates(forSchedule, isResidential),
       // Warranty starts on the registration date; the end is editable (defaults to start + years).
       warranty_start_date:     turnOn ? turnOn : null,
       warranty_end_date:       form.warranty_end_date || null,

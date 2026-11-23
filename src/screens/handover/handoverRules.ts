@@ -74,6 +74,44 @@ export interface HandoverState {
   ehvcgSame: boolean;
   /** Dated notes, oldest first. info.notes / info.statusNotes hold what was typed before the log existed and are still shown. */
   noteLog: NoteEntry[];
+  /** One entry per physical charger, with what the Charger Registry needs to take it over. */
+  registry: RegistryUnit[];
+}
+export interface RegistryUnit {
+  id: string;
+  site: HandoverCharger['site'];
+  /** A Charger Registry brand & model label (charger_brand_models). */
+  brandModel: string;
+  serial: string;
+  regCode: string;
+  /** Registration (turn-on) date — the warranty starts here. */
+  turnOn: string;
+  procured: string;
+  warrantyYears: string;
+  /** Form 1 PDF, already stored in the registry's own bucket. */
+  form1: { path: string; name: string } | null;
+  notes: string;
+  /** Set once the charger exists in the registry — from then on it is managed there. */
+  moved: { chargerId: string; siteId: string; projectId: string; at: string; by: string } | null;
+}
+/** What a unit still needs before it can go to the registry. */
+export const registryMissing = (u: RegistryUnit): string[] => [
+  !u.serial.trim() && 'serial number', !u.brandModel.trim() && 'brand & model', !u.turnOn && 'registration date',
+].filter((x): x is string => !!x);
+/** The registry's brand & model label that best fits a handover charger line ('' when unsure). */
+export function guessBrandModel(c: HandoverCharger, labels: string[]): string {
+  if (c.brand === 'Other') return '';
+  const kw = new RegExp(`(^|[^0-9])${c.kw}\\s*kw`, 'i');
+  const fits = labels.filter((l) => l.toLowerCase().includes(c.brand.toLowerCase()) && kw.test(l));
+  if (fits.length <= 1) return fits[0] ?? '';
+  return fits.find((l) => l.toLowerCase().includes(c.variant.toLowerCase())) ?? '';
+}
+/** A date that many years on (parts of a year count in months), as YYYY-MM-DD. */
+export function addYearsYmd(ymd: string, years: number): string {
+  const d = new Date(`${ymd}T00:00:00`);
+  if (Number.isNaN(d.getTime()) || !(years > 0)) return '';
+  d.setMonth(d.getMonth() + Math.round(years * 12));
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 export type NoteKind = 'pm' | 'status';
 export interface NoteEntry { id: string; kind: NoteKind; text: string; at: string; by: string }
@@ -130,7 +168,7 @@ export const blankState = (): HandoverState => ({
   ownership: 'customer', scope: 'full', halfProt: 'mccb', floor: 'concrete', chargerStatus: 'Ordered',
   platform: 'no', blewPayer: 'EVOne', ltaPayer: 'Customer', ltaAccess: 'open',
   c: {}, d: {}, pending: [], files: [], photos: {}, signoff: {}, custom: blankCustom(),
-  ehvcg: false, ehvcgSame: false, noteLog: [],
+  ehvcg: false, ehvcgSame: false, noteLog: [], registry: [],
 });
 /** Fills anything missing, so a row saved by an older version (or imported) always renders. */
 export function normaliseState(raw: unknown): HandoverState {
@@ -150,6 +188,17 @@ export function normaliseState(raw: unknown): HandoverState {
     noteLog: Array.isArray(r.noteLog)
       ? r.noteLog.filter((n) => n && typeof n === 'object' && typeof n.text === 'string')
         .map((n, i) => ({ id: typeof n.id === 'string' ? n.id : `n_${i}`, kind: n.kind === 'status' ? 'status' as const : 'pm' as const, text: n.text, at: typeof n.at === 'string' ? n.at : '', by: typeof n.by === 'string' ? n.by : '' }))
+      : [],
+    registry: Array.isArray(r.registry)
+      ? r.registry.filter((u) => u && typeof u === 'object' && typeof u.id === 'string').map((u) => {
+        const str = (v: unknown) => (typeof v === 'string' ? v : '');
+        return {
+          id: u.id, site: (['1', '2', '3', '4'] as const).find((n) => n === u.site) ?? '1', brandModel: str(u.brandModel), serial: str(u.serial), regCode: str(u.regCode),
+          turnOn: str(u.turnOn), procured: str(u.procured), warrantyYears: str(u.warrantyYears), notes: str(u.notes),
+          form1: u.form1 && typeof u.form1 === 'object' && typeof u.form1.path === 'string' ? { path: u.form1.path, name: str(u.form1.name) || 'Form 1.pdf' } : null,
+          moved: u.moved && typeof u.moved === 'object' && typeof u.moved.chargerId === 'string' ? u.moved : null,
+        };
+      })
       : [],
   };
 }

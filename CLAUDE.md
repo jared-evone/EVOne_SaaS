@@ -354,7 +354,13 @@ src/
     Projects.tsx            Charger Registry — sites, chargers, LTA inspection
                             schedule (Form A/D), warranty. The biggest screen.
     Sales.tsx               Sales Pipeline; with pipeline="cpo" it is the CPO
-                            Sales Pipeline (cpo_sales_quotations, CQ- refs)
+                            Sales Pipeline (cpo_sales_quotations, CQ- refs).
+                            Moving a quote to Won opens the quote: the final
+                            after-GST price (won_final_price, pre-filled from
+                            the quotation amount) must be confirmed and at
+                            least one quotation PDF attached; `total` stays the
+                            pipeline value. See
+                            db/sales_quotations_won_quotation.sql
     LandAcquisition.tsx     CPO Land Acquisition pipeline (cpo_land_sites)
     OrderBook.tsx           Sales Order Book — chargers each WON sales quote
                             must supply (sales_order_lines), each linked to a
@@ -375,7 +381,24 @@ src/
                             with an updated_at guard; documents in the private
                             sales-handover-docs bucket). `state` keeps the
                             original register's keys so its exports import
-                            as-is. See db/sales_handovers.sql
+                            as-is; everything added since is an extra optional
+                            key that normaliseState fills in: `custom` (this
+                            job's reworded / removed / added checklist items —
+                            buildChecklist applies it over templateChecklist;
+                            a removed template item is only hidden), `noteLog`
+                            (dated notes; info.notes / statusNotes keep what was
+                            typed before and are still shown), `ehvcg` /
+                            `ehvcgSame`, `registry`. The linked sale's PDFs,
+                            EV1QO number and charger warranty are read live
+                            from the quote, never copied. One handover per
+                            quotation. RegistryHandoff.tsx collects per-charger
+                            registry details and creates the chargers in the
+                            Charger Registry (projects / project_sites /
+                            site_chargers) — it only INSERTS, stores them the
+                            way the registry's own charger form does
+                            (ltaNextDates in Projects.tsx), and marks each unit
+                            `moved` so it can't go twice. See
+                            db/sales_handovers.sql
     Login.tsx               email/password sign-in (departments derive from grants)
     Settings.tsx, DBHealth.tsx
                             in-app admin (Users & Permissions matrix + DB health)

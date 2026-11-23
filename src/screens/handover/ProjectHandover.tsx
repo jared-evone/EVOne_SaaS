@@ -5,6 +5,7 @@ import { KPICard } from '../../components/KPICard';
 import { SearchSelect } from '../../components/SearchSelect';
 import { supabase } from '../../lib/supabase';
 import { usePermissions } from '../../permissions';
+import { RegistryHandoff } from './RegistryHandoff';
 import {
   BRANDS, FILE_KINDS, LANDLORD_DOCS, PLATFORMS, SCOPE_LABEL, FLOOR_LABEL, SECTION_TITLES, DC_SPECS,
   kwOptionsFor, ampsOf, isDc, blankState, normaliseState, buildChecklist, templateChecklist, progressOf, paymentStatus,
@@ -78,7 +79,7 @@ async function openStored(bucket: string, path: string): Promise<string | null> 
 const money = (n: number) => `$${Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 interface Refs {
   quotes: WonQuote[];
-  customers: { id: string; name: string; address: string | null }[];
+  customers: { id: string; name: string; address: string | null; type: string | null }[];
   salespeople: { id: string; name: string }[];
   accounts: { id: string; full_name: string | null; email: string }[];
   /** Main cable sizes, from the Quote Machine catalogue. */
@@ -154,7 +155,7 @@ export function ScreenProjectHandover() {
       // Every status, not just Won: a handover stays linked (and keeps showing the
       // sale's PDFs) if its quote is later moved in the pipeline. Pickers list Won only.
       supabase.from('sales_quotations').select(QUOTE_COLS).order('quote_date', { ascending: false }),
-      supabase.from('customers').select('id, name, address').order('name'),
+      supabase.from('customers').select('id, name, address, type').order('name'),
       supabase.from('sales_people').select('id, name').order('name'),
       supabase.from('app_users').select('id, full_name, email, is_active').order('full_name'),
       supabase.from('quote_catalog_items').select('name').eq('category', CABLE_CATEGORY).eq('is_active', true),
@@ -517,6 +518,11 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, takenQuote
     for (const l of mine) if (l.warranty_years != null) years.set(Number(l.warranty_years), (years.get(Number(l.warranty_years)) ?? 0) + Number(l.qty));
     if (!years.size) return 'warranty not set on the sale';
     return `${[...years].map(([y, q]) => (years.size > 1 ? `${q} × ${y}-year` : `${y}-year`)).join(' · ')} warranty`;
+  };
+
+  const warrantyYearsFor = (c: HandoverCharger): string => {
+    const years = new Set(saleLines.filter((l) => { const x = chargerFromItemName(l.item_name, l.qty); return x.brand === c.brand && x.kw === c.kw && l.warranty_years != null; }).map((l) => Number(l.warranty_years)));
+    return years.size === 1 ? String([...years][0]) : '';
   };
 
   const [noteDraft, setNoteDraft] = useState<Record<NoteKind, string>>({ pm: '', status: '' });
@@ -1166,6 +1172,13 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, takenQuote
             <div key={t} style={{ fontSize: 13, fontWeight: 600, color: ok ? '#1B512D' : '#B45309' }}>{ok ? '✓' : '○'} {t}</div>
           ))}
         </div>
+      </div>
+
+      {/* Charger Registry details */}
+      <div style={cardStyle}>
+        <RegistryHandoff state={s} setState={setState} ro={ro} me={me} company={doc.company} customerId={doc.customer_id}
+          isResidential={refs.customers.find((c) => c.id === doc.customer_id)?.type === 'residential'}
+          warrantyYearsFor={warrantyYearsFor} onNote={setNote} />
       </div>
 
       {/* G · Sign-off */}
