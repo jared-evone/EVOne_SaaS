@@ -39,6 +39,7 @@ interface POLine {
   extra_warranty_cost?: number | null;
   /** Lines added from Awaiting PO: who the charger is for. */
   for_customer?: string;
+  for_customer_id?: string | null;
   quote_ref?: string;
 }
 type LineLike = Pick<POLine, 'name' | 'qty' | 'warranty_years' | 'base_price' | 'warranty_included' | 'extra_warranty_cost' | 'for_customer' | 'quote_ref' | 'unit_price'>;
@@ -566,7 +567,7 @@ function RaiseTab({ products, customers, accounts, settings, onSent }: { product
     setLines((prev) => [...prev, {
       key: newKey(), product_id: p?.id ?? null, ...draft, remark: p?.description || null,
       unit: p?.unit ?? 'unit', unit_price: pricedUnit(draft, warranty_years) ?? draft.unit_price, sell_price: 0, currency, supplier: p?.supplier ?? null,
-      order_line_id: a.id, for_customer: a.customer_name, quote_ref: a.quote_ref,
+      order_line_id: a.id, for_customer: a.customer_name, for_customer_id: a.customer_id, quote_ref: a.quote_ref,
     }]);
     if (!customer && a.customer_id) { const c = customers.find((x) => x.id === a.customer_id); if (c) setCustomer(c); }
   };
@@ -902,22 +903,23 @@ function TrackTab({ pos, customers, accounts, settings, canEdit, canDelete, onRe
       if (error) { setNotice({ text: `Could not complete the PO: ${error.message}`, tone: 'err' }); return; }
       setNotice({ text: 'This PO changed status elsewhere — the list has been refreshed.', tone: 'err' }); setOpen(null); await onRefresh(); return;
     }
-    // The shipment the trigger just created carries the real PO number and its
-    // own copy of the PDF (its own file, so deleting a shipment never removes the PO's).
+    // The trigger just created the shipments — one per client. Each gets its
+    // own copy of the PDF (its own file, so deleting a shipment never removes
+    // the PO's or another shipment's).
     const { data: ships } = await supabase.from('inv_shipments').select('id, group_id').eq('po_id', po.id);
     const rows = (ships ?? []) as { id: string; group_id: string }[];
+    const groups = [...new Set(rows.map((r) => r.group_id))];
     let shipWarn = '';
-    if (rows.length) {
-      const shipPath = `${rows[0].group_id}/${Date.now()}-${safe}`;
+    for (const g of groups) {
+      const shipPath = `${g}/${Date.now()}-${safe}`;
       const copy = await supabase.storage.from(PO_PDF_BUCKET).upload(shipPath, file, { contentType: 'application/pdf' });
-      const { error: se } = await supabase.from('inv_shipments')
-        .update({ po_no: netsuiteNo, ...(copy.error ? {} : { po_pdf_path: shipPath, po_pdf_name: file.name }) }).eq('po_id', po.id);
-      if (se || copy.error) shipWarn = ` The shipment's PO number / PDF could not be set (${se?.message ?? copy.error?.message}) — set it in Incoming Shipments.`;
+      const { error: se } = copy.error ? { error: null } : await supabase.from('inv_shipments').update({ po_pdf_path: shipPath, po_pdf_name: file.name }).eq('group_id', g);
+      if (se || copy.error) shipWarn = ` A shipment's PDF could not be attached (${se?.message ?? copy.error?.message}) — attach it in Incoming Shipments.`;
     }
     setBusy(false);
     setOpen({ ...po, ...done });
     setNotice(rows.length
-      ? { text: `Marked completed by you (${user.full_name || user.email}) as ${netsuiteNo} — ${rows.length} item line${rows.length === 1 ? '' : 's'} now in Incoming Shipments as Ordered.${shipWarn}`, tone: shipWarn ? 'err' : 'ok' }
+      ? { text: `Marked completed by you (${user.full_name || user.email}) as ${netsuiteNo} — ${groups.length} shipment${groups.length === 1 ? '' : 's'} (${rows.length} item line${rows.length === 1 ? '' : 's'}) now in Incoming Shipments as Ordered${groups.length > 1 ? ', one per client' : ''}.${shipWarn}`, tone: shipWarn ? 'err' : 'ok' }
       : { text: 'Marked completed, but no shipment lines were created (no line has a quantity). Add the shipment by hand in Incoming Shipments.', tone: 'err' });
     await onRefresh();
   };

@@ -696,3 +696,11 @@ alter table public.purchase_orders
   add column if not exists netsuite_po_no text,
   add column if not exists po_pdf_path text,
   add column if not exists po_pdf_name text;
+
+-- 2026-11-23 · migration inv_shipments_from_po_per_client — a completed PO now
+-- becomes ONE SHIPMENT PER CLIENT (they arrive separately) instead of one per
+-- PO: lines raised from a won quote carry for_customer / for_customer_id and
+-- group by it; other lines share one shipment under the PO's own customer.
+-- Each shipment gets its customer, and the NetSuite PO number when finance
+-- gave one (else the app's number). All still point at the PO via po_id.
+-- (inv_shipments_from_po re-created; see the live function for the body.)
