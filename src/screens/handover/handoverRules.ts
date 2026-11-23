@@ -42,6 +42,8 @@ export const PLATFORMS = ['GoParkin', 'SP', "Charger's Own", 'SpectraMoon'];
 export interface HandoverInfo {
   project: string; site: string; site2: string; site3: string; site4: string;
   quote: string; hdate: string; sales: string; pm: string;
+  /** The Sales Pipeline quotation number `quote` last agreed with ('' = never compared). */
+  quoteSynced: string;
   ddate: string; logistics: string; statusNotes: string;
   contractor: string; contractorPrice: string; contractorQuote: string; cable: string; cableLen: string;
   msbFrom: string; msbTo: string; bollards: string; lots: string; paintColour: string;
@@ -158,7 +160,7 @@ export const DEFAULT_PM_USER_ID = 'f31e5ae0-84bc-4409-bb37-c92caffc51d1';
 
 export const BLANK_CHARGER: HandoverCharger = { brand: 'Hiconics', kw: '22', qty: 1, other: '', variant: 'Standard', stand: false, site: '1' };
 export const blankInfo = (): HandoverInfo => ({
-  project: '', site: '', site2: '', site3: '', site4: '', quote: '', hdate: '', sales: '', pm: '',
+  project: '', site: '', site2: '', site3: '', site4: '', quote: '', quoteSynced: '', hdate: '', sales: '', pm: '',
   ddate: '', logistics: '', statusNotes: '', contractor: '', contractorPrice: '', contractorQuote: '', cable: '', cableLen: '',
   msbFrom: '', msbTo: '', bollards: '', lots: '', paintColour: '', platformName: '', platformNotes: '',
   blewPhone: '', otherDocs: '', notes: '', cpOther: '', niOther: '',
@@ -237,6 +239,23 @@ export const chargerLabel = (c: HandoverCharger) => {
   const dc = isDc(c.kw);
   return `${brand} ${c.kw} kW ${dc ? 'DC' : 'AC'}${dc ? '' : ` · ${c.variant}${c.stand ? ' · on stand' : ' · wall-mount'}`}`;
 };
+/** Does a quotation number typed on a handover still name the pipeline's one(s)? ("A / B" needs both.) */
+export const namesQuote = (text: string, no: string) => !!no && no.split(' / ').every((part) => text.toLowerCase().includes(part.toLowerCase()));
+/** How a handover's quotation number follows the Sales Pipeline. `live` is the
+ *  number the sale holds now ('' while no quotation is attached to it) and
+ *  `ref` the sale's own SQ ref. Returns what to change, or null to leave it:
+ *  a blank, the SQ ref or the last pipeline number is replaced by the current
+ *  one; a typed number that still names the pipeline's is kept and remembered;
+ *  a number typed by hand that names something else (a PO, say) is never touched. */
+export function followQuoteNo(info: Pick<HandoverInfo, 'quote' | 'quoteSynced'>, live: string, ref: string): Partial<Pick<HandoverInfo, 'quote' | 'quoteSynced'>> | null {
+  const cur = info.quote.trim();
+  const synced = info.quoteSynced;
+  if (!live) return cur ? null : { quote: ref };
+  if (!cur || cur === ref || cur === synced) return cur === live && synced === live ? null : { quote: live, quoteSynced: live };
+  if (namesQuote(cur, live)) return synced === live ? null : { quoteSynced: live };
+  if (synced && synced !== live && namesQuote(cur, synced)) return { quote: live, quoteSynced: live };
+  return null;
+}
 /** The main cable as written on the checklist and the PDF: the size picked, plus the run length when given. */
 export const cableText = (info: HandoverInfo) =>
   [info.cable.trim(), info.cableLen.trim() ? `${info.cableLen.trim()} m` : ''].filter(Boolean).join(', ');

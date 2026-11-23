@@ -10,7 +10,7 @@ import {
   BRANDS, FILE_KINDS, LANDLORD_DOCS, PLATFORMS, SCOPE_LABEL, FLOOR_LABEL, SECTION_TITLES, DC_SPECS,
   kwOptionsFor, ampsOf, isDc, blankState, normaliseState, buildChecklist, templateChecklist, progressOf, paymentStatus,
   chargerCount, totalLoad, lewGrade, ltaFeeTotal, ltaFeePer, installLists, chargerFromItemName, onPlatform, blewInvolved,
-  DEFAULT_PM_USER_ID, CABLE_CATEGORY, NOTE_KINDS,
+  DEFAULT_PM_USER_ID, CABLE_CATEGORY, NOTE_KINDS, namesQuote, followQuoteNo,
   type HandoverState, type HandoverCharger, type HandoverInfo, type FlagKey, type CheckSection, type CheckItem, type ChecklistCustom, type CheckOwner, type NoteKind,
   type PendingItem, type PendingOwner, type FileKind, type Brand,
 } from './handoverRules';
@@ -69,6 +69,10 @@ const quotePdfs = (q: WonQuote | undefined): QuotePdf[] => {
 /** How an attached quotation is named on screen: the quotation no. keyed in on the sale, else the EV1QO number in the file name, else the file name. */
 const quoteDocLabel = (f: QuotePdf) =>
   f.quote_no?.trim() || f.name.match(/EV1QO[-_ ]?\d+(?:[-_ ]?v\d+)?/i)?.[0] || f.name.replace(/\.pdf$/i, '');
+/** The quotation number(s) the Sales Pipeline holds for a sale — '' while no quotation is attached to it. */
+const pipelineQuoteNo = (q: WonQuote | undefined) => [...new Set(quotePdfs(q).map(quoteDocLabel))].join(' / ');
+/** What a picker shows under a won quotation: who sold it and its final price. */
+const quoteSub = (q: WonQuote) => `${q.salesperson_name}${q.won_final_price ? ` · ${money(q.won_final_price)} after GST` : ''}`;
 /** Opens a stored file in a new tab; returns what went wrong if it can't. */
 async function openStored(bucket: string, path: string): Promise<string | null> {
   const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, 60);
@@ -311,7 +315,8 @@ async function prefillFromQuote(q: WonQuote, refs: Refs): Promise<{ state: Hando
   const cust = q.customer_id ? refs.customers.find((c) => c.id === q.customer_id) : undefined;
   const company = cust?.name ?? q.customer_name;
   s.info.project = company;
-  s.info.quote = q.ref;
+  s.info.quoteSynced = pipelineQuoteNo(q);
+  s.info.quote = s.info.quoteSynced || q.ref;
   s.info.sales = q.salesperson_name;
   s.info.hdate = todayISO();
   s.info.site = cust?.address ?? '';
@@ -368,7 +373,7 @@ function NewHandoverModal({ refs, rows, me, onClose, onCreated, onOpenExisting }
         </div>
         <Field label="Won quotation">
           <SearchSelect value={quoteId} onChange={setQuoteId} placeholder="Select a won quotation…" emptyText="No won quotations match"
-            options={refs.quotes.filter((q) => q.status === 'Won' && !rows.some((r) => r.quote_id === q.id)).map((q) => ({ value: q.id, label: `${q.ref} · ${q.customer_name}`, sub: q.salesperson_name }))} />
+            options={refs.quotes.filter((q) => q.status === 'Won' && !rows.some((r) => r.quote_id === q.id)).map((q) => ({ value: q.id, label: `${q.ref} · ${q.customer_name}`, sub: quoteSub(q) }))} />
         </Field>
         {quote && !existing && (
           <div style={{ fontSize: 12, color: C.slate, marginTop: -8 }}>
@@ -494,8 +499,39 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, takenQuote
   const dcBrands = [...new Set(s.chargers.filter((c) => Number(c.qty) > 0 && isDc(c.kw)).map((c) => c.brand))];
   const cpo = s.ownership === 'cpo';
   const sitesFilled = [s.info.site, s.info.site2, s.info.site3, s.info.site4].map((a, i) => ({ n: String(i + 1) as HandoverCharger['site'], a })).filter((x) => x.a.trim() || x.n === '1');
-  const linkedQuote = doc.quote_id ? refs.quotes.find((q) => q.id === doc.quote_id) : undefined;
+  // The linked sale is re-read when this handover opens and whenever the window
+  // comes back into focus, so everything shown from the Sales Pipeline (the
+  // quotation number, its PDFs, the final price, the warranty) is current.
+  const [freshQuote, setFreshQuote] = useState<WonQuote | null>(null);
+  const [saleTick, setSaleTick] = useState(0);
+  useEffect(() => {
+    const id = doc.quote_id;
+    if (!id) { setFreshQuote(null); return; }
+    let live = true;
+    const read = () => {
+      void supabase.from('sales_quotations').select(QUOTE_COLS).eq('id', id).maybeSingle()
+        .then(({ data }) => { if (live && data) setFreshQuote(data as unknown as WonQuote); });
+      setSaleTick((n) => n + 1);
+    };
+    read();
+    window.addEventListener('focus', read);
+    return () => { live = false; window.removeEventListener('focus', read); };
+  }, [doc.quote_id]);
+  const linkedQuote = doc.quote_id ? (freshQuote && freshQuote.id === doc.quote_id ? freshQuote : refs.quotes.find((q) => q.id === doc.quote_id)) : undefined;
   const salesPdfs = quotePdfs(linkedQuote);
+
+  // The quotation number follows the Sales Pipeline: when the sale's quotation
+  // changes there, it changes here. What someone typed by hand (a PO number,
+  // say) is never replaced — the field then says the two differ and offers the
+  // pipeline's number. A completed handover is left as it was.
+  const liveQuoteNo = pipelineQuoteNo(linkedQuote);
+  const quoteTyped = s.info.quote.trim();
+  const quoteFollows = !liveQuoteNo || !quoteTyped || namesQuote(quoteTyped, liveQuoteNo);
+  useEffect(() => {
+    if (ro || doc.status === 'Completed' || !linkedQuote) return;
+    const change = followQuoteNo(s.info, liveQuoteNo, linkedQuote.ref);
+    if (change) setInfo(change);
+  }, [linkedQuote?.id, liveQuoteNo, doc.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -510,7 +546,7 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, takenQuote
     void supabase.from('sales_order_lines').select('item_name, qty, warranty_years').eq('quote_id', doc.quote_id).order('position').order('created_at')
       .then(({ data }) => { if (live) setSaleLines((data ?? []) as { item_name: string; qty: number; warranty_years: number | null }[]); });
     return () => { live = false; };
-  }, [doc.quote_id]);
+  }, [doc.quote_id, saleTick]);
   const warrantyOf = (c: HandoverCharger): string => {
     const mine = saleLines.filter((l) => { const x = chargerFromItemName(l.item_name, l.qty); return x.brand === c.brand && x.kw === c.kw; });
     if (!mine.length) return '';
@@ -526,6 +562,26 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, takenQuote
   };
 
   const [noteDraft, setNoteDraft] = useState<Record<NoteKind, string>>({ pm: '', status: '' });
+  const [dropNote, setDropNote] = useState<string | null>(null);
+  const noteCard = (key: string, title: string, body: string, onDelete: () => void) => (
+    <div key={key} style={{ background: C.seasalt, borderRadius: 10, padding: '8px 12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ flex: 1, minWidth: 0, fontSize: 10, fontWeight: 700, color: C.slate, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{title}</div>
+        {!ro && dropNote !== key && (
+          <button type="button" title="Delete this note" onClick={() => setDropNote(key)}
+            style={{ width: 24, height: 24, borderRadius: 6, border: 'none', background: 'transparent', color: C.slate, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0, flexShrink: 0 }}><Trash2 size={13} /></button>
+        )}
+      </div>
+      <div style={{ fontSize: 13, color: '#1a1a1a', lineHeight: 1.5, whiteSpace: 'pre-wrap', marginTop: 2 }}>{body}</div>
+      {dropNote === key && (
+        <div style={{ marginTop: 8, background: '#FDEAEA', borderRadius: 8, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ flex: 1, minWidth: 140, fontSize: 12, fontWeight: 600, color: '#C0321A' }}>Delete this note? It can't be brought back.</span>
+          <button type="button" onClick={() => setDropNote(null)} style={{ ...ghostBtn, padding: '5px 10px' }}>Cancel</button>
+          <button type="button" onClick={() => { onDelete(); setDropNote(null); }} style={{ padding: '6px 12px', borderRadius: 8, border: 'none', background: '#C0321A', color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Yes, delete</button>
+        </div>
+      )}
+    </div>
+  );
   const addNote = (kind: NoteKind) => {
     const text = noteDraft[kind].trim();
     if (!text) return;
@@ -759,7 +815,7 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, takenQuote
             ? `Sale by ${linkedQuote.salesperson_name}${linkedQuote.won_final_price ? ` · final price after GST ${money(linkedQuote.won_final_price)}` : ''}${linkedQuote.status !== 'Won' ? ` · now ${linkedQuote.status} in the pipeline` : ''}`
             : 'Link the sale this job belongs to'}>
             <SearchSelect value={doc.quote_id ?? ''} disabled={ro} onChange={(v) => void linkQuote(v)} placeholder="Not linked" emptyText="No won quotations match"
-              options={[{ value: '', label: 'Not linked' }, ...refs.quotes.filter((q) => (q.status === 'Won' && !takenQuoteIds.includes(q.id)) || q.id === doc.quote_id).map((q) => ({ value: q.id, label: `${q.ref} · ${q.customer_name}`, sub: q.salesperson_name }))]} />
+              options={[{ value: '', label: 'Not linked' }, ...refs.quotes.filter((q) => (q.status === 'Won' && !takenQuoteIds.includes(q.id)) || q.id === doc.quote_id).map((q) => ({ value: q.id, label: `${q.ref} · ${q.customer_name}`, sub: quoteSub(q) }))]} />
           </Field>
           <Field label="Client">
             <SearchSelect value={doc.customer_id ?? ''} disabled={ro} placeholder="Select customer…" emptyText="No customers match"
@@ -791,7 +847,17 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, takenQuote
         </div>
 
         <div style={grid(240)}>
-          <Field label="Quotation no.">{text('quote', 'e.g. SQ-2026-0199')}</Field>
+          <Field label="Quotation no.">
+            {text('quote', 'e.g. EV1QO-003325')}
+            {liveQuoteNo && (quoteFollows
+              ? <div style={{ fontSize: 11, color: C.slate, marginTop: 4 }}>Follows the Sales Pipeline</div>
+              : (
+                <div style={{ fontSize: 11, color: '#B45309', marginTop: 4, lineHeight: 1.4 }}>
+                  The Sales Pipeline has {liveQuoteNo}.
+                  {!ro && <>{' '}<button type="button" onClick={() => setInfo({ quote: liveQuoteNo, quoteSynced: liveQuoteNo })} style={{ border: 'none', background: 'none', padding: 0, color: C.green, fontFamily: 'Figtree', fontSize: 11, fontWeight: 700, cursor: 'pointer', textDecoration: 'underline' }}>Use it</button></>}
+                </div>
+              ))}
+          </Field>
           <Field label="EHVCG project?">
             <Seg value={s.ehvcg ? 'yes' : 'no'} disabled={ro} options={[['no', 'No'], ['yes', 'Yes — EHVCG']] as const} onChange={(v) => setState((x) => ({ ...x, ehvcg: v === 'yes' }))} />
           </Field>
@@ -1058,18 +1124,9 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, takenQuote
                   </div>
                 )}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
-                  {entries.map((n) => (
-                    <div key={n.id} style={{ background: C.seasalt, borderRadius: 10, padding: '8px 12px' }}>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{fmtDateTime(n.at)}{n.by ? ` · ${n.by}` : ''}</div>
-                      <div style={{ fontSize: 13, color: '#1a1a1a', lineHeight: 1.5, whiteSpace: 'pre-wrap', marginTop: 2 }}>{n.text}</div>
-                    </div>
-                  ))}
-                  {earlier && (
-                    <div style={{ background: C.seasalt, borderRadius: 10, padding: '8px 12px' }}>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, letterSpacing: '0.04em', textTransform: 'uppercase' }}>Earlier note · no date recorded</div>
-                      <div style={{ fontSize: 13, color: '#1a1a1a', lineHeight: 1.5, whiteSpace: 'pre-wrap', marginTop: 2 }}>{earlier}</div>
-                    </div>
-                  )}
+                  {entries.map((n) => noteCard(n.id, `${fmtDateTime(n.at)}${n.by ? ` · ${n.by}` : ''}`, n.text,
+                    () => setState((x) => ({ ...x, noteLog: x.noteLog.filter((y) => y.id !== n.id) }))))}
+                  {earlier && noteCard(`earlier:${k.key}`, 'Earlier note · no date recorded', earlier, () => setInfo({ [k.legacy]: '' }))}
                   {entries.length === 0 && !earlier && <div style={{ fontSize: 12, color: C.slate }}>No notes yet.</div>}
                 </div>
               </div>

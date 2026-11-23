@@ -390,8 +390,11 @@ src/
                             typed before and are still shown), `ehvcg` /
                             `ehvcgSame`, `registry`. The linked sale's PDFs,
                             EV1QO number and charger warranty are read live
-                            from the quote, never copied. One handover per
-                            quotation. RegistryHandoff.tsx collects per-charger
+                            from the quote, never copied. `info.quote` (the
+                            quotation number) follows the pipeline's number via
+                            followQuoteNo — it never replaces a number typed by
+                            hand (a PO, say); the field flags the difference
+                            instead. One handover per quotation. RegistryHandoff.tsx collects per-charger
                             registry details and creates the chargers in the
                             Charger Registry (projects / project_sites /
                             site_chargers) — it only INSERTS, stores them the

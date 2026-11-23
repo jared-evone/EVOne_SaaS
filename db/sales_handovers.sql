@@ -58,3 +58,11 @@ on conflict (user_id, department, screen_key) do nothing;
 -- state holds only what differs from a blank handover — normaliseState fills
 -- the rest on load. The rows themselves are not repeated here because they
 -- carry customers' contact details.
+
+-- 2026-11-23 · the default Project Manager (Wan Shahrilnizam Fadzillah, a
+-- Charger Registry / pm account) can open Project Handover: view and edit, no
+-- delete. It is a grant in the SALES department, where the screen lives, so
+-- that account now also has a Sales section holding just this screen.
+insert into public.app_user_permissions (user_id, department, screen_key, can_view, can_edit, can_delete)
+values ('f31e5ae0-84bc-4409-bb37-c92caffc51d1', 'sales', 'sales_handover', true, true, false)
+on conflict (user_id, department, screen_key) do nothing;
