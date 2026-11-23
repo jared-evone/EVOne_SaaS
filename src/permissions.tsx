@@ -81,7 +81,10 @@ export const DEPARTMENT_SCREENS: Record<Department, ScreenKey[]> = {
           'corporateinvoicing'],
   sales: ['customers', 'sales', 'sales_orderbook', 'sales_handover', 'sales_manager', 'sales_team', 'quote_machine'],
   tech:  ['tsd_technician', 'tsd_sop', 'tsd_workorders', 'tsd_forms', 'tsd_pic', 'tsd_technicians', 'customers', 'projects'],
-  pm:    ['dashboard', 'registry_todo', 'charger_projects', 'customers', 'projects', 'email_designer'],
+  // 'charger_projects' (the Projects module) was taken out of this sidebar in
+  // Nov 2026 — Project Handover replaces it. Its screen, tables and the 17
+  // projects in them are kept; listing the key here again brings it back.
+  pm:    ['dashboard', 'registry_todo', 'customers', 'projects', 'email_designer'],
   // Standalone — stock only changes from the inv_* screens. Raise PO lives here
   // too (moved from Sales, Oct 2026) but never touches stock.
   inv:   ['inv_stock', 'raise_po', 'inv_shipments', 'inv_requests', 'inv_cannibal', 'inv_ledger'],

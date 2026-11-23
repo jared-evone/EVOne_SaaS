@@ -433,7 +433,13 @@ src/
                             module (pm department only): per-project lifecycle
                             with stage-tagged documents, sectioned build
                             checklist with sub-tasks, reusable project types
-                            (lifecycle + checklist pairs), dated note log
+                            (lifecycle + checklist pairs), dated note log.
+                            RETIRED from the sidebar in Nov 2026 (Project
+                            Handover replaces it): the key is no longer in
+                            DEPARTMENT_SCREENS.pm or NAV_ALL, but the screen,
+                            its ScreenKey and the charger_projects /
+                            charger_project_templates tables (17 projects, 3
+                            templates) are kept — don't drop them
     tsd/                    Technical Service Dept. workflow:
                             TechApp.tsx      (mobile-style tech app +
                                               shared FormPaper / FormHeader /

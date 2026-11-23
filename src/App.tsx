@@ -6,7 +6,7 @@ import {
   LayoutDashboard, Home, Receipt, Wrench, Users, FolderKanban, CalendarDays,
   Handshake, LandPlot, ClipboardList, Boxes, Truck, Building2, Plug, Zap, FileText,
   Settings as SettingsIcon, ShieldCheck, Database, ChevronRight, ChevronDown,
-  Power, Menu, TrendingUp, UserCog, Mail, Calculator, ClipboardCheck, GanttChartSquare, ListTodo, BookOpen,
+  Power, Menu, TrendingUp, UserCog, Mail, Calculator, ClipboardCheck, ListTodo, BookOpen,
   ScrollText, BookCheck,
   type LucideIcon,
 } from 'lucide-react';
@@ -100,7 +100,6 @@ const NAV_ALL: NavEntry[] = [
   { kind: 'leaf', id: 'customers',         icon: Users,           label: 'Customers' },
   { kind: 'leaf', id: 'projects',          icon: FolderKanban,    label: 'Charger Registry' },
   { kind: 'leaf', id: 'registry_todo',     icon: ListTodo,        label: 'To Do' },
-  { kind: 'leaf', id: 'charger_projects',  icon: GanttChartSquare, label: 'Projects' },
   { kind: 'leaf', id: 'email_designer',    icon: Mail,            label: 'Email' },
   { kind: 'leaf', id: 'social',            icon: CalendarDays,    label: 'Social Media Planner' },
   { kind: 'leaf', id: 'sales',             icon: Handshake,       label: 'Sales Pipeline' },
