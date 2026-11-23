@@ -8,6 +8,9 @@ import { SearchSelect, type SelectOption } from '../../components/SearchSelect';
 // On-hand = sum of inv_movements per item × location (the inv_on_hand view).
 
 export interface InvItem {
+  /** Chargers: years of warranty included in unit_price, and the cost of each extra year (item currency). */
+  warranty_years_included?: number | null;
+  extra_warranty_cost?: number | null;
   id: string;
   name: string;
   brand: string | null;

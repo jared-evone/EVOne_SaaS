@@ -679,3 +679,11 @@ alter table public.po_settings
 alter table public.purchase_orders
   add column if not exists decided_by text,
   add column if not exists finance_decided_by text;
+
+-- 2026-11-23 · migration inv_items_warranty_pricing — for chargers: the years of
+-- warranty the supplier includes in the unit price, and the cost of each extra
+-- year (in the item's currency). Raise PO prices a line as
+-- unit_price + (warranty to order - included) x extra cost. Nullable/additive.
+alter table public.inv_items
+  add column if not exists warranty_years_included numeric check (warranty_years_included is null or (warranty_years_included >= 0 and warranty_years_included <= 20)),
+  add column if not exists extra_warranty_cost numeric check (extra_warranty_cost is null or extra_warranty_cost >= 0);

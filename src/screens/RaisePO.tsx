@@ -22,6 +22,9 @@ interface Product {
   supplier: string | null;
   description: string | null;
   is_active: boolean;
+  /** Chargers: years of warranty included in unit_price, and the cost of each extra year. */
+  warranty_included: number | null;
+  extra_warranty_cost: number | null;
 }
 
 interface POLine {
@@ -30,6 +33,32 @@ interface POLine {
   order_line_id?: string;
   /** Years of warranty to buy from the supplier for this line — shown on the PO and its emails. */
   warranty_years?: number | null;
+  /** Warranty pricing copied from the Stock Levels item: unit_price = base_price + extra years x extra_warranty_cost. */
+  base_price?: number;
+  warranty_included?: number | null;
+  extra_warranty_cost?: number | null;
+  /** Lines added from Awaiting PO: who the charger is for. */
+  for_customer?: string;
+  quote_ref?: string;
+}
+type LineLike = Pick<POLine, 'name' | 'qty' | 'warranty_years' | 'base_price' | 'warranty_included' | 'extra_warranty_cost' | 'for_customer' | 'quote_ref' | 'unit_price'>;
+const extraYears = (l: LineLike, years = l.warranty_years) =>
+  (l.extra_warranty_cost != null && years != null ? Math.max(0, years - (l.warranty_included ?? 0)) : 0);
+/** Unit cost for a warranty length; null when the item has no warranty pricing (the cost is then left as typed). */
+const pricedUnit = (l: LineLike, years: number | null | undefined) =>
+  (l.extra_warranty_cost != null && l.base_price != null ? l.base_price + extraYears(l, years) * l.extra_warranty_cost : null);
+const forText = (l: LineLike) => (l.for_customer ? `For ${l.for_customer}${l.quote_ref ? ` · ${l.quote_ref}` : ''}` : '');
+/** "5 × NEG 240kW · 5-yr warranty" — same item and warranty length added up across customers. */
+function summariseLines(lines: LineLike[]): string[] {
+  const m = new Map<string, { name: string; w: number | null; qty: number }>();
+  for (const l of lines) {
+    if (l.warranty_years == null && !l.for_customer) continue;
+    const k = `${l.name}|${l.warranty_years ?? ''}`;
+    const row = m.get(k) ?? { name: l.name, w: l.warranty_years ?? null, qty: 0 };
+    row.qty += Number(l.qty) || 0;
+    m.set(k, row);
+  }
+  return [...m.values()].map((r) => `${r.qty} × ${r.name}${r.w != null ? ` · ${r.w}-year warranty` : ' · warranty not set'}`);
 }
 const warrantyText = (y: number | null | undefined) => (y == null ? '' : `Warranty to order: ${y} year${y === 1 ? '' : 's'}`);
 
@@ -161,14 +190,17 @@ function buildPoEmail(po: PurchaseOrder, settings: POSettings, salesman: string,
 function poItemsHtml(po: PurchaseOrder): string {
   const rows = po.lines.map((l) => {
     const remark = (l.remark ? `<div style="font-size:12px;color:#8A97A3;margin-top:2px;">${esc(l.remark).replace(/\n/g, '<br>')}</div>` : '')
-      + (l.warranty_years != null ? `<div style="font-size:12px;font-weight:700;color:#6B21A8;margin-top:3px;">${esc(warrantyText(l.warranty_years))}</div>` : '');
+      + (l.warranty_years != null ? `<div style="font-size:12px;font-weight:700;color:#6B21A8;margin-top:3px;">${esc(warrantyText(l.warranty_years))}</div>` : '')
+      + (forText(l) ? `<div style="font-size:11px;color:#5B6B7A;font-style:italic;margin-top:3px;">${esc(forText(l))}</div>` : '');
     return `<tr>
     <td style="padding:8px 10px;border-bottom:1px solid #EEE;font-size:13px;">${esc(l.name)}${remark}</td>
     <td style="padding:8px 10px;border-bottom:1px solid #EEE;font-size:13px;text-align:right;vertical-align:top;">${l.qty} ${esc(l.unit)}</td>
     <td style="padding:8px 10px;border-bottom:1px solid #EEE;font-size:13px;text-align:right;vertical-align:top;">${money(l.unit_price, po.currency)}</td>
     <td style="padding:8px 10px;border-bottom:1px solid #EEE;font-size:13px;text-align:right;font-weight:700;vertical-align:top;">${money(l.qty * l.unit_price, po.currency)}</td></tr>`;
   }).join('');
-  return `<table style="width:100%;border-collapse:collapse;border:1px solid #EBEBEB;border-radius:8px;overflow:hidden;">
+  const summary = summariseLines(po.lines);
+  const summaryHtml = summary.length ? `<div style="background:#F7FAFC;border-radius:10px;padding:10px 14px;margin-bottom:12px;"><div style="font-size:11px;font-weight:700;color:#5B6B7A;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Summary</div>${summary.map((t) => `<div style="font-size:13px;font-weight:700;color:#1a1a1a;">${esc(t)}</div>`).join('')}</div>` : '';
+  return `${summaryHtml}<table style="width:100%;border-collapse:collapse;border:1px solid #EBEBEB;border-radius:8px;overflow:hidden;">
       <thead><tr style="background:#F7FAFC;">
         <th style="padding:8px 10px;text-align:left;font-size:11px;color:#5B6B7A;text-transform:uppercase;">Item</th>
         <th style="padding:8px 10px;text-align:right;font-size:11px;color:#5B6B7A;text-transform:uppercase;">Qty</th>
@@ -350,10 +382,13 @@ type Tab = 'raise' | 'track' | 'template';
 interface InvItemRow {
   id: string; name: string; category: string | null; brand: string | null; unit: string; unit_price: number | null;
   currency: string; supplier: string | null; description: string | null; active: boolean;
+  warranty_years_included: number | null; extra_warranty_cost: number | null;
 }
 const toProduct = (i: InvItemRow): Product => ({
   id: i.id, name: i.name, category: i.category || 'Uncategorised', unit: i.unit || 'unit', unit_price: Number(i.unit_price ?? 0),
   currency: i.currency || 'SGD', supplier: i.supplier, description: i.description, is_active: i.active,
+  warranty_included: i.warranty_years_included == null ? null : Number(i.warranty_years_included),
+  extra_warranty_cost: i.extra_warranty_cost == null ? null : Number(i.extra_warranty_cost),
 });
 
 export function ScreenRaisePO() {
@@ -373,7 +408,7 @@ export function ScreenRaisePO() {
 
   const fetchAll = async () => {
     const [{ data: p }, { data: s }, { data: cu }] = await Promise.all([
-      supabase.from('inv_items').select('id, name, category, brand, unit, unit_price, currency, supplier, description, active').order('category').order('name'),
+      supabase.from('inv_items').select('id, name, category, brand, unit, unit_price, currency, supplier, description, active, warranty_years_included, extra_warranty_cost').order('category').order('name'),
       supabase.from('po_settings').select('*').eq('id', 'default').maybeSingle(),
       supabase.from('customers').select('id, name').order('name'),
     ]);
@@ -460,7 +495,10 @@ function RaiseTab({ products, customers, accounts, settings, onSent }: { product
     onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
       const text = e.target.value.replace(/[^0-9.]/g, '');
       setPriceText((t) => ({ ...t, [`${l.key}:${field}`]: text }));
-      updateLine(l.key, { [field]: parseFloat(text) || 0 });
+      const v = parseFloat(text) || 0;
+      updateLine(l.key, field === 'unit_price' && l.extra_warranty_cost != null
+        ? { unit_price: v, base_price: v - extraYears(l) * l.extra_warranty_cost }
+        : { [field]: v });
     },
     onBlur: () => setPriceText((t) => { const n = { ...t }; delete n[`${l.key}:${field}`]; return n; }),
   });
@@ -517,10 +555,13 @@ function RaiseTab({ products, customers, accounts, settings, onSent }: { product
       return;
     }
     if (lines.some((l) => l.order_line_id === a.id)) return;
+    const warranty_years = a.warranty_years ?? p?.warranty_included ?? null;
+    const pricing = { base_price: p?.unit_price ?? 0, warranty_included: p?.warranty_included ?? null, extra_warranty_cost: p?.extra_warranty_cost ?? null };
+    const draft = { name: p?.name ?? a.item_name, qty: a.qty, warranty_years, unit_price: p?.unit_price ?? 0, ...pricing };
     setLines((prev) => [...prev, {
-      key: newKey(), product_id: p?.id ?? null, name: p?.name ?? a.item_name,
-      remark: p?.description || null,
-      unit: p?.unit ?? 'unit', unit_price: p?.unit_price ?? 0, sell_price: 0, qty: a.qty, currency, supplier: p?.supplier ?? null, order_line_id: a.id, warranty_years: a.warranty_years,
+      key: newKey(), product_id: p?.id ?? null, ...draft, remark: p?.description || null,
+      unit: p?.unit ?? 'unit', unit_price: pricedUnit(draft, warranty_years) ?? draft.unit_price, sell_price: 0, currency, supplier: p?.supplier ?? null,
+      order_line_id: a.id, for_customer: a.customer_name, quote_ref: a.quote_ref,
     }]);
     if (!customer && a.customer_id) { const c = customers.find((x) => x.id === a.customer_id); if (c) setCustomer(c); }
   };
@@ -536,7 +577,8 @@ function RaiseTab({ products, customers, accounts, settings, onSent }: { product
     }
     const ex = prev.find((l) => l.product_id === p.id && !l.order_line_id);
     if (ex) return prev.map((l) => (l.key === ex.key ? { ...l, qty: l.qty + 1 } : l));
-    return [...prev, { key: newKey(), product_id: p.id, name: p.name, remark: p.description, unit: p.unit, unit_price: p.unit_price, sell_price: 0, qty: 1, currency: p.currency, supplier: p.supplier }];
+    return [...prev, { key: newKey(), product_id: p.id, name: p.name, remark: p.description, unit: p.unit, unit_price: p.unit_price, sell_price: 0, qty: 1, currency: p.currency, supplier: p.supplier,
+      base_price: p.unit_price, warranty_included: p.warranty_included, extra_warranty_cost: p.extra_warranty_cost, warranty_years: p.warranty_included }];
   });
   const updateLine = (key: string, patch: Partial<POLine>) => setLines((prev) => prev.map((l) => (l.key === key ? { ...l, ...patch } : l)));
   const removeLine = (key: string) => setLines((prev) => prev.filter((l) => l.key !== key));
@@ -698,6 +740,12 @@ function RaiseTab({ products, customers, accounts, settings, onSent }: { product
           <DraftBar onClear={clearAll}
             summary={[title.trim() && 'the title', customer && 'the customer', lines.length && `${lines.length} item${lines.length === 1 ? '' : 's'}`, notes.trim() && 'notes'].filter(Boolean).join(', ').replace(/, ([^,]*)$/, ' and $1')} />
         )}
+        {summariseLines(lines).length > 0 && (
+          <div style={{ background: C.honeydew, borderRadius: 12, padding: '12px 16px' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Summary</div>
+            {summariseLines(lines).map((t) => <div key={t} style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{t}</div>)}
+          </div>
+        )}
         <div style={{ background: C.white, borderRadius: 16, border: '1px solid #EBEBEB', overflowX: 'auto' }}>
           <table style={{ width: '100%', minWidth: 720, borderCollapse: 'collapse' }}>
             <thead>
@@ -717,10 +765,24 @@ function RaiseTab({ products, customers, accounts, settings, onSent }: { product
                     <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 11, fontWeight: 700, color: l.warranty_years != null ? '#6B21A8' : C.slate, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                       Warranty to order
                       <input type="number" min={0} max={20} step={0.5} value={l.warranty_years ?? ''} placeholder="—" aria-label="Warranty years to order from the supplier"
-                        onChange={(e) => { const n = Number(e.target.value); updateLine(l.key, { warranty_years: e.target.value === '' || !Number.isFinite(n) ? null : Math.min(20, Math.max(0, n)) }); }}
+                        onChange={(e) => {
+                          const n = Number(e.target.value);
+                          const w = e.target.value === '' || !Number.isFinite(n) ? null : Math.min(20, Math.max(0, n));
+                          const price = pricedUnit(l, w);
+                          updateLine(l.key, price == null ? { warranty_years: w } : { warranty_years: w, unit_price: price });
+                        }}
                         style={{ width: 64, padding: '4px 6px', borderRadius: 8, border: `1px solid ${l.warranty_years != null ? '#6B21A8' : '#EBEBEB'}`, fontFamily: 'Figtree', fontSize: 13, textAlign: 'right', outline: 'none', background: C.white }} />
                       yrs
                     </label>
+                    {l.extra_warranty_cost != null && (
+                      <div style={{ fontSize: 11, color: C.slate, marginTop: 3 }}>
+                        Includes {l.warranty_included ?? 0} yr{(l.warranty_included ?? 0) === 1 ? '' : 's'}
+                        {extraYears(l) > 0
+                          ? <> · + {extraYears(l)} extra yr{extraYears(l) === 1 ? '' : 's'} × {money(l.extra_warranty_cost, poCurrency)} = <b style={{ color: '#6B21A8' }}>{money(extraYears(l) * l.extra_warranty_cost, poCurrency)}</b> in the unit cost</>
+                          : <> · extra years {money(l.extra_warranty_cost, poCurrency)} each</>}
+                      </div>
+                    )}
+                    {forText(l) && <div style={{ fontSize: 11, color: C.slate, fontStyle: 'italic', marginTop: 3 }}>{forText(l)}</div>}
                   </td>
                   <td style={{ padding: '8px 14px', textAlign: 'right', verticalAlign: 'middle' }}>
                     <input type="text" inputMode="decimal" {...priceInput(l, 'unit_price')}
@@ -1158,6 +1220,12 @@ function PODetailModal({ po, busy, canDelete, canApprove, canFinance, approverNa
 
         <POTimeline po={po} financeEmail={financeEmail} approverEmail={approverEmail} />
 
+        {summariseLines(po.lines).length > 0 && (
+          <div style={{ background: C.honeydew, borderRadius: 12, padding: '12px 16px' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Summary</div>
+            {summariseLines(po.lines).map((t) => <div key={t} style={{ fontSize: 13, fontWeight: 700, color: '#1a1a1a' }}>{t}</div>)}
+          </div>
+        )}
         <div style={{ background: C.seasalt, borderRadius: 12, overflow: 'hidden' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <tbody>
@@ -1167,6 +1235,7 @@ function PODetailModal({ po, busy, canDelete, canApprove, canFinance, approverNa
                     <div>{l.name}</div>
                     {l.remark && <div style={{ fontSize: 12, color: C.slate, whiteSpace: 'pre-line', marginTop: 2 }}>{l.remark}</div>}
                     {l.warranty_years != null && <div style={{ fontSize: 12, fontWeight: 700, color: '#6B21A8', marginTop: 3 }}>{warrantyText(l.warranty_years)}</div>}
+                    {forText(l) && <div style={{ fontSize: 11, color: C.slate, fontStyle: 'italic', marginTop: 3 }}>{forText(l)}</div>}
                   </td>
                   <td style={{ padding: '8px 12px', fontSize: 12, color: C.slate, textAlign: 'right', whiteSpace: 'nowrap', verticalAlign: 'top' }}>{l.qty} {l.unit} × {money(l.unit_price, po.currency)}</td>
                   <td style={{ padding: '8px 12px', fontSize: 13, fontWeight: 700, color: C.green, textAlign: 'right', whiteSpace: 'nowrap', verticalAlign: 'top' }}>{money(l.qty * l.unit_price, po.currency)}</td>

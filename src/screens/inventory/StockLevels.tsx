@@ -300,6 +300,9 @@ function ItemDrawer({ item, items, locations, onHand, me, lookups, onLookupsChan
       <div style={{ fontSize: 12, color: C.slate }}>
         Reorder point <b style={{ color: '#1a1a1a' }}>{item.reorder_point ?? '—'}</b> · reorder qty <b style={{ color: '#1a1a1a' }}>{item.reorder_qty ?? '—'}</b> · unit price <b style={{ color: '#1a1a1a' }}>{fmtPrice(item.unit_price, item.currency)}</b> / {item.unit}
         {item.supplier && <> · supplier <b style={{ color: '#1a1a1a' }}>{item.supplier}</b></>}
+        {(item.warranty_years_included != null || item.extra_warranty_cost != null) && (
+          <> · warranty <b style={{ color: '#1a1a1a' }}>{item.warranty_years_included ?? '—'} yr{item.warranty_years_included === 1 ? '' : 's'} included</b>, extra year <b style={{ color: '#1a1a1a' }}>{item.extra_warranty_cost != null ? fmtPrice(item.extra_warranty_cost, item.currency) : '—'}</b></>
+        )}
         {item.description && <div style={{ marginTop: 4, color: '#1a1a1a' }}>{item.description}</div>}
         {item.notes && <div style={{ marginTop: 4 }}>{item.notes}</div>}
       </div>
@@ -487,6 +490,8 @@ function ItemFields({ item, items, lookups, isAdmin, onLookupsChanged, onCancel,
     unit_price: item?.unit_price != null ? String(item.unit_price) : '',
     notes: item?.notes ?? '',
     description: item?.description ?? '', supplier: item?.supplier ?? '', unit: item?.unit ?? 'unit', currency: item?.currency ?? 'SGD',
+    warranty_years_included: item?.warranty_years_included != null ? String(item.warranty_years_included) : '',
+    extra_warranty_cost: item?.extra_warranty_cost != null ? String(item.extra_warranty_cost) : '',
   });
   const { rows: suppliers, reload: reloadSuppliers } = useLookupRows('supplier');
   const [err, setErr] = useState<string | null>(null);
@@ -497,12 +502,17 @@ function ItemFields({ item, items, lookups, isAdmin, onLookupsChanged, onCancel,
     if (!f.name.trim()) { setErr('Item name is required.'); return; }
     if (!f.brand) { setErr('Pick a brand.'); return; }
     if (!f.category) { setErr('Pick a category.'); return; }
+    const wy = num(f.warranty_years_included); const wc = num(f.extra_warranty_cost);
+    if (wy != null && (!Number.isFinite(wy) || wy < 0 || wy > 20)) { setErr('Warranty included is in years, between 0 and 20.'); return; }
+    if (wc != null && (!Number.isFinite(wc) || wc < 0)) { setErr('Extra warranty cost can\'t be negative.'); return; }
     setBusy(true);
     const payload = {
       name: f.name.trim(), brand: f.brand.trim() || null, category: f.category.trim() || null,
       reorder_point: num(f.reorder_point), reorder_qty: num(f.reorder_qty), unit_price: num(f.unit_price),
       notes: f.notes.trim() || null, updated_at: new Date().toISOString(),
       description: f.description.trim() || null, supplier: f.supplier.trim() || null, unit: f.unit.trim() || 'unit', currency: f.currency || 'SGD',
+      // Kept as typed even when the category isn't Charger — hiding the boxes never clears them.
+      warranty_years_included: num(f.warranty_years_included), extra_warranty_cost: num(f.extra_warranty_cost),
     };
     const res = item
       ? await supabase.from('inv_items').update(payload).eq('id', item.id).select('id').single()
@@ -544,6 +554,16 @@ function ItemFields({ item, items, lookups, isAdmin, onLookupsChanged, onCancel,
               {CURRENCIES.concat(CURRENCIES.includes(f.currency) ? [] : [f.currency]).map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </Field>
+          {f.category.trim().toLowerCase() === 'charger' && (
+            <>
+              <Field label="Warranty included (years)" hint="Covered by the unit price">
+                <input type="number" min="0" max="20" step="0.5" value={f.warranty_years_included} onChange={(e) => setF({ ...f, warranty_years_included: e.target.value })} placeholder="e.g. 2" style={inputStyle} />
+              </Field>
+              <Field label={`Extra warranty / year (${f.currency})`} hint="Added per unit for each year beyond the included ones">
+                <input type="number" min="0" step="0.01" value={f.extra_warranty_cost} onChange={(e) => setF({ ...f, extra_warranty_cost: e.target.value })} placeholder="e.g. 3000" style={inputStyle} />
+              </Field>
+            </>
+          )}
         </div>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
