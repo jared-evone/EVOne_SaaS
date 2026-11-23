@@ -177,7 +177,9 @@ export function ScreenOrderBook() {
     if (po) {
       if (po.status === 'rejected' || po.status === 'cancelled') return 'po_dead';
       if (po.status === 'pending') return 'po_pending';
-      if (po.status === 'approved' || po.status === 'sent_to_finance') return 'po_finance';
+      // Approved = the order is going ahead: show Ordered (then In transit /
+      // Received once finance completes it and its shipment moves).
+      if (po.status === 'approved' || po.status === 'sent_to_finance') return 'ordered';
       return shipState((s) => s.po_id === po.id || normNo(s.po_no) === normNo(po.po_number), l.item_id) ?? 'ordered';
     }
     if (normNo(l.po_no)) return shipState((s) => normNo(s.po_no) === normNo(l.po_no), l.item_id) ?? 'po_raised';
