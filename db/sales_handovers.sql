@@ -49,3 +49,12 @@ select user_id, department, 'sales_handover', can_view, can_edit, can_delete
 from public.app_user_permissions
 where department = 'sales' and screen_key = 'sales' and can_view
 on conflict (user_id, department, screen_key) do nothing;
+
+-- 2026-11-23 · data import (no schema change) — the ten handovers that lived
+-- in the earlier stand-alone register were recreated here from its printed
+-- PDFs, as Draft rows with legacy_id 'phf-20261123-<company>' (unique, so a
+-- re-run adds nothing). Each is linked to its Won quotation and customer in
+-- the Sales Pipeline; nothing was ticked on any of them, so checks = {}. Their
+-- state holds only what differs from a blank handover — normaliseState fills
+-- the rest on load. The rows themselves are not repeated here because they
+-- carry customers' contact details.

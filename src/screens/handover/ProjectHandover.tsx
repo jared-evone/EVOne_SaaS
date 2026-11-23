@@ -986,7 +986,7 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, takenQuote
                 options={[...new Set([...PLATFORMS, ...(s.info.platformName ? [s.info.platformName] : [])])].map((p) => ({ value: p, label: p }))} />
             </Field>
           )}
-          {(cpo || s.platform !== 'no') && <Field label="Platform notes">{text('platformNotes')}</Field>}
+          {(cpo || s.platform !== 'no' || s.info.platformNotes.trim() !== '') && <Field label="Platform notes">{text('platformNotes')}</Field>}
           <Field label="LTA fee borne by"><Seg value={s.ltaPayer} disabled={ro} onChange={(v) => setState((x) => ({ ...x, ltaPayer: v }))} options={[['EVOne', 'EVOne'], ['Customer', 'Customer']] as const} /></Field>
           <Field label="LTA access"><Seg value={s.ltaAccess} disabled={ro} onChange={(v) => setState((x) => ({ ...x, ltaAccess: v }))} options={[['open', 'Non-restricted'], ['restricted', 'Restricted (landed)']] as const} /></Field>
         </div>
@@ -1010,7 +1010,7 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, takenQuote
                 addNewLabel="Use a size not in the list" onAddNew={(q) => { if (q.trim()) setInfo({ cable: q.trim() }); }} />
             </Field>
           )}
-          {s.scope === 'full' && <Field label="Cable run (m)">{text('cableLen', 'e.g. 60')}</Field>}
+          {(s.scope !== 'install' || s.info.cableLen.trim() !== '') && <Field label="Cable run (m)">{text('cableLen', 'e.g. 60')}</Field>}
           {s.scope === 'full' && s.c.msb && <Field label="MSB from (A)">{text('msbFrom', 'e.g. 200')}</Field>}
           {s.scope === 'full' && s.c.msb && <Field label="MSB to (A)">{text('msbTo', 'e.g. 400')}</Field>}
           {s.c.bollard && <Field label="Bollards (qty)">{text('bollards', 'e.g. 4')}</Field>}

@@ -115,7 +115,7 @@ function HandoverDoc({ company, status, state, checks, evoneQuotes }: HandoverPd
         <Pair label="Job scope" value={`${SCOPE_LABEL[state.scope]}${state.scope === 'half' ? ` — ${state.halfProt === 'mccb' ? 'BLEW confirms MCCB protection (no DB)' : 'customer adds a DB before the isolator'}` : ''}`} />
         <Pair label="Floor" value={FLOOR_LABEL[state.floor]} />
         <Pair label="Chargers" value={`${state.chargerStatus}${info.ddate ? ` · delivery ${info.ddate}` : ''}${info.logistics ? ` · ${info.logistics}` : ''}`} />
-        <Pair label="Platform" value={onPlatform(state) ? `${info.platformName || 'Yes'}${info.platformNotes ? ` — ${info.platformNotes}` : ''}` : state.platform === 'maybe' ? 'Maybe' : 'No'} />
+        <Pair label="Platform" value={`${onPlatform(state) ? info.platformName || 'Yes' : state.platform === 'maybe' ? `Maybe${info.platformName ? ` (${info.platformName})` : ''}` : 'No'}${info.platformNotes.trim() ? ` — ${info.platformNotes.trim()}` : ''}`} />
         <Pair label="Site works" value={flags} />
         <Pair label="Landlord documents" value={docs} />
         {cableText(info) !== '' && <Pair label="Cable" value={cableText(info)} />}
