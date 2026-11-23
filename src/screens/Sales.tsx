@@ -67,6 +67,8 @@ export interface Quote {
   lost_reason: string | null;
   won_at: string | null;
   won_stage?: WonStage | null;
+  /** The final price the customer pays, GST included — keyed in when the quote is marked Won. */
+  won_final_price?: number | null;
   archived_at?: string | null;
   archived_by?: string | null;
   ehvcg: boolean;
@@ -293,7 +295,7 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
   const [adminView, setAdminView] = useState<string>('all'); // 'all' | salesperson id (admins only)
   const [month, setMonth] = useState<string>(''); // 'YYYY-MM' or '' (all)
   const [monthBasis, setMonthBasis] = useState<'created' | 'status'>('created');
-  const [modal, setModal] = useState<{ mode: 'new' } | { mode: 'edit'; quote: Quote } | null>(null);
+  const [modal, setModal] = useState<{ mode: 'new' } | { mode: 'edit'; quote: Quote; from?: QuoteStatus } | null>(null);
   // Ticks are for what's on screen — changing the filters starts a fresh selection.
   useEffect(() => { setSelected(new Set()); }, [search, statusFilter, month, monthBasis, adminView]);
 
@@ -355,15 +357,20 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
       setModal({ mode: 'edit', quote: { ...quote, status: 'Lost', outcome_date: quote.outcome_date ?? todayStr() } });
       return;
     }
-    // Dragging into Won stamps today as the outcome date (editable later in the modal).
-    const outcome_date = isDecided(status) ? (quote.outcome_date ?? todayStr()) : null;
-    const won_at = status === 'Won' ? new Date().toISOString() : null;
-    // A fresh win starts delivery at Onboarding unless dropped on a specific stage.
-    const won_stage: WonStage | null = status === 'Won' ? (stage ?? 'onboarding') : null;
-    setQuotes((qs) => qs.map((q) => (q.id === quote.id ? { ...q, status, outcome_date, won_at, won_stage } : q)));
+    // Won needs the final after-GST price keyed in — open the modal pre-set to
+    // Won (as Lost does for its reason) rather than moving silently.
+    if (status === 'Won') {
+      setModal({ mode: 'edit', from: quote.status, quote: { ...quote, status: 'Won', outcome_date: quote.outcome_date ?? todayStr(), won_stage: stage ?? quote.won_stage ?? 'onboarding' } });
+      return;
+    }
+    // Only the open statuses reach here (Draft / Sent / Long-term / On hold):
+    // leaving Won or Lost clears the outcome, as saving from the modal does.
+    // The attached PDFs and any final price already keyed in stay on the quote.
+    const cleared = { outcome_date: null, won_at: null, won_stage: null };
+    setQuotes((qs) => qs.map((q) => (q.id === quote.id ? { ...q, status, ...cleared } : q)));
     const { error: err } = await supabase
       .from(P.table)
-      .update({ status, outcome_date, won_at, won_stage, updated_at: new Date().toISOString() })
+      .update({ status, ...cleared, updated_at: new Date().toISOString() })
       .eq('id', quote.id);
     if (err) { setError(err.message); void fetchAll(); }
   };
@@ -579,6 +586,7 @@ export function ScreenSales({ pipeline = 'sales' }: { pipeline?: Pipeline } = {}
           table={P.table}
           filePrefix={P.filePrefix}
           quote={modal.mode === 'edit' ? modal.quote : null}
+          fromStatus={modal.mode === 'edit' ? modal.from : undefined}
           customers={customers}
           salespersonId={defaultPerson?.id ?? ''}
           salespersonName={defaultPerson?.full_name ?? ''}
@@ -914,7 +922,9 @@ function QuoteTable({ quotes, onOpen, selectable, selected, onToggle, onToggleAl
 
 // ── Create / edit modal ──────────────────────────────────────────
 
-function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, salespersonId, salespersonName, salespeople, lockSalesperson, canEdit, canDelete, isAdmin, costOptions, onCostOptionsChanged, chargerItems, onClose, onSaved }: {
+function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, salespersonId, salespersonName, salespeople, lockSalesperson, canEdit, canDelete, isAdmin, costOptions, onCostOptionsChanged, chargerItems, fromStatus, onClose, onSaved }: {
+  /** The status the quote had before the board pre-set this modal to another one (a drop onto Won / Lost). */
+  fromStatus?: QuoteStatus;
   onArchive: (q: Quote, archive: boolean) => void;
   /** Present when the user can edit both pipelines: move this quote across. */
   moveTo?: { label: string; run: (q: Quote) => Promise<string | null> };
@@ -1074,6 +1084,21 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
   const removeVersion = (i: number) => setVersions((vs) => vs.filter((_, idx) => idx !== i));
   const maxAmount = Math.max(0, ...versions.map((v) => Number(v.amountText) || 0));
 
+  // Winning: the final price the customer pays, GST included, is keyed in when
+  // a quote moves to Won, with at least one quotation PDF attached — every PDF
+  // on the quote shows on its Project Handover. A quote won before this existed
+  // can still be saved without them; once a final price is set it can't be blanked.
+  const winning = form.status === 'Won' && (fromStatus ?? quote?.status) !== 'Won';
+  const [wonFinalText, setWonFinalText] = useState(quote?.won_final_price ? String(quote.won_final_price) : '');
+  const wonFinal = Math.max(0, Number(wonFinalText) || 0);
+  const setWonFinal = (raw: string) => setWonFinalText(raw.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1'));
+  const pdfCount = versions.reduce((n, v) => n + v.files.length, 0);
+  const wonMissing: string[] = form.status !== 'Won' ? [] : [
+    (winning || !!quote?.won_final_price) && wonFinal <= 0 && 'key in the final price after GST',
+    winning && pdfCount === 0 && 'attach at least one quotation PDF',
+  ].filter((x): x is string => !!x);
+  const wonOk = wonMissing.length === 0;
+
   // Margin calculator (Others tab). Cost rows entered by the user; gross profit is
   // the pipeline value (largest quotation) minus total cost.
   type CostDraft = { label: string; amountText: string; custom: boolean };
@@ -1170,7 +1195,7 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
   // A quote can be saved once a customer, salesperson and at least one quotation
   // amount are set; PDFs stay optional. A Lost quote additionally needs a reason.
   const lostReasonOk = form.status !== 'Lost' || form.lost_reason.trim().length > 0;
-  const canSave = !!form.customer_id && !!form.salesperson_id && maxAmount > 0 && lostReasonOk && chargersOk && !saving;
+  const canSave = !!form.customer_id && !!form.salesperson_id && maxAmount > 0 && lostReasonOk && chargersOk && wonOk && !saving;
 
   const handleSave = async () => {
     if (!canSave) return;
@@ -1230,6 +1255,7 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
       pdf_filename: files[0]?.name ?? null,
       won_at: form.status === 'Won' ? (quote?.won_at ?? new Date().toISOString()) : null,
       won_stage: form.status === 'Won' ? form.won_stage : null,
+      won_final_price: form.status === 'Won' && wonFinal > 0 ? wonFinal : (quote?.won_final_price ?? null),
       updated_at: new Date().toISOString(),
     };
     const { data: saved, error: err } = isNew
@@ -1342,6 +1368,30 @@ function QuoteModal({ onArchive, moveTo, table, filePrefix, quote, customers, sa
               style={{ ...input(readOnly), resize: 'vertical', lineHeight: 1.5, borderColor: form.lost_reason.trim() ? '#EBEBEB' : '#FDEAEA' }} />
             {!form.lost_reason.trim() && (
               <div style={{ fontSize: 11, color: '#C0321A', marginTop: 4 }}>A lost reason is required to save.</div>
+            )}
+          </div>
+        )}
+
+        {form.status === 'Won' && (
+          <div style={{ background: C.honeydew, borderRadius: 12, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div>
+              <label style={{ ...label, color: C.green }}>Final price after GST{(winning || !!quote?.won_final_price) && <span style={{ color: '#C0321A' }}> *</span>}</label>
+              <input type="text" inputMode="decimal" value={fmtAmountInput(wonFinalText)} disabled={readOnly}
+                onChange={(e) => setWonFinal(e.target.value)}
+                onPaste={(e) => { e.preventDefault(); setWonFinal(wonFinalText + e.clipboardData.getData('text')); }}
+                placeholder="Total the customer pays, GST included ($)"
+                style={{ ...input(readOnly), fontSize: 15, fontWeight: 700, color: C.green }} />
+              <div style={{ fontSize: 11, color: C.slate, marginTop: 6, lineHeight: 1.5 }}>
+                Key in the agreed total including GST.{maxAmount > 0 ? ` The quotation on this deal is ${fmtMoney(maxAmount)} — check whether that figure already includes GST.` : ''}
+              </div>
+            </div>
+            <div style={{ fontSize: 12, lineHeight: 1.5, color: pdfCount ? C.slate : '#B45309', fontWeight: pdfCount ? 400 : 700 }}>
+              {pdfCount
+                ? `${pdfCount} quotation PDF${pdfCount === 1 ? '' : 's'} attached — ${pdfCount === 1 ? 'it shows' : 'all of them show'} on this deal's Project Handover.`
+                : 'No quotation PDF attached yet — attach at least one under Quotations below. Every PDF on the quote shows on its Project Handover.'}
+            </div>
+            {wonMissing.length > 0 && (
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#B45309' }}>{winning ? 'To mark this quote won' : 'To save'}: {wonMissing.join('; ')}.</div>
             )}
           </div>
         )}

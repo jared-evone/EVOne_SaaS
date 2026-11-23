@@ -43,7 +43,27 @@ interface HandoverRow {
   total: number;
   updated_at: string;
 }
-interface WonQuote { id: string; ref: string; customer_id: string | null; customer_name: string; salesperson_id: string | null; salesperson_name: string }
+interface QuotePdf { path: string; name: string; quote_no?: string | null }
+interface WonQuote {
+  id: string; ref: string; status: string; customer_id: string | null; customer_name: string; salesperson_id: string | null; salesperson_name: string;
+  won_final_price: number | null;
+  pdf_path: string | null; pdf_filename: string | null; files: QuotePdf[] | null;
+  versions: { pdf_path?: string | null; pdf_filename?: string | null; files?: QuotePdf[] | null }[] | null;
+}
+const QUOTE_COLS = 'id, ref, status, customer_id, customer_name, salesperson_id, salesperson_name, won_final_price, pdf_path, pdf_filename, files, versions';
+const QUOTE_BUCKET = 'sales-quotations';
+/** Every quotation PDF attached to the sale, across all its versions (older rows keep theirs in files / pdf_path). */
+const quotePdfs = (q: WonQuote | undefined): QuotePdf[] => {
+  if (!q) return [];
+  const all: QuotePdf[] = [
+    ...(Array.isArray(q.versions) ? q.versions : []).flatMap((v) => (v.files?.length ? v.files : v.pdf_path ? [{ path: v.pdf_path, name: v.pdf_filename ?? 'quotation.pdf' }] : [])),
+    ...(Array.isArray(q.files) ? q.files : []),
+    ...(q.pdf_path ? [{ path: q.pdf_path, name: q.pdf_filename ?? 'quotation.pdf' }] : []),
+  ];
+  const seen = new Set<string>();
+  return all.filter((f) => !!f?.path && !seen.has(f.path) && !!seen.add(f.path));
+};
+const money = (n: number) => `$${Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 interface Refs {
   quotes: WonQuote[];
   customers: { id: string; name: string; address: string | null }[];
@@ -110,7 +130,9 @@ export function ScreenProjectHandover() {
   const load = async () => {
     const [h, q, c, sp, u] = await Promise.all([
       supabase.from('sales_handovers').select('*').order('updated_at', { ascending: false }),
-      supabase.from('sales_quotations').select('id, ref, customer_id, customer_name, salesperson_id, salesperson_name').eq('status', 'Won').order('quote_date', { ascending: false }),
+      // Every status, not just Won: a handover stays linked (and keeps showing the
+      // sale's PDFs) if its quote is later moved in the pipeline. Pickers list Won only.
+      supabase.from('sales_quotations').select(QUOTE_COLS).order('quote_date', { ascending: false }),
       supabase.from('customers').select('id, name, address').order('name'),
       supabase.from('sales_people').select('id, name').order('name'),
       supabase.from('app_users').select('id, full_name, email, is_active').order('full_name'),
@@ -299,8 +321,13 @@ function NewHandoverModal({ refs, rows, me, onClose, onCreated, onOpenExisting }
         </div>
         <Field label="Won quotation">
           <SearchSelect value={quoteId} onChange={setQuoteId} placeholder="Select a won quotation…" emptyText="No won quotations match"
-            options={refs.quotes.map((q) => ({ value: q.id, label: `${q.ref} · ${q.customer_name}`, sub: `${q.salesperson_name}${rows.some((r) => r.quote_id === q.id) ? ' · already has a handover' : ''}` }))} />
+            options={refs.quotes.filter((q) => q.status === 'Won').map((q) => ({ value: q.id, label: `${q.ref} · ${q.customer_name}`, sub: `${q.salesperson_name}${rows.some((r) => r.quote_id === q.id) ? ' · already has a handover' : ''}` }))} />
         </Field>
+        {quote && !existing && (
+          <div style={{ fontSize: 12, color: C.slate, marginTop: -8 }}>
+            {(() => { const n = quotePdfs(quote).length; return n ? `${n} quotation PDF${n === 1 ? '' : 's'} attached to this sale ${n === 1 ? 'comes' : 'come'} across with it.` : 'No quotation PDF is attached to this sale yet.'; })()}
+          </div>
+        )}
         {existing && (
           <div style={{ background: '#FFF8E1', color: '#B07D00', borderRadius: 10, padding: '10px 14px', fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <span style={{ flex: 1, minWidth: 180 }}>{quote?.ref} already has a handover ({existing.status}).</span>
@@ -392,6 +419,7 @@ function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
   const cpo = s.ownership === 'cpo';
   const sitesFilled = [s.info.site, s.info.site2, s.info.site3, s.info.site4].map((a, i) => ({ n: String(i + 1) as HandoverCharger['site'], a })).filter((x) => x.a.trim() || x.n === '1');
   const linkedQuote = doc.quote_id ? refs.quotes.find((q) => q.id === doc.quote_id) : undefined;
+  const salesPdfs = quotePdfs(linkedQuote);
 
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -417,7 +445,8 @@ function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
         },
       };
     });
-    setNote(`Linked to ${q.ref}. Blank fields were filled from the quotation; anything already typed was kept.`);
+    const n = quotePdfs(q).length;
+    setNote(`Linked to ${q.ref}. Blank fields were filled from the quotation; anything already typed was kept.${n ? ` Its ${n} quotation PDF${n === 1 ? ' is' : 's are'} under Documents.` : ''}`);
   };
 
   const upload = async (list: FileList | null) => {
@@ -436,8 +465,8 @@ function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
     if (added.length) setState((x) => ({ ...x, files: [...x.files, ...added] }));
     setNote(failed ? `Could not upload — ${failed}` : `${added.length} file${added.length === 1 ? '' : 's'} uploaded.`);
   };
-  const openFile = async (path: string) => {
-    const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(path, 60);
+  const openFile = async (path: string, bucket: string = BUCKET) => {
+    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, 60);
     if (error || !data) { setNote(`Could not open the file: ${error?.message ?? 'unknown error'}`); return; }
     window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
   };
@@ -566,9 +595,11 @@ function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
       <div style={cardStyle}>
         {heading('Job set-up', <span style={{ fontSize: 12, color: C.slate }}>The checklist below is built from these choices.</span>)}
         <div style={grid(240)}>
-          <Field label="Won quotation" hint={linkedQuote ? `Sale by ${linkedQuote.salesperson_name}` : 'Link the sale this job belongs to'}>
+          <Field label="Won quotation" hint={linkedQuote
+            ? `Sale by ${linkedQuote.salesperson_name}${linkedQuote.won_final_price ? ` · final price after GST ${money(linkedQuote.won_final_price)}` : ''}${linkedQuote.status !== 'Won' ? ` · now ${linkedQuote.status} in the pipeline` : ''}`
+            : 'Link the sale this job belongs to'}>
             <SearchSelect value={doc.quote_id ?? ''} disabled={ro} onChange={(v) => void linkQuote(v)} placeholder="Not linked" emptyText="No won quotations match"
-              options={[{ value: '', label: 'Not linked' }, ...refs.quotes.map((q) => ({ value: q.id, label: `${q.ref} · ${q.customer_name}`, sub: q.salesperson_name }))]} />
+              options={[{ value: '', label: 'Not linked' }, ...refs.quotes.filter((q) => q.status === 'Won' || q.id === doc.quote_id).map((q) => ({ value: q.id, label: `${q.ref} · ${q.customer_name}`, sub: q.salesperson_name }))]} />
           </Field>
           <Field label="Client">
             <SearchSelect value={doc.customer_id ?? ''} disabled={ro} placeholder="Select customer…" emptyText="No customers match"
@@ -846,7 +877,25 @@ function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
 
       {/* Documents */}
       <div style={cardStyle}>
-        {heading('Documents', <span style={{ fontSize: 12, fontWeight: 700, color: C.slate }}>{s.files.length} file{s.files.length === 1 ? '' : 's'}</span>)}
+        {heading('Documents', <span style={{ fontSize: 12, fontWeight: 700, color: C.slate }}>{s.files.length + salesPdfs.length} file{s.files.length + salesPdfs.length === 1 ? '' : 's'}</span>)}
+        {linkedQuote && (
+          <div>
+            <div style={{ ...labelStyle, marginBottom: 6 }}>Quotation · from the Sales Pipeline ({linkedQuote.ref})</div>
+            {salesPdfs.length ? (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {salesPdfs.map((f) => (
+                  <button key={f.path} type="button" onClick={() => void openFile(f.path, QUOTE_BUCKET)} title={f.quote_no ? `Quotation no. ${f.quote_no}` : 'Attached to the sale'}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 5, maxWidth: '100%', padding: '5px 10px', borderRadius: 99, border: `1px solid ${C.green}`, background: C.white, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>
+                    <Paperclip size={12} style={{ flexShrink: 0 }} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 260 }}>{f.name}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#B45309' }}>No quotation PDF is attached to {linkedQuote.ref} yet — attach it on the quote in the Sales Pipeline and it appears here.</div>
+            )}
+            {salesPdfs.length > 0 && <div style={{ fontSize: 11, color: C.slate, marginTop: 6 }}>These belong to the quote — add or change them in the Sales Pipeline.</div>}
+          </div>
+        )}
         {!ro && (
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <div style={{ width: 230 }}>
@@ -875,7 +924,7 @@ function HandoverEditor({ row, refs, canEdit, canDelete, me, onBack }: {
             </div>
           </div>
         ))}
-        {s.files.length === 0 && <div style={{ fontSize: 13, color: C.slate }}>Nothing uploaded yet — quotation, cable routing, signed completion form, commissioning photos.</div>}
+        {s.files.length === 0 && <div style={{ fontSize: 13, color: C.slate }}>Nothing uploaded here yet — {linkedQuote ? '' : 'quotation, '}cable routing, signed completion form, commissioning photos.</div>}
       </div>
 
       {/* G · Sign-off */}
