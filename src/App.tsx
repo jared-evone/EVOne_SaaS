@@ -31,6 +31,7 @@ import { ScreenProjects } from './screens/Projects';
 import { ScreenSocial } from './screens/Social';
 import { ScreenSales } from './screens/Sales';
 import { ScreenOrderBook } from './screens/OrderBook';
+import { ScreenProjectHandover } from './screens/handover/ProjectHandover';
 import { ScreenSalesManager } from './screens/SalesManager';
 import { ScreenSalesTeam } from './screens/SalesTeam';
 import { ScreenPurchaseOrders } from './screens/PurchaseOrders';
@@ -104,6 +105,7 @@ const NAV_ALL: NavEntry[] = [
   { kind: 'leaf', id: 'social',            icon: CalendarDays,    label: 'Social Media Planner' },
   { kind: 'leaf', id: 'sales',             icon: Handshake,       label: 'Sales Pipeline' },
   { kind: 'leaf', id: 'sales_orderbook',   icon: BookCheck,       label: 'Order Book' },
+  { kind: 'leaf', id: 'sales_handover',    icon: ClipboardCheck,  label: 'Project Handover' },
   { kind: 'leaf', id: 'sales_manager',     icon: TrendingUp,      label: 'Sales Dashboard' },
   { kind: 'leaf', id: 'sales_team',        icon: UserCog,         label: 'Sales Manager' },
   { kind: 'leaf', id: 'purchaseorders',    icon: ClipboardList,   label: 'Purchase Orders' },
@@ -144,6 +146,7 @@ const SCREEN_TITLES: Partial<Record<ScreenId, string>> = {
   social:         'Social Media Planner',
   sales:          'Sales Pipeline',
   sales_orderbook: 'Order Book',
+  sales_handover: 'Project Handover',
   sales_manager:  'Sales Dashboard',
   sales_team:     'Sales Manager',
   purchaseorders: 'Purchase Orders',
@@ -186,6 +189,7 @@ const screens: Partial<Record<ScreenId, JSX.Element>> = {
   social:         <ScreenSocial />,
   sales:          <ScreenSales />,
   sales_orderbook: <ScreenOrderBook />,
+  sales_handover: <ScreenProjectHandover />,
   sales_manager:  <ScreenSalesManager />,
   sales_team:     <ScreenSalesTeam />,
   purchaseorders: <ScreenPurchaseOrders />,

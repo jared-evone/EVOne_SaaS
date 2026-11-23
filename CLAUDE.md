@@ -39,7 +39,7 @@ Adding a new top-level screen = touch four places:
 3. `NAV_ALL` + `SCREEN_TITLES` + `screens` map in [src/App.tsx](src/App.tsx).
 4. An `app_role_permissions` row for any role that should access it (the Settings UI does this for you per-role).
 
-**Storage buckets** for binary files: `cpo-maintenance-pdfs` (charger meter / maintenance reports), `crm-contracts` (corporate company contracts), `crm-instructions` (account-opening instruction PDFs + master service agreement), `sales-quotations` (quote PDFs, private), `sales-photos` / `technician-photos` (avatars, public), `tsd-sops` (SOP Library PDFs, private), `cpo-land-docs` (Land Acquisition proposals / contracts, private) and `inv-po-pdfs` (official PO PDF on an Incoming Shipment, private) — those three are deliberately `authenticated`-only, since they have no anonymous flow. Read/insert/delete policies must list **both** `anon` AND `authenticated` roles; `usePermissions()` still gates *which UI* can upload. **Same gotcha as tables, on `storage.objects`:** an upload policy scoped to `anon` only blocks now-logged-in (authenticated) staff with a "violates row-level security policy" error on upload — this bit us on `cpo-maintenance-pdfs`. When you add a bucket or write a storage policy, scope it `TO anon, authenticated` (or `public`), never `anon` alone.
+**Storage buckets** for binary files: `cpo-maintenance-pdfs` (charger meter / maintenance reports), `crm-contracts` (corporate company contracts), `crm-instructions` (account-opening instruction PDFs + master service agreement), `sales-quotations` (quote PDFs, private), `sales-photos` / `technician-photos` (avatars, public), `tsd-sops` (SOP Library PDFs, private), `cpo-land-docs` (Land Acquisition proposals / contracts, private) `inv-po-pdfs` (official PO PDF on an Incoming Shipment, private) and `sales-handover-docs` (Project Handover documents, private) — those four are deliberately `authenticated`-only, since they have no anonymous flow. Read/insert/delete policies must list **both** `anon` AND `authenticated` roles; `usePermissions()` still gates *which UI* can upload. **Same gotcha as tables, on `storage.objects`:** an upload policy scoped to `anon` only blocks now-logged-in (authenticated) staff with a "violates row-level security policy" error on upload — this bit us on `cpo-maintenance-pdfs`. When you add a bucket or write a storage policy, scope it `TO anon, authenticated` (or `public`), never `anon` alone.
 
 `usePermissions().can()` gates the UI. It is **not** the only line of defence anymore — the database enforces a login too (see next section). Always keep gating the UI with `can()`, but never assume it's the security boundary.
 
@@ -365,6 +365,17 @@ src/
                             cascades its plain lines but is blocked once a line
                             has a purchase; a quote with lines can't move to
                             CPO Sales — see db/sales_order_book.sql
+    handover/               Project Handover (Sales → Project Manager), under
+                            Sales. handoverRules.ts is the single source of the
+                            rules (amps, LEW grade, LTA fee, DC clearances) and
+                            of the checklist built from the options picked —
+                            the screen and HandoverPDF.tsx both read it, so
+                            change a rule there only. ProjectHandover.tsx is
+                            the register + editor (sales_handovers; autosaves
+                            with an updated_at guard; documents in the private
+                            sales-handover-docs bucket). `state` keeps the
+                            original register's keys so its exports import
+                            as-is. See db/sales_handovers.sql
     Login.tsx               email/password sign-in (departments derive from grants)
     Settings.tsx, DBHealth.tsx
                             in-app admin (Users & Permissions matrix + DB health)
