@@ -69,3 +69,18 @@ create trigger sales_quotations_delete_guard before delete on public.sales_quota
 -- existing lines are untouched and show "not set".
 alter table public.sales_order_lines
   add column if not exists warranty_years numeric check (warranty_years is null or (warranty_years >= 0 and warranty_years <= 20));
+
+-- 2026-11-23 · migration purchase_orders_delete_releases_order_lines — deleting
+-- a PO returns its chargers to Awaiting PO. The po_id FK only nulls the id; the
+-- PO number text stayed behind and the line kept reading "PO raised". This
+-- BEFORE DELETE trigger clears both. (The 12 lines left stuck by the deleted
+-- EV1PO-000256 had their po_no cleared by hand the same day.)
+create or replace function public.po_delete_release_order_lines() returns trigger
+language plpgsql security definer set search_path to 'public' as $$
+begin
+  update sales_order_lines set po_no = null, po_id = null, updated_at = now() where po_id = old.id;
+  return old;
+end $$;
+revoke execute on function public.po_delete_release_order_lines() from public, anon, authenticated;
+create trigger purchase_orders_release_order_lines before delete on public.purchase_orders
+  for each row execute function public.po_delete_release_order_lines();
