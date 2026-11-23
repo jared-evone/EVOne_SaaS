@@ -3,7 +3,7 @@ import logoSrc from '../../assets/evone-logo.png';
 import { C } from '../../theme';
 import {
   buildChecklist, chargerLabel, chargerCount, totalLoad, lewGrade, ltaFeeTotal, ltaFeePer, ampsOf, isDc, sitesOf, installLists,
-  paymentStatus, SCOPE_LABEL, FLOOR_LABEL, SECTION_TITLES, LANDLORD_DOCS, onPlatform, cableText,
+  paymentStatus, SCOPE_LABEL, FLOOR_LABEL, SECTION_TITLES, LANDLORD_DOCS, onPlatform, cableText, noteLines,
   type HandoverState, type CheckItem, type CheckSection,
 } from './handoverRules';
 
@@ -103,6 +103,9 @@ function HandoverDoc({ company, status, state, checks, evoneQuotes }: HandoverPd
         <Pair label="Company / project" value={company || info.project} />
         <Pair label="Quotation" value={info.quote} />
         {!!evoneQuotes?.length && <Pair label="EVOne quotation" value={evoneQuotes.join(', ')} />}
+        {state.ehvcg && <Pair label="EHVCG project" value={`Yes — EHVCG quotation: ${state.ehvcgSame
+          ? 'same as the EVOne quotation'
+          : state.files.filter((f) => f.kind === 'EHVCG quotation').map((f) => f.name).join(', ') || 'not attached yet'}`} />}
         {sites.map((a, i) => (a.trim() ? <Pair key={i} label={`Site ${i + 1}`} value={a} /> : null))}
         <Pair label="Site contact(s)" value={state.contacts.filter((c) => c.name.trim() || c.phone.trim()).map((c) => [c.name, c.phone].filter(Boolean).join(' ')).join('; ')} />
         <Pair label="Sales" value={info.sales} />
@@ -116,8 +119,8 @@ function HandoverDoc({ company, status, state, checks, evoneQuotes }: HandoverPd
         <Pair label="Site works" value={flags} />
         <Pair label="Landlord documents" value={docs} />
         {cableText(info) !== '' && <Pair label="Cable" value={cableText(info)} />}
-        {info.notes.trim() !== '' && <Pair label="Notes" value={info.notes} />}
-        {info.statusNotes.trim() !== '' && <Pair label="Status notes" value={info.statusNotes} />}
+        {noteLines(state, 'pm').length > 0 && <Pair label="Notes" value={noteLines(state, 'pm').join('\n')} />}
+        {noteLines(state, 'status').length > 0 && <Pair label="Status notes" value={noteLines(state, 'status').join('\n')} />}
 
         <View style={{ borderWidth: 1, borderColor: line, marginTop: 6 }}>
           <View style={{ flexDirection: 'row', backgroundColor: C.seasalt, borderBottomWidth: 1, borderBottomColor: line }}>

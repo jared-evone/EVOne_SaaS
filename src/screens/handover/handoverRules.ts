@@ -25,7 +25,7 @@ export interface HandoverCharger {
 export interface HandoverContact { name: string; phone: string }
 export type PendingOwner = 'Contractor' | 'EVOne' | 'Customer' | 'Landlord';
 export interface PendingItem { item: string; solution: string; owner: PendingOwner; due: string; closed: boolean }
-export const FILE_KINDS = ['Quotation', 'Cable routing', 'Signed completion form', 'Commissioning photos', 'Other'] as const;
+export const FILE_KINDS = ['Quotation', 'EHVCG quotation', 'Cable routing', 'Signed completion form', 'Commissioning photos', 'Other'] as const;
 export type FileKind = typeof FILE_KINDS[number];
 export interface HandoverFile { path: string; name: string; kind: FileKind; at: string; by: string }
 export interface SignOff { by: string; at: string }
@@ -69,6 +69,23 @@ export interface HandoverState {
   signoff?: { sales?: SignOff | null; pm?: SignOff | null };
   /** This handover's own changes to the checklist the rules build. */
   custom: ChecklistCustom;
+  /** EHVCG grant job. Its quotation is either the EVOne quotation itself (ehvcgSame) or files of kind 'EHVCG quotation'. */
+  ehvcg: boolean;
+  ehvcgSame: boolean;
+  /** Dated notes, oldest first. info.notes / info.statusNotes hold what was typed before the log existed and are still shown. */
+  noteLog: NoteEntry[];
+}
+export type NoteKind = 'pm' | 'status';
+export interface NoteEntry { id: string; kind: NoteKind; text: string; at: string; by: string }
+export const NOTE_KINDS: { key: NoteKind; label: string; legacy: 'notes' | 'statusNotes' }[] = [
+  { key: 'pm', label: 'Notes for the Project Manager', legacy: 'notes' },
+  { key: 'status', label: 'Status notes', legacy: 'statusNotes' },
+];
+/** A note log as plain lines for the PDF: what was typed before the log existed, then each dated note. */
+export function noteLines(s: HandoverState, kind: NoteKind): string[] {
+  const legacy = s.info[NOTE_KINDS.find((k) => k.key === kind)!.legacy].trim();
+  const day = (iso: string) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }); };
+  return [...(legacy ? [legacy] : []), ...s.noteLog.filter((n) => n.kind === kind && n.text.trim()).map((n) => `${day(n.at)}${n.by ? ` · ${n.by}` : ''} — ${n.text.trim()}`)];
 }
 
 export type CheckSection = 'B' | 'C' | 'D1' | 'D2';
@@ -113,6 +130,7 @@ export const blankState = (): HandoverState => ({
   ownership: 'customer', scope: 'full', halfProt: 'mccb', floor: 'concrete', chargerStatus: 'Ordered',
   platform: 'no', blewPayer: 'EVOne', ltaPayer: 'Customer', ltaAccess: 'open',
   c: {}, d: {}, pending: [], files: [], photos: {}, signoff: {}, custom: blankCustom(),
+  ehvcg: false, ehvcgSame: false, noteLog: [],
 });
 /** Fills anything missing, so a row saved by an older version (or imported) always renders. */
 export function normaliseState(raw: unknown): HandoverState {
@@ -128,6 +146,11 @@ export function normaliseState(raw: unknown): HandoverState {
     files: Array.isArray(r.files) ? r.files.filter((f) => f && typeof f === 'object' && 'path' in f) : [],
     photos: r.photos ?? {}, signoff: r.signoff ?? {},
     custom: normaliseCustom(r.custom),
+    ehvcg: r.ehvcg === true, ehvcgSame: r.ehvcgSame === true,
+    noteLog: Array.isArray(r.noteLog)
+      ? r.noteLog.filter((n) => n && typeof n === 'object' && typeof n.text === 'string')
+        .map((n, i) => ({ id: typeof n.id === 'string' ? n.id : `n_${i}`, kind: n.kind === 'status' ? 'status' as const : 'pm' as const, text: n.text, at: typeof n.at === 'string' ? n.at : '', by: typeof n.by === 'string' ? n.by : '' }))
+      : [],
   };
 }
 

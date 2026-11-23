@@ -9,8 +9,8 @@ import {
   BRANDS, FILE_KINDS, LANDLORD_DOCS, PLATFORMS, SCOPE_LABEL, FLOOR_LABEL, SECTION_TITLES, DC_SPECS,
   kwOptionsFor, ampsOf, isDc, blankState, normaliseState, buildChecklist, templateChecklist, progressOf, paymentStatus,
   chargerCount, totalLoad, lewGrade, ltaFeeTotal, ltaFeePer, installLists, chargerFromItemName, onPlatform, blewInvolved,
-  DEFAULT_PM_USER_ID, CABLE_CATEGORY,
-  type HandoverState, type HandoverCharger, type HandoverInfo, type FlagKey, type CheckSection, type CheckItem, type ChecklistCustom, type CheckOwner,
+  DEFAULT_PM_USER_ID, CABLE_CATEGORY, NOTE_KINDS,
+  type HandoverState, type HandoverCharger, type HandoverInfo, type FlagKey, type CheckSection, type CheckItem, type ChecklistCustom, type CheckOwner, type NoteKind,
   type PendingItem, type PendingOwner, type FileKind, type Brand,
 } from './handoverRules';
 
@@ -48,11 +48,11 @@ interface HandoverRow {
 interface QuotePdf { path: string; name: string; quote_no?: string | null }
 interface WonQuote {
   id: string; ref: string; status: string; customer_id: string | null; customer_name: string; salesperson_id: string | null; salesperson_name: string;
-  won_final_price: number | null;
+  won_final_price: number | null; ehvcg: boolean | null;
   pdf_path: string | null; pdf_filename: string | null; files: QuotePdf[] | null;
   versions: { pdf_path?: string | null; pdf_filename?: string | null; files?: QuotePdf[] | null }[] | null;
 }
-const QUOTE_COLS = 'id, ref, status, customer_id, customer_name, salesperson_id, salesperson_name, won_final_price, pdf_path, pdf_filename, files, versions';
+const QUOTE_COLS = 'id, ref, status, customer_id, customer_name, salesperson_id, salesperson_name, won_final_price, ehvcg, pdf_path, pdf_filename, files, versions';
 const QUOTE_BUCKET = 'sales-quotations';
 /** Every quotation PDF attached to the sale, across all its versions (older rows keep theirs in files / pdf_path). */
 const quotePdfs = (q: WonQuote | undefined): QuotePdf[] => {
@@ -92,6 +92,7 @@ const defaultPmName = (refs: Refs) => {
 
 type EditCard = 'B' | 'C' | 'D';
 const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const fmtDateTime = (s: string) => { const d = new Date(s); return Number.isNaN(d.getTime()) ? 'No date' : d.toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); };
 const fmtDate = (s: string | null | undefined) => (s ? new Date(s).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—');
 
 const labelStyle: React.CSSProperties = { fontSize: 11, fontWeight: 700, color: C.slate, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 };
@@ -191,6 +192,7 @@ export function ScreenProjectHandover() {
   if (open) {
     return (
       <HandoverEditor key={open.id} row={open} refs={refs} canEdit={canEdit} canDelete={canDelete} isAdmin={isAdmin} me={me}
+        takenQuoteIds={rows.filter((r) => r.id !== open.id && r.quote_id).map((r) => r.quote_id as string)}
         onBack={async () => { setOpenId(null); await load(); }} />
     );
   }
@@ -252,6 +254,7 @@ export function ScreenProjectHandover() {
                   <td style={{ ...td, whiteSpace: 'nowrap' }}>
                     {quoteRef(r.quote_id) ?? (st.info.quote || '—')}
                     {!r.quote_id && <div style={{ fontSize: 11, color: '#B45309', fontWeight: 700 }}>Not linked</div>}
+                    {st.ehvcg && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 6, background: '#F0E8FF', color: '#6B21A8', letterSpacing: '0.04em' }}>EHVCG</span>}
                     {docs.length > 0 && (
                       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2, marginTop: 3 }}>
                         {docs.slice(0, 3).map((f) => (
@@ -311,6 +314,7 @@ async function prefillFromQuote(q: WonQuote, refs: Refs): Promise<{ state: Hando
   s.info.sales = q.salesperson_name;
   s.info.hdate = todayISO();
   s.info.site = cust?.address ?? '';
+  s.ehvcg = !!q.ehvcg;
   const [contacts, lines] = await Promise.all([
     q.customer_id ? supabase.from('customer_contacts').select('name, phone, position').eq('customer_id', q.customer_id).order('position').order('created_at') : Promise.resolve({ data: [] as { name: string | null; phone: string | null }[] }),
     supabase.from('sales_order_lines').select('item_name, qty').eq('quote_id', q.id).order('position').order('created_at'),
@@ -357,13 +361,13 @@ function NewHandoverModal({ refs, rows, me, onClose, onCreated, onOpenExisting }
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <div>
             <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>New handover</div>
-            <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>Pick the won quotation — the client, salesperson, contacts and chargers are filled in from it.</div>
+            <div style={{ fontSize: 12, color: C.slate, marginTop: 2 }}>Pick the won quotation — the client, salesperson, contacts and chargers are filled in from it. A quotation that already has a handover isn't listed.</div>
           </div>
           <button onClick={onClose} disabled={busy} style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: '#F3F3F3', cursor: 'pointer', fontSize: 18, fontFamily: 'Figtree', flexShrink: 0 }}>×</button>
         </div>
         <Field label="Won quotation">
           <SearchSelect value={quoteId} onChange={setQuoteId} placeholder="Select a won quotation…" emptyText="No won quotations match"
-            options={refs.quotes.filter((q) => q.status === 'Won').map((q) => ({ value: q.id, label: `${q.ref} · ${q.customer_name}`, sub: `${q.salesperson_name}${rows.some((r) => r.quote_id === q.id) ? ' · already has a handover' : ''}` }))} />
+            options={refs.quotes.filter((q) => q.status === 'Won' && !rows.some((r) => r.quote_id === q.id)).map((q) => ({ value: q.id, label: `${q.ref} · ${q.customer_name}`, sub: q.salesperson_name }))} />
         </Field>
         {quote && !existing && (
           <div style={{ fontSize: 12, color: C.slate, marginTop: -8 }}>
@@ -399,8 +403,11 @@ interface Draft {
   checks: Record<string, boolean>;
 }
 
-function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, onBack }: {
-  row: HandoverRow; refs: Refs; canEdit: boolean; canDelete: boolean; isAdmin: boolean; me: string; onBack: () => Promise<void>;
+function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, takenQuoteIds, onBack }: {
+  row: HandoverRow; refs: Refs; canEdit: boolean; canDelete: boolean; isAdmin: boolean; me: string;
+  /** Quotations other handovers are already linked to — not offered here. */
+  takenQuoteIds: string[];
+  onBack: () => Promise<void>;
 }) {
   const [doc, setDoc] = useState<Draft>(() => ({
     company: row.company, quote_id: row.quote_id, customer_id: row.customer_id, salesperson_id: row.salesperson_id,
@@ -494,6 +501,32 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, onBack }: 
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [uploadKind, setUploadKind] = useState<FileKind>('Quotation');
 
+  // The warranty sold with each charger is read from the sale (Sales Pipeline / Order Book), not kept here.
+  const [saleLines, setSaleLines] = useState<{ item_name: string; qty: number; warranty_years: number | null }[]>([]);
+  useEffect(() => {
+    if (!doc.quote_id) { setSaleLines([]); return; }
+    let live = true;
+    void supabase.from('sales_order_lines').select('item_name, qty, warranty_years').eq('quote_id', doc.quote_id).order('position').order('created_at')
+      .then(({ data }) => { if (live) setSaleLines((data ?? []) as { item_name: string; qty: number; warranty_years: number | null }[]); });
+    return () => { live = false; };
+  }, [doc.quote_id]);
+  const warrantyOf = (c: HandoverCharger): string => {
+    const mine = saleLines.filter((l) => { const x = chargerFromItemName(l.item_name, l.qty); return x.brand === c.brand && x.kw === c.kw; });
+    if (!mine.length) return '';
+    const years = new Map<number, number>();
+    for (const l of mine) if (l.warranty_years != null) years.set(Number(l.warranty_years), (years.get(Number(l.warranty_years)) ?? 0) + Number(l.qty));
+    if (!years.size) return 'warranty not set on the sale';
+    return `${[...years].map(([y, q]) => (years.size > 1 ? `${q} × ${y}-year` : `${y}-year`)).join(' · ')} warranty`;
+  };
+
+  const [noteDraft, setNoteDraft] = useState<Record<NoteKind, string>>({ pm: '', status: '' });
+  const addNote = (kind: NoteKind) => {
+    const text = noteDraft[kind].trim();
+    if (!text) return;
+    setState((x) => ({ ...x, noteLog: [...x.noteLog, { id: `n_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, kind, text, at: new Date().toISOString(), by: me }] }));
+    setNoteDraft((d) => ({ ...d, [kind]: '' }));
+  };
+
   // Linking a quotation fills only what is still blank — nothing typed is replaced.
   const linkQuote = async (id: string) => {
     const q = refs.quotes.find((x) => x.id === id);
@@ -510,6 +543,7 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, onBack }: 
           ...cur, info,
           contacts: cur.contacts.some((c) => c.name.trim() || c.phone.trim()) ? cur.contacts : pre.state.contacts,
           chargers: cur.chargers.length ? cur.chargers : pre.state.chargers,
+          ehvcg: cur.ehvcg || pre.state.ehvcg,
         },
       };
     });
@@ -517,7 +551,7 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, onBack }: 
     setNote(`Linked to ${q.ref}. Blank fields were filled from the quotation; anything already typed was kept.${n ? ` Its ${n} quotation PDF${n === 1 ? ' is' : 's are'} under Documents.` : ''}`);
   };
 
-  const upload = async (list: FileList | null) => {
+  const upload = async (list: FileList | null, kind: FileKind = uploadKind) => {
     if (!list?.length) return;
     setBusy(true);
     const added: HandoverState['files'] = [];
@@ -527,7 +561,7 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, onBack }: 
       const path = `${row.id}/${Date.now()}-${file.name.replace(/[^\w.\-]+/g, '_')}`;
       const { error } = await supabase.storage.from(BUCKET).upload(path, file, { contentType: file.type || undefined });
       if (error) { failed = `${file.name}: ${error.message}`; continue; }
-      added.push({ path, name: file.name, kind: uploadKind, at: new Date().toISOString(), by: me });
+      added.push({ path, name: file.name, kind, at: new Date().toISOString(), by: me });
     }
     setBusy(false);
     if (added.length) setState((x) => ({ ...x, files: [...x.files, ...added] }));
@@ -719,7 +753,7 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, onBack }: 
             ? `Sale by ${linkedQuote.salesperson_name}${linkedQuote.won_final_price ? ` · final price after GST ${money(linkedQuote.won_final_price)}` : ''}${linkedQuote.status !== 'Won' ? ` · now ${linkedQuote.status} in the pipeline` : ''}`
             : 'Link the sale this job belongs to'}>
             <SearchSelect value={doc.quote_id ?? ''} disabled={ro} onChange={(v) => void linkQuote(v)} placeholder="Not linked" emptyText="No won quotations match"
-              options={[{ value: '', label: 'Not linked' }, ...refs.quotes.filter((q) => q.status === 'Won' || q.id === doc.quote_id).map((q) => ({ value: q.id, label: `${q.ref} · ${q.customer_name}`, sub: q.salesperson_name }))]} />
+              options={[{ value: '', label: 'Not linked' }, ...refs.quotes.filter((q) => (q.status === 'Won' && !takenQuoteIds.includes(q.id)) || q.id === doc.quote_id).map((q) => ({ value: q.id, label: `${q.ref} · ${q.customer_name}`, sub: q.salesperson_name }))]} />
           </Field>
           <Field label="Client">
             <SearchSelect value={doc.customer_id ?? ''} disabled={ro} placeholder="Select customer…" emptyText="No customers match"
@@ -735,7 +769,26 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, onBack }: 
           <Field label="Company / project name">
             <input value={doc.company} disabled={ro} onChange={(e) => change((d) => ({ ...d, company: e.target.value, state: { ...d.state, info: { ...d.state.info, project: e.target.value } } }))} style={inputStyle} />
           </Field>
+          <Field label="Sales">
+            <SearchSelect value={s.info.sales} disabled={ro} placeholder="Select salesperson…"
+              options={[...new Set([...refs.salespeople.map((p) => p.name), ...(s.info.sales ? [s.info.sales] : [])])].map((n) => ({ value: n, label: n }))}
+              onChange={(v) => { setInfo({ sales: v }); change((d) => ({ ...d, salesperson_id: refs.salespeople.find((p) => p.name === v)?.id ?? d.salesperson_id })); }}
+              addNewLabel="Use a name not in the list" onAddNew={(q) => { if (q.trim()) setInfo({ sales: q.trim() }); }} />
+          </Field>
+          <Field label="Project Manager / PE">
+            <SearchSelect value={s.info.pm} disabled={ro} placeholder="Select the Project Manager…"
+              options={[...new Set([...refs.accounts.map((a) => a.full_name || a.email), ...(s.info.pm ? [s.info.pm] : [])])].map((n) => ({ value: n, label: n }))}
+              onChange={(v) => setInfo({ pm: v })}
+              addNewLabel="Use a name not in the list" onAddNew={(q) => { if (q.trim()) setInfo({ pm: q.trim() }); }} />
+          </Field>
+          <Field label="Handover date">{text('hdate', undefined, 'date')}</Field>
+        </div>
+
+        <div style={grid(240)}>
           <Field label="Quotation no.">{text('quote', 'e.g. SQ-2026-0199')}</Field>
+          <Field label="EHVCG project?">
+            <Seg value={s.ehvcg ? 'yes' : 'no'} disabled={ro} options={[['no', 'No'], ['yes', 'Yes — EHVCG']] as const} onChange={(v) => setState((x) => ({ ...x, ehvcg: v === 'yes' }))} />
+          </Field>
           <Field label="EVOne quotation">
             <div style={{ minHeight: 38, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
               {salesPdfs.map((f) => (
@@ -751,19 +804,28 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, onBack }: 
               )}
             </div>
           </Field>
-          <Field label="Sales">
-            <SearchSelect value={s.info.sales} disabled={ro} placeholder="Select salesperson…"
-              options={[...new Set([...refs.salespeople.map((p) => p.name), ...(s.info.sales ? [s.info.sales] : [])])].map((n) => ({ value: n, label: n }))}
-              onChange={(v) => { setInfo({ sales: v }); change((d) => ({ ...d, salesperson_id: refs.salespeople.find((p) => p.name === v)?.id ?? d.salesperson_id })); }}
-              addNewLabel="Use a name not in the list" onAddNew={(q) => { if (q.trim()) setInfo({ sales: q.trim() }); }} />
-          </Field>
-          <Field label="Project Manager / PE">
-            <SearchSelect value={s.info.pm} disabled={ro} placeholder="Select the Project Manager…"
-              options={[...new Set([...refs.accounts.map((a) => a.full_name || a.email), ...(s.info.pm ? [s.info.pm] : [])])].map((n) => ({ value: n, label: n }))}
-              onChange={(v) => setInfo({ pm: v })}
-              addNewLabel="Use a name not in the list" onAddNew={(q) => { if (q.trim()) setInfo({ pm: q.trim() }); }} />
-          </Field>
-          <Field label="Handover date">{text('hdate', undefined, 'date')}</Field>
+          {s.ehvcg && (
+            <Field label="EHVCG quotation">
+              <div style={{ minHeight: 38, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <Toggle on={s.ehvcgSame} disabled={ro} label="Same as the EVOne quotation" onChange={(v) => setState((x) => ({ ...x, ehvcgSame: v }))} />
+                {!s.ehvcgSame && s.files.filter((f) => f.kind === 'EHVCG quotation').map((f) => (
+                  <span key={f.path} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: '100%', padding: '5px 6px 5px 10px', borderRadius: 99, border: `1px solid ${C.green}`, background: C.white }}>
+                    <button type="button" onClick={() => void openFile(f.path)} title={`Uploaded by ${f.by}`}
+                      style={{ border: 'none', background: 'none', padding: 0, color: C.green, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+                      <Paperclip size={12} style={{ flexShrink: 0 }} /><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 200 }}>{f.name.replace(/\.pdf$/i, '')}</span>
+                    </button>
+                    {!ro && <button type="button" title="Remove file" onClick={() => void removeFile(f.path)} style={{ width: 20, height: 20, borderRadius: 99, border: 'none', background: C.seasalt, color: C.slate, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}><X size={11} strokeWidth={3} /></button>}
+                  </span>
+                ))}
+                {!s.ehvcgSame && !ro && (
+                  <label style={{ ...ghostBtn, padding: '7px 12px', borderRadius: 99, borderStyle: 'dashed', borderColor: C.green, color: C.green, cursor: busy ? 'default' : 'pointer' }}>
+                    <FileUp size={12} /> {busy ? 'Uploading…' : 'Attach PDF'}
+                    <input type="file" multiple disabled={busy} accept="application/pdf" style={{ display: 'none' }} onChange={(e) => { void upload(e.target.files, 'EHVCG quotation'); e.target.value = ''; }} />
+                  </label>
+                )}
+              </div>
+            </Field>
+          )}
         </div>
 
         <div style={grid(260)}>
@@ -889,6 +951,7 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, onBack }: 
                   {!dc && <Seg value={c.variant} disabled={ro} onChange={(v) => set({ variant: v })} options={[['Standard', 'Standard'], ['Premium', 'Premium']] as const} />}
                   {!dc && <Toggle on={c.stand} disabled={ro} label="Charger stand needed" onChange={(v) => set({ stand: v })} />}
                   <span style={{ fontSize: 12, color: C.slate }}>{ampsOf(c.kw) * Number(c.qty)} A · LTA S${ltaFeePer(c.kw, s.ltaAccess) * Number(c.qty)}</span>
+                  {warrantyOf(c) && <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99, background: C.honeydew, color: C.green, whiteSpace: 'nowrap' }} title="From the charger lines on the sale (Sales Pipeline / Order Book)">{warrantyOf(c)}</span>}
                 </div>
               </div>
             );
@@ -972,8 +1035,40 @@ function HandoverEditor({ row, refs, canEdit, canDelete, isAdmin, me, onBack }: 
           </div>
         )}
         <div style={grid(300)}>
-          <Field label="Notes for the Project Manager"><textarea value={s.info.notes} disabled={ro} rows={3} onChange={(e) => setInfo({ notes: e.target.value })} style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.5 }} /></Field>
-          <Field label="Status notes"><textarea value={s.info.statusNotes} disabled={ro} rows={3} onChange={(e) => setInfo({ statusNotes: e.target.value })} style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.5 }} /></Field>
+          {NOTE_KINDS.map((k) => {
+            const earlier = s.info[k.legacy].trim();
+            const entries = s.noteLog.filter((n) => n.kind === k.key).slice().reverse();
+            const draft = noteDraft[k.key];
+            return (
+              <div key={k.key} style={{ minWidth: 0 }}>
+                <label style={labelStyle}>{k.label}</label>
+                {!ro && (
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                    <textarea value={draft} rows={2} placeholder="Write a note, then Add note" onChange={(e) => setNoteDraft((d) => ({ ...d, [k.key]: e.target.value }))} style={{ ...inputStyle, flex: 1, minWidth: 0, resize: 'vertical', lineHeight: 1.5 }} />
+                    <button type="button" disabled={!draft.trim()} onClick={() => addNote(k.key)}
+                      style={{ padding: '9px 14px', borderRadius: 10, border: 'none', background: draft.trim() ? C.green : '#A5D6A7', color: C.white, fontFamily: 'Figtree', fontSize: 12, fontWeight: 700, cursor: draft.trim() ? 'pointer' : 'default', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                      <Plus size={13} /> Add note
+                    </button>
+                  </div>
+                )}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+                  {entries.map((n) => (
+                    <div key={n.id} style={{ background: C.seasalt, borderRadius: 10, padding: '8px 12px' }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{fmtDateTime(n.at)}{n.by ? ` · ${n.by}` : ''}</div>
+                      <div style={{ fontSize: 13, color: '#1a1a1a', lineHeight: 1.5, whiteSpace: 'pre-wrap', marginTop: 2 }}>{n.text}</div>
+                    </div>
+                  ))}
+                  {earlier && (
+                    <div style={{ background: C.seasalt, borderRadius: 10, padding: '8px 12px' }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: C.slate, letterSpacing: '0.04em', textTransform: 'uppercase' }}>Earlier note · no date recorded</div>
+                      <div style={{ fontSize: 13, color: '#1a1a1a', lineHeight: 1.5, whiteSpace: 'pre-wrap', marginTop: 2 }}>{earlier}</div>
+                    </div>
+                  )}
+                  {entries.length === 0 && !earlier && <div style={{ fontSize: 12, color: C.slate }}>No notes yet.</div>}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
